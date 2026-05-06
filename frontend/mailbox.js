@@ -3,7 +3,7 @@ import {
   avatarColor, initials, senderName, senderEmail,
   avatarImgHtml,
   shortDate, longDate, escapeHtml, linkify, isHomographUrl, safeLinkUrl,
-  CATEGORY_LABEL, CATEGORY_COLOR, scoreClass,
+  CATEGORY_LABEL, CATEGORY_COLOR, CATEGORY_ICON, scoreClass,
 } from '/static/api.js';
 import { rewriteRemoteImages, senderDomain } from '/static/image-blocker.js';
 
@@ -281,12 +281,12 @@ const FOLDERS = [
 ];
 
 const LABELS = [
-  { id: 'important',     label: 'Important',     color: '#FCA5A5' },
-  { id: 'transactional', label: 'Transactionnel',color: '#86EFAC' },
-  { id: 'newsletter',    label: 'Newsletter',    color: '#93C5FD' },
-  { id: 'other',         label: 'Autre',         color: '#C4B5FD' },
-  { id: 'pending',       label: 'En attente',    color: '#FCD34D' },
-  { id: 'spam',          label: 'Spam',          color: '#CBD5E1' },
+  { id: 'important',     label: 'Important',      color: '#FCA5A5', icon: 'star' },
+  { id: 'transactional', label: 'Transactionnel', color: '#86EFAC', icon: 'receipt' },
+  { id: 'newsletter',    label: 'Newsletter',     color: '#93C5FD', icon: 'newspaper' },
+  { id: 'other',         label: 'Autre',          color: '#C4B5FD', icon: 'tag' },
+  { id: 'pending',       label: 'En attente',     color: '#FCD34D', icon: 'clock' },
+  { id: 'spam',          label: 'Spam',           color: '#CBD5E1', icon: 'shield-x' },
 ];
 
 // Sous-catégories par fournisseur — ordre d'affichage + couleur identifiante.
@@ -465,15 +465,16 @@ export async function mountMailbox(host, _opts) {
     const cont = $('#mb-labels');
     cont.innerHTML = `
       <button class="mb-label ${state.category === '' ? 'active' : ''}" data-cat="">
-        <span class="dot" style="background:var(--muted-2)"></span>
+        <i data-lucide="inbox" class="cat-icon" style="color:var(--muted-2)"></i>
         <span class="lab">Toutes</span>
       </button>
     ` + LABELS.map((l) => `
       <button class="mb-label ${state.category === l.id ? 'active' : ''}" data-cat="${l.id}">
-        <span class="dot" style="background:${l.color}"></span>
+        <i data-lucide="${l.icon}" class="cat-icon" style="color:${l.color}"></i>
         <span class="lab">${l.label}</span>
       </button>
     `).join('');
+    window.lucide?.createIcons({ el: cont });
     cont.querySelectorAll('.mb-label').forEach((b) => {
       b.addEventListener('click', () => {
         state.category = b.dataset.cat;
@@ -923,7 +924,7 @@ export async function mountMailbox(host, _opts) {
               ${em.needs_reply ? `<i data-lucide="reply" class="w-3.5 h-3.5 mb-reply-inline" title="Réponse attendue"></i>` : ''}
               ${em.draft_response ? `<i data-lucide="pencil-line" class="w-3.5 h-3.5 mb-draft-inline" title="Brouillon IA prêt"></i>` : ''}
             </div>
-            ${em.category && em.category !== 'pending' ? `<span class="mb-cat-dot" title="${escapeHtml(CATEGORY_LABEL[em.category] || em.category)}" style="background:${CATEGORY_COLOR[em.category] || 'var(--muted-2)'}"></span>` : ''}
+            ${em.category && em.category !== 'pending' ? `<i data-lucide="${CATEGORY_ICON[em.category] || 'tag'}" class="mb-cat-icon" style="color:${CATEGORY_COLOR[em.category] || 'var(--muted-2)'}" title="${escapeHtml(CATEGORY_LABEL[em.category] || em.category)}"></i>` : ''}
             <span class="mb-date">${escapeHtml(shortDate(em.date_received))}</span>
           </div>
           <div class="mb-subj">
@@ -2178,9 +2179,14 @@ export async function mountMailbox(host, _opts) {
   renderAccounts();
   renderEmpty();
 
-  // Collapsible sidebar sections
-  // Folders collapsed by default (unless user has explicitly opened it before)
-  if (localStorage.getItem('sb-folders') === null) localStorage.setItem('sb-folders', '1');
+  // Collapsible sidebar sections — all open by default.
+  // One-time migration: the old code force-set 'sb-folders' and 'sb-accounts'
+  // to '1' (collapsed). Clear those stored values once so new sessions start open.
+  if (!localStorage.getItem('sb-open-default-v1')) {
+    localStorage.removeItem('sb-folders');
+    localStorage.removeItem('sb-accounts');
+    localStorage.setItem('sb-open-default-v1', '1');
+  }
   initCollapsible($('#title-folders'), $('#wrap-folders'), 'sb-folders');
   initCollapsible($('#title-labels'),  $('#wrap-labels'),  'sb-labels');
 

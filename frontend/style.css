@@ -395,8 +395,9 @@ button { font: inherit; }
   background: var(--accent);
   color: var(--accent-on);
 }
-.mb-label .dot {
-  width: 14px; height: 14px; border-radius: 4px;
+.mb-label .cat-icon {
+  width: 14px; height: 14px;
+  flex-shrink: 0;
 }
 
 /* ── List column ── */
@@ -934,11 +935,10 @@ button { font: inherit; }
   opacity: 0.9;
 }
 .mb-date { font-size: 11.5px; color: var(--muted-2); flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.mb-cat-dot {
-  width: 8px; height: 8px;
-  border-radius: 50%;
+.mb-cat-icon {
+  width: 11px; height: 11px;
   flex-shrink: 0;
-  box-shadow: 0 0 0 1px color-mix(in oklab, var(--text) 8%, transparent);
+  opacity: 0.85;
 }
 .mb-fav-star {
   display: inline-grid;

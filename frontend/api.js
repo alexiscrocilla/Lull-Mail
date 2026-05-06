@@ -518,6 +518,15 @@ export const CATEGORY_COLOR = {
   pending:       '#FCD34D',
 };
 
+export const CATEGORY_ICON = {
+  important:     'star',
+  newsletter:    'newspaper',
+  transactional: 'receipt',
+  spam:          'shield-x',
+  other:         'tag',
+  pending:       'clock',
+};
+
 export function scoreClass(s) {
   if (s >= 7) return 's-hi';
   if (s >= 4) return 's-md';
