@@ -17,10 +17,14 @@ from pydantic import BaseModel
 from src import config as cfg
 from src import database as db
 from src import attachment_security as att_sec
+from src.safe_link import router as _safe_link_router
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Lull Mail", docs_url=None, redoc_url=None)
+# Anti-phishing interstitial — `/safe-link?url=...` is the click-target the
+# frontend rewrites to when an email link is detected as a homograph spoof.
+app.include_router(_safe_link_router)
 
 
 def _frontend_dir() -> Path:
@@ -1308,7 +1312,21 @@ app.include_router(_setup_router)
 # ── Frontend ──────────────────────────────────────────────────────────────────
 
 if FRONTEND.exists():
-    app.mount("/static", StaticFiles(directory=str(FRONTEND)), name="static")
+    # Custom StaticFiles that disables HTTP caching. Lull Mail runs on
+    # 127.0.0.1 against a single user, so the perf cost of re-fetching a
+    # 2 KB JS file on every reload is irrelevant — and it avoids the
+    # week-long debugging sessions that come from a cached `api.js` after
+    # a security/UI hotfix. ES modules in Firefox are particularly sticky
+    # with the default `Cache-Control: max-age=...` returned by Starlette.
+    class _NoCacheStatic(StaticFiles):
+        async def get_response(self, path, scope):
+            response = await super().get_response(path, scope)
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            return response
+
+    app.mount("/static", _NoCacheStatic(directory=str(FRONTEND)), name="static")
 
     from fastapi.responses import RedirectResponse  # local import keeps top tidy
 

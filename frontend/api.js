@@ -300,11 +300,203 @@ export function escapeHtml(s) {
     .replaceAll("'", '&#39;');
 }
 
+// Cyrillic (U+0400-U+04FF) and Greek (U+0370-U+03FF) ranges. A Latin-looking
+// hostname containing characters from these ranges is almost always a
+// homograph spoof: `раypal.com` (with a Cyrillic «р») is not paypal.com.
+// Same heuristic is applied to attachment filenames in
+// src/attachment_security.py:425-429.
+const HOMOGLYPH_RE = /[Ѐ-ӿͰ-Ͽ]/;
+
+// SOURCE OF TRUTH: src/brands.py BRANDS frozenset. Keep the two in sync
+// when adding/removing a brand. The list is intentionally small (~80
+// entries) and curated for FR + EU users — see brands.py for the
+// rationale and update cadence.
+const BRANDS = new Set([
+  // Tech / global SaaS
+  'paypal.com', 'google.com', 'microsoft.com', 'amazon.com',
+  'apple.com', 'icloud.com',
+  'facebook.com', 'instagram.com', 'linkedin.com', 'whatsapp.com',
+  'twitter.com', 'x.com', 'tiktok.com',
+  'netflix.com', 'spotify.com', 'dropbox.com', 'adobe.com',
+  'github.com', 'openai.com', 'chatgpt.com', 'anthropic.com',
+  // E-commerce / classifieds
+  'ebay.com', 'amazon.fr', 'leboncoin.fr', 'vinted.fr',
+  'fnac.com', 'darty.com', 'cdiscount.com', 'zalando.fr',
+  'aliexpress.com', 'shein.com',
+  // FR — banques
+  'bnpparibas.fr', 'credit-agricole.fr', 'societegenerale.fr',
+  'lcl.fr', 'banquepostale.fr', 'boursorama.com', 'fortuneo.fr',
+  'creditmutuel.fr', 'caisse-epargne.fr', 'labanquepostale.fr',
+  'hellobank.fr', 'n26.com', 'revolut.com', 'monabanq.com',
+  'nickel.eu', 'qonto.com',
+  // FR — services publics
+  'ameli.fr', 'impots.gouv.fr', 'caf.fr', 'pole-emploi.fr',
+  'francetravail.fr', 'service-public.fr', 'ants.gouv.fr',
+  'secu-independants.fr', 'info-coronavirus.gouv.fr',
+  'demarches-simplifiees.fr', 'msa.fr',
+  // FR — telco / utilities
+  'orange.fr', 'free.fr', 'sfr.fr', 'bouyguestelecom.fr',
+  'edf.fr', 'engie.fr', 'totalenergies.fr',
+  // Logistique
+  'laposte.fr', 'colissimo.fr', 'chronopost.fr', 'mondialrelay.fr',
+  'ups.com', 'dhl.com', 'fedex.com', 'tnt.com', 'dpd.fr',
+  'gls-france.com', 'amazonlogistics.fr',
+  // Crypto
+  'binance.com', 'coinbase.com', 'kraken.com', 'ledger.com',
+  'metamask.io', 'bitstamp.net',
+]);
+const BRAND_ROOTS = new Set(
+  [...BRANDS].map(d => d.split('.', 1)[0])
+);
+const MULTI_PART_TLDS = new Set([
+  'co.uk', 'co.jp', 'co.kr', 'co.nz', 'co.za', 'co.in', 'co.id',
+  'com.au', 'com.br', 'com.cn', 'com.fr', 'com.mx', 'com.tr',
+  'ac.uk', 'gov.uk', 'org.uk', 'ne.jp', 'or.jp',
+  'gouv.fr', 'asso.fr', 'tm.fr',
+]);
+
+function _registrable(host) {
+  if (!host) return '';
+  const parts = host.toLowerCase().replace(/\.+$/, '').split('.');
+  if (parts.length < 2) return host.toLowerCase();
+  const lastTwo = parts.slice(-2).join('.');
+  if (MULTI_PART_TLDS.has(lastTwo) && parts.length >= 3) {
+    return parts.slice(-3).join('.');
+  }
+  return lastTwo;
+}
+
+function _subdomain(host) {
+  const h = (host || '').toLowerCase().replace(/\.+$/, '');
+  const reg = _registrable(h);
+  if (h === reg || !reg) return '';
+  if (!h.endsWith('.' + reg)) return '';
+  return h.slice(0, -(reg.length + 1));
+}
+
+// Damerau-Levenshtein with early termination. See safe_link.py for
+// rationale (transposition catches "googel.com" at distance 1).
+function _editDist(a, b, maxD = 1) {
+  const n = a.length, m = b.length;
+  if (Math.abs(n - m) > maxD) return maxD + 1;
+  if (!n) return m;
+  if (!m) return n;
+  const d = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = 0; i <= n; i++) d[i][0] = i;
+  for (let j = 0; j <= m; j++) d[0][j] = j;
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(
+        d[i - 1][j] + 1,
+        d[i][j - 1] + 1,
+        d[i - 1][j - 1] + cost
+      );
+      if (i > 1 && j > 1
+          && a[i - 1] === b[j - 2]
+          && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + cost);
+      }
+    }
+  }
+  return d[n][m];
+}
+
+// Important: we read the host directly from the raw string instead of
+// `new URL(url).hostname`. The URL constructor normalises IDN domains to
+// their punycode form (`xn--…`), which strips the very characters we want
+// to flag. Working on the raw bytes preserves them.
+function _rawHostFromUrl(url) {
+  const m = /^https?:\/\/([^/?#\s]+)/i.exec(url);
+  return m ? m[1] : '';
+}
+
+// Returns true when the URL should be wrapped through `/safe-link?url=…`
+// at click time so the user gets a server-rendered warning page. Keep
+// the heuristic in sync with src/safe_link.py `analyze()` — both lists
+// of patterns must match or links may be rewritten without the page
+// having anything to say (the server then 302s through silently, but
+// the round-trip still costs latency).
+export function isSuspiciousUrl(url) {
+  const rawHost = _rawHostFromUrl(url);
+  if (!rawHost) return false;
+  const host = rawHost.toLowerCase();
+  const hostNoUser = host.includes('@') ? host.split('@').pop() : host;
+
+  // 1. Mixed-script (Cyrillic / Greek)
+  if (HOMOGLYPH_RE.test(rawHost)) return true;
+  // 2. Sender-encoded IDN punycode
+  if (/(^|\.)xn--/i.test(hostNoUser)) return true;
+  // 3. Userinfo trick: paypal.com@evil.com
+  if (host.includes('@')) return true;
+  // 4. Raw IPv4 / IPv6 host
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostNoUser)) return true;
+  if (/^\[[0-9a-f:]+\]$/i.test(hostNoUser)) return true;
+  // 5. Known shorteners
+  if (SHORTENERS.has(hostNoUser)) return true;
+  // 6. Suspicious TLD
+  const tld = hostNoUser.split('.').pop();
+  if (SUSPICIOUS_TLDS.has(tld)) return true;
+  // 7. Typosquatting against curated brand list (Damerau distance ≤ 1)
+  const reg = _registrable(hostNoUser);
+  if (reg && !BRANDS.has(reg)) {
+    for (const brand of BRANDS) {
+      if (_editDist(reg, brand, 1) <= 1) return true;
+    }
+    // 8. Subdomain spoofing: brand-root appears as a subdomain label
+    const sub = _subdomain(hostNoUser);
+    if (sub) {
+      for (const label of sub.split('.')) {
+        if (BRAND_ROOTS.has(label)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Backwards-compatible alias — kept so existing imports don't break.
+// The frontend code uses both names interchangeably; once everything
+// is migrated, remove this line and the alias from the export list.
+export const isHomographUrl = isSuspiciousUrl;
+
+// Mirrors of `_SHORTENERS` and `_SUSPICIOUS_TLDS` in src/safe_link.py.
+// Keep in sync.
+const SHORTENERS = new Set([
+  'bit.ly', 't.co', 'tinyurl.com', 'goo.gl', 'ow.ly', 'is.gd',
+  'buff.ly', 'rebrand.ly', 'shorturl.at', 'cutt.ly', 'lnkd.in',
+  'rb.gy', 'soo.gd', 'x.co', 'v.gd', 'tiny.cc', 'tr.im',
+  'shorte.st', 'adf.ly',
+]);
+const SUSPICIOUS_TLDS = new Set([
+  'xyz', 'top', 'click', 'loan', 'work', 'tk', 'ml', 'ga', 'cf',
+  'gq', 'country', 'cricket', 'win', 'stream', 'download', 'men',
+  'review', 'racing', 'party', 'trade', 'date', 'faith', 'science',
+]);
+
+// Wrap a suspicious URL so a click goes through the server-rendered
+// interstitial (`/safe-link?url=…`) instead of opening directly. The
+// interstitial highlights the homoglyph chars and asks for explicit
+// confirmation. Server-side: src/safe_link.py.
+export function safeLinkUrl(rawUrl) {
+  return `/safe-link?url=${encodeURIComponent(rawUrl)}`;
+}
+
 export function linkify(text) {
   const escaped = escapeHtml(text || '');
   return escaped.replace(
     /(https?:\/\/[^\s<>"]+)/g,
-    '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>'
+    (match) => {
+      const warn = isHomographUrl(match);
+      const cls = warn ? ' class="lnk-warn"' : '';
+      const title = warn
+        ? ' title="Domaine suspect — un avertissement s\'affichera avant l\'ouverture"'
+        : '';
+      // For suspicious links, the click target is the interstitial page, not
+      // the original URL. The visible text stays the original so the user
+      // sees what was in the email.
+      const href = warn ? safeLinkUrl(match) : match;
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer"${cls}${title}>${match}</a>`;
+    }
   );
 }
 

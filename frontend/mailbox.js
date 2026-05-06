@@ -2,9 +2,59 @@ import {
   api,
   avatarColor, initials, senderName, senderEmail,
   avatarImgHtml,
-  shortDate, longDate, escapeHtml, linkify,
+  shortDate, longDate, escapeHtml, linkify, isHomographUrl, safeLinkUrl,
   CATEGORY_LABEL, CATEGORY_COLOR, scoreClass,
 } from '/static/api.js';
+
+// Walk every <a> in the email HTML and tag it visually when its href looks
+// like a homograph spoof (Cyrillic/Greek in the host) or already arrived in
+// punycode form (xn--…). The iframe is sandboxed without `allow-scripts`,
+// so external CSS would never apply — we set inline style + a title for the
+// hover tooltip. Same heuristic as on plain-text bodies via linkify.
+function markSuspiciousLinksInHtml(html) {
+  if (!html) return html;
+  let doc;
+  try {
+    doc = new DOMParser().parseFromString(html, 'text/html');
+  } catch (_) {
+    return html;
+  }
+  const anchors = doc.querySelectorAll('a[href]');
+  let flagged = 0;
+  anchors.forEach((a) => {
+    const href = a.getAttribute('href') || '';
+    if (!/^https?:\/\//i.test(href)) return;
+    if (!isHomographUrl(href)) return;
+    flagged += 1;
+
+    // Click target is the server-rendered interstitial. The browser will
+    // open it in the same way the original link wanted (target=_blank
+    // since allow-popups is on). The interstitial then explains the risk
+    // and lets the user choose to continue. Server side: src/safe_link.py.
+    a.setAttribute('href', safeLinkUrl(href));
+    // Force new-tab so the warning page replaces the iframe-targeted nav
+    // (otherwise a `target="_self"` link would try to navigate the
+    // sandboxed iframe itself, which is hostile UX).
+    a.setAttribute('target', '_blank');
+    a.setAttribute('rel', 'noopener noreferrer');
+
+    // Inline style because the iframe srcdoc has no access to our stylesheet.
+    const prev = a.getAttribute('style') || '';
+    a.setAttribute('style',
+      `${prev}${prev && !prev.endsWith(';') ? ';' : ''}` +
+      'color:#b91c1c !important;background:rgba(220,38,38,0.08);' +
+      'border-bottom:2px dotted #b91c1c;padding:0 2px;border-radius:2px;' +
+      'text-decoration:none !important;'
+    );
+    const prevTitle = a.getAttribute('title');
+    if (!prevTitle) {
+      a.setAttribute('title',
+        'Domaine suspect — un avertissement s\'affichera avant l\'ouverture'
+      );
+    }
+  });
+  return flagged > 0 ? doc.documentElement.outerHTML : html;
+}
 
 const FOLDERS = [
   { id: 'inbox',     label: 'Inbox',     icon: 'inbox' },
@@ -495,7 +545,10 @@ export async function mountMailbox(host, _opts) {
 
   function applyFilter() {
     const q = state.query.trim().toLowerCase();
+    const activeEmails = new Set(state.accounts.map((a) => a.email));
     const filtered = state.emails.filter((em) => {
+      // Exclude emails from accounts that have been removed from config
+      if (activeEmails.size > 0 && !activeEmails.has(em.account_email)) return false;
       // multi-account client-side filter (single-account is handled at API level)
       if (state.accountFilters.size > 1 && !state.accountFilters.has(em.account_email)) return false;
       if (!q) return true;
@@ -1228,9 +1281,15 @@ export async function mountMailbox(host, _opts) {
                table{max-width:100%!important;table-layout:fixed!important;}
                td,th{word-break:break-word;}
              </style>`;
-             const html = em.body_html.replace(/<head([^>]*)>/i, `<head$1>${INJECT}`)
-                            || (INJECT + em.body_html);
-             return `<iframe sandbox="allow-scripts allow-popups" srcdoc="${escapeHtml(html)}" class="mb-body-iframe"></iframe>`;
+             const safeHtml = markSuspiciousLinksInHtml(em.body_html);
+             const html = safeHtml.replace(/<head([^>]*)>/i, `<head$1>${INJECT}`)
+                            || (INJECT + safeHtml);
+             // SECURITY: no `allow-scripts`. Email JavaScript never runs.
+             // `allow-popups` keeps `<a target="_blank">` opening in a new
+             // tab; `allow-popups-to-escape-sandbox` lets that tab inherit a
+             // normal (non-sandboxed) context so the OS browser handler can
+             // pick the link up cleanly.
+             return `<iframe sandbox="allow-popups allow-popups-to-escape-sandbox" srcdoc="${escapeHtml(html)}" class="mb-body-iframe"></iframe>`;
            })()
          : `<div style="color:var(--muted);font-style:italic">(corps du mail vide)</div>`);
 
@@ -1717,8 +1776,14 @@ export async function mountMailbox(host, _opts) {
         }
       }
     } catch (_) { state.accounts = []; }
+    // Purge accountFilters entries that no longer exist in config
+    const activeEmails = new Set(state.accounts.map((a) => a.email));
+    for (const em of [...state.accountFilters]) {
+      if (!activeEmails.has(em)) state.accountFilters.delete(em);
+    }
     renderChips();
     renderAccounts();
+    applyFilter();
     updateBadge();
   }
 

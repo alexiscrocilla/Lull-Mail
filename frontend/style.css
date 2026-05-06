@@ -1253,6 +1253,20 @@ button { font: inherit; }
   color: var(--text);
 }
 .mb-body-text a { color: var(--accent); text-decoration: underline; }
+/* Anti-phishing : URL contenant des caractères Cyrilliques/Grecs.
+   Correspond à la règle homographe utilisée pour les pièces jointes
+   (src/attachment_security.py:425-429). Désactivable rien qu'en
+   retirant la classe côté JS. */
+.mb-body-text a.lnk-warn,
+.mb-body-iframe + .lnk-warn,
+a.lnk-warn {
+  color: var(--danger, #b91c1c) !important;
+  background: rgba(220, 38, 38, 0.08);
+  border-bottom: 2px dotted var(--danger, #b91c1c) !important;
+  padding: 0 2px;
+  border-radius: 2px;
+  text-decoration: none !important;
+}
 
 .mb-body-iframe {
   flex: 1;
@@ -4678,4 +4692,52 @@ kbd {
 }
 .ux-empty-title { font-weight: 700; color: var(--text); }
 .ux-empty-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+/* ── Update banner ──────────────────────────────────────────────────────────── */
+#update-banner {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 9px 16px;
+  background: var(--accent);
+  color: var(--accent-on);
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 2px 8px var(--shadow-md);
+  animation: banner-slide-down 0.25s ease;
+}
+#update-banner.hidden { display: none; }
+@keyframes banner-slide-down {
+  from { transform: translateY(-100%); opacity: 0; }
+  to   { transform: translateY(0);     opacity: 1; }
+}
+#update-banner-install {
+  padding: 4px 12px;
+  background: var(--accent-on);
+  color: var(--accent);
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity .15s;
+}
+#update-banner-install:hover { opacity: .85; }
+#update-banner-install:disabled { opacity: .5; cursor: not-allowed; }
+#update-banner-dismiss {
+  background: none;
+  border: none;
+  color: var(--accent-on);
+  cursor: pointer;
+  padding: 2px;
+  opacity: .7;
+  line-height: 1;
+  margin-left: 4px;
+  font-size: 16px;
+}
+#update-banner-dismiss:hover { opacity: 1; }
 
