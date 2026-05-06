@@ -655,7 +655,7 @@ def unsubscribe_http(url: str, timeout_s: float = 5.0) -> Tuple[bool, int, str]:
             url,
             data={"List-Unsubscribe": "One-Click"},
             headers={
-                "User-Agent": "LullMail/1.0 (+https://github.com/Alexis/lull-mail)",
+                "User-Agent": "LullMail/1.0 (+https://github.com/alexiscrocilla/Lull-Mail)",
                 "Content-Type": "application/x-www-form-urlencoded",
             },
             timeout=timeout_s,

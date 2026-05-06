@@ -3,6 +3,6 @@
 blank_issues_enabled: false
 
 contact_links:
-  - name: ❓ Question d'utilisation
-    url: https://github.com/Alexis-Crocilla/lull-mail/discussions
-    about: "Pour les questions générales (configuration, comment faire X) — ouvrez plutôt une Discussion."
+  - name: ❓ Usage question
+    url: https://github.com/alexiscrocilla/Lull-Mail/discussions
+    about: "For general questions (setup, how do I X) — open a Discussion instead."

@@ -1,4 +1,7 @@
-# Lull Mail
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="frontend/assets/lullmail-logo-dark.svg">
+  <img src="frontend/assets/lullmail-logo-light.svg" alt="Lull Mail" width="200" align="left">
+</picture>
 
 > **Your inbox, on mute.**
 > Silent by default. Notification by exception. Your data stays yours.
@@ -11,11 +14,14 @@ deserve your attention, summarises them in two lines, and sends *one*
 notification — the right one, at the right moment. The rest waits
 until you have time. Or quietly disappears.
 
-[![Latest release](https://img.shields.io/github/v/release/Alexis-Crocilla/lull-mail?label=download)](../../releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/Alexis-Crocilla/lull-mail/total)](../../releases)
+[![Latest release](https://img.shields.io/github/v/release/alexiscrocilla/Lull-Mail?label=download)](../../releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/alexiscrocilla/Lull-Mail/total)](../../releases)
 
 > **Note**: Lull Mail runs on Windows 10/11. The Python code is
 > cross-platform — only the desktop packaging is Windows-only for now.
+
+<br clear="left">
+
 
 ---
 
