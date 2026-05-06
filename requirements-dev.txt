@@ -1,0 +1,10 @@
+# Development-only dependencies. Installed in CI before running pytest;
+# never bundled into the PyInstaller .exe.
+
+-r requirements.txt
+
+pytest==8.3.4
+httpx==0.28.1            # FastAPI's TestClient depends on this
+pytest-asyncio==0.24.0
+keyrings.alt==5.0.2      # In-memory backend for testing the keyring path
+                         # without touching the OS Credential Manager.

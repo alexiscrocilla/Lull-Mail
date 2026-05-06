@@ -34,6 +34,41 @@ app.include_router(_safe_link_router)
 from src.security.origin import OriginCheckMiddleware  # noqa: E402
 app.add_middleware(OriginCheckMiddleware)
 
+# Rate limiter. Shared instance lives in src/security/rate_limit so
+# the wizard router (src/setup_api.py) can decorate its own endpoints
+# with the same `@limiter.limit(...)` without creating a circular
+# import. Per-endpoint limits are intentionally loose: well above
+# realistic human use, but tight enough to stop runaway local loops
+# within a few seconds.
+from slowapi.errors import RateLimitExceeded  # noqa: E402
+from slowapi.middleware import SlowAPIMiddleware  # noqa: E402
+from starlette.responses import JSONResponse  # noqa: E402
+
+from src.security.rate_limit import limiter  # noqa: E402
+
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+
+
+def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    """Friendly 429 response — the default slowapi handler returns a
+    text/plain body which the frontend can't surface usefully."""
+    return JSONResponse(
+        {
+            "error": "rate_limited",
+            "detail": (
+                "Trop de requêtes en peu de temps. Patientez quelques "
+                "secondes avant de réessayer."
+            ),
+            "retry_after": str(exc.detail),
+        },
+        status_code=429,
+        headers={"Retry-After": "10"},
+    )
+
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+
 
 def _frontend_dir() -> Path:
     # When frozen by PyInstaller, static assets live in the temp _MEIPASS dir.
@@ -320,7 +355,9 @@ def list_attachments(int_id: int):
 
 
 @app.get("/api/attachments/{att_id}/download")
+@limiter.limit("60/minute")
 def download_attachment(
+    request: Request,
     att_id: int,
     confirm: int = Query(0, description="Set to 1 to override the dangerous-file gate"),
 ):
@@ -648,7 +685,8 @@ def cleanup_senders(limit: int = 50, account: Optional[str] = None):
 
 
 @app.post("/api/cleanup/sender")
-def cleanup_sender(req: CleanupSenderReq, bg: BackgroundTasks):
+@limiter.limit("10/minute")
+def cleanup_sender(request: Request, req: CleanupSenderReq, bg: BackgroundTasks):
     """Apply a bulk action ('delete' or 'mark_read') to every live message
     coming from `req.sender`. DB writes happen synchronously so the UI can
     refresh the counts immediately; IMAP propagation runs as one tracked
@@ -770,7 +808,8 @@ def cleanup_rule_preview(filter: RuleFilter, limit: int = 100):
 
 
 @app.post("/api/cleanup/rules/run")
-def cleanup_rule_run(req: RuleRunReq, bg: BackgroundTasks):
+@limiter.limit("10/minute")
+def cleanup_rule_run(request: Request, req: RuleRunReq, bg: BackgroundTasks):
     """Apply a rule's action (delete | mark_read) to every match. DB writes
     happen synchronously (counts shrink immediately on the UI) and IMAP
     propagation runs as one tracked job, exactly like the senders flow.
@@ -953,7 +992,8 @@ def cleanup_unsubscribe_backfill(account: Optional[str] = None, bg: BackgroundTa
 
 
 @app.post("/api/cleanup/unsubscribe")
-def cleanup_unsubscribe(req: UnsubscribeReq, bg: BackgroundTasks):
+@limiter.limit("10/minute")
+def cleanup_unsubscribe(request: Request, req: UnsubscribeReq, bg: BackgroundTasks):
     """Single-sender unsubscribe with optional purge of existing messages."""
     target = db.unsubscribe_sender_target(req.sender, account=req.account)
     if not target:
@@ -1038,7 +1078,8 @@ def cleanup_unsubscribe(req: UnsubscribeReq, bg: BackgroundTasks):
 
 
 @app.post("/api/cleanup/unsubscribe/bulk")
-def cleanup_unsubscribe_bulk(req: UnsubscribeBulkReq, bg: BackgroundTasks):
+@limiter.limit("10/minute")
+def cleanup_unsubscribe_bulk(request: Request, req: UnsubscribeBulkReq, bg: BackgroundTasks):
     """Run one-click POSTs for every sender in the list. Senders without a
     one-click target are skipped (the UI restricts the bulk button to
     one-click senders, but we double-check server-side)."""
@@ -1146,7 +1187,8 @@ def get_accounts():
 # ── Sync ──────────────────────────────────────────────────────────────────────
 
 @app.post("/api/sync")
-def trigger_sync(bg: BackgroundTasks):
+@limiter.limit("6/minute")
+def trigger_sync(request: Request, bg: BackgroundTasks):
     from src.scheduler import is_running, run_sync
     if is_running():
         return {"ok": False, "message": "Sync déjà en cours"}

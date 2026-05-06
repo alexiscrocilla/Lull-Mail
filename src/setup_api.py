@@ -15,20 +15,19 @@ Conventions:
   • finalize() boots the email subsystem; subsequent calls restart it
 """
 
-from __future__ import annotations
-
 import imaplib
 import logging
 import socket
 import ssl
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from src import config as cfg
 from src import lifecycle
 from src import paths
+from src.security.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -448,7 +447,11 @@ def _enforce_tls_safety(payload: AccountPayload) -> None:
 
 
 @router.post("/accounts")
-def add_account(payload: AccountPayload) -> Dict[str, Any]:
+@limiter.limit("30/minute")
+def add_account(
+    request: Request,
+    payload: AccountPayload = Body(...),
+) -> Dict[str, Any]:
     data = _load_or_default()
     accounts = data.get("accounts") or []
     if any(a.get("email", "").lower() == payload.email.lower() for a in accounts):
@@ -482,7 +485,12 @@ def add_account(payload: AccountPayload) -> Dict[str, Any]:
 
 
 @router.put("/accounts/{email}")
-def update_account(email: str, payload: AccountPayload) -> Dict[str, Any]:
+@limiter.limit("30/minute")
+def update_account(
+    request: Request,
+    email: str,
+    payload: AccountPayload = Body(...),
+) -> Dict[str, Any]:
     data = _load_or_default()
     accounts = data.get("accounts") or []
     from src import secrets_store
@@ -522,7 +530,8 @@ def update_account(email: str, payload: AccountPayload) -> Dict[str, Any]:
 
 
 @router.delete("/accounts/{email}")
-def delete_account(email: str) -> Dict[str, Any]:
+@limiter.limit("30/minute")
+def delete_account(request: Request, email: str) -> Dict[str, Any]:
     data = _load_or_default()
     accounts = data.get("accounts") or []
     new_list = [a for a in accounts if a.get("email", "").lower() != email.lower()]
@@ -685,7 +694,11 @@ def _safe_test_and_record(payload: AccountPayload, password: str) -> Dict[str, A
 
 
 @router.post("/accounts/test")
-def test_account(payload: AccountPayload) -> Dict[str, Any]:
+@limiter.limit("30/minute")
+def test_account(
+    request: Request,
+    payload: AccountPayload = Body(...),
+) -> Dict[str, Any]:
     """Open an IMAP connection and authenticate. No mailbox state is
     altered. Used by the wizard's "Tester la connexion" button AND by
     the per-row test icon in Settings.
@@ -768,7 +781,11 @@ class WipeConfirm(BaseModel):
 
 
 @router.post("/wipe")
-def wipe_data(payload: WipeConfirm) -> Dict[str, Any]:
+@limiter.limit("3/minute")
+def wipe_data(
+    request: Request,
+    payload: WipeConfirm = Body(...),
+) -> Dict[str, Any]:
     """Erase config.yaml, the SQLite DB, attachments and logs.
 
     Used by the Settings → Stockage "Supprimer mes données" button. After

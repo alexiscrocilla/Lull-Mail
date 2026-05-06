@@ -106,10 +106,10 @@ your machine, stays on your machine.**
 
 | Data | Where it lives |
 |---|---|
-| IMAP credentials (app password) | `%APPDATA%\LullMail\config.yaml`, plain text on your disk |
+| IMAP credentials (app password) | OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service). `config.yaml` only holds an opaque `keyring:user@host` reference. |
+| OpenAI API key | OS keyring (same as above). |
 | Downloaded emails, summaries, scores | `%APPDATA%\LullMail\data\mail.db` (local SQLite) |
-| Attachments | `%APPDATA%\LullMail\data\attachments\` |
-| OpenAI API key | `%APPDATA%\LullMail\config.yaml` |
+| Attachments | `%APPDATA%\LullMail\data\attachments\` (UUID filenames, owner-only on POSIX, integrity-checked on every download) |
 
 **The only outbound flows**:
 
@@ -123,7 +123,18 @@ your machine, stays on your machine.**
   middleman.
 
 **Erase everything**: *Settings → Storage → Delete my data* wipes
-config + SQLite + attachments in one click.
+config + SQLite + attachments + keyring entries in one click.
+
+**Anti-phishing & sandbox**: emails are rendered in a sandboxed
+iframe that **never executes JavaScript**, remote images are
+**blocked by default** (per-sender opt-in), suspicious links
+(homograph, punycode IDN, userinfo trick, raw IP, shorteners,
+suspicious TLDs, typosquat, subdomain spoofing) route through a
+warning page before opening, and SPF/DKIM/DMARC verdicts are
+surfaced as a coloured badge on every email. See
+[`docs/SECURITY-ROADMAP.md`](docs/SECURITY-ROADMAP.md) for what is
+still planned (E2E PGP, AV system integration, local LLM, signed
+installer).
 
 ---
 
@@ -156,11 +167,12 @@ slated for v0.4.0. To force a language manually, append `?lang=en` or
 `?lang=fr` to the URL.
 
 **Are my IMAP passwords stored in plain text?**
-Yes, in `config.yaml` inside `%APPDATA%\LullMail\`. That's a classic
-trade-off for desktop mail clients (Outlook and Thunderbird do the
-same with very thin obfuscation). For Gmail / Outlook / Yahoo /
-iCloud, use an *app password* — you can revoke it independently of
-your main account password.
+No. They live in the OS keyring (Windows Credential Manager / macOS
+Keychain / Linux Secret Service). `config.yaml` only carries an
+opaque `keyring:user@host` reference; the real secret is fetched in
+memory at runtime. For Gmail / Outlook / Yahoo / iCloud you should
+still use an *app password* — easier to revoke than your main
+account password if anything goes wrong.
 
 ---
 
