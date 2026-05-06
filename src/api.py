@@ -1052,6 +1052,21 @@ def cleanup_unsubscribe_bulk(req: UnsubscribeBulkReq, bg: BackgroundTasks):
     return {"ok": True, "job_id": job_id, "total": len(plan), "skipped": skipped}
 
 
+# ── Update ────────────────────────────────────────────────────────────────────
+
+@app.get("/api/update/check")
+def update_check():
+    from src.updater import check_for_update
+    return check_for_update()
+
+
+@app.post("/api/update/install")
+def update_install(bg: BackgroundTasks):
+    from src.updater import download_and_install
+    bg.add_task(download_and_install)
+    return {"ok": True, "message": "Téléchargement en cours…"}
+
+
 # ── Stats & accounts ──────────────────────────────────────────────────────────
 
 @app.get("/api/stats")

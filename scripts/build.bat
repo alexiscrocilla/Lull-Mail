@@ -13,6 +13,22 @@ if not exist ".venv" (
     exit /b 1
 )
 
+:: --- Génération de src\_version.py ---
+:: En CI, LULLMAIL_VERSION est injecté par le workflow.
+:: En local, on essaie de dériver la version du dernier tag git.
+if defined LULLMAIL_VERSION (
+    set _VER=%LULLMAIL_VERSION%
+) else (
+    set _VER=
+    for /f "tokens=*" %%i in ('git describe --tags --abbrev^=0 2^>nul') do set _GIT_TAG=%%i
+    if defined _GIT_TAG (
+        set _VER=%_GIT_TAG:v=%
+    )
+    if not defined _VER set _VER=0.0.0-dev
+)
+echo __version__ = "%_VER%" > src\_version.py
+echo [version] %_VER% bake dans src\_version.py
+
 echo [1/3] Mise a jour des dependances GUI / build...
 .venv\Scripts\pip install -r requirements.txt -q
 .venv\Scripts\pip install pyinstaller==6.11.1 -q

@@ -67,6 +67,7 @@ jobs:
         shell: cmd
         env:
           LULLMAIL_NOINTERACT: '1'
+          LULLMAIL_VERSION: ${{ steps.ver.outputs.version }}
         run: call scripts\build.bat
 
       - name: Verify build output

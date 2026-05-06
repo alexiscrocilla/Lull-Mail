@@ -176,3 +176,57 @@ document.addEventListener('keydown', (e) => {
 if (!location.hash) location.hash = '#/inbox';
 render();
 refreshIcons();
+
+// ── Auto-update banner ─────────────────────────────────────
+async function checkForUpdate() {
+  // Skip if the user already dismissed the banner for this version in this session.
+  let dismissedVersion = null;
+  try { dismissedVersion = sessionStorage.getItem('update-banner-dismissed'); } catch (_) {}
+
+  let info;
+  try {
+    const r = await fetch('/api/update/check');
+    if (!r.ok) return;
+    info = await r.json();
+  } catch (_) {
+    return;
+  }
+
+  if (!info.available) return;
+  if (dismissedVersion === info.latest_version) return;
+
+  // Build the banner element.
+  const banner = document.createElement('div');
+  banner.id = 'update-banner';
+  banner.setAttribute('role', 'status');
+  banner.innerHTML = `
+    <span>Lull Mail <strong>${info.latest_version}</strong> est disponible&nbsp;—&nbsp;votre version&nbsp;: ${info.current_version}</span>
+    <button id="update-banner-install" title="Télécharger et installer la mise à jour">
+      Installer
+    </button>
+    <button id="update-banner-dismiss" aria-label="Fermer">✕</button>
+  `;
+  document.body.prepend(banner);
+
+  document.getElementById('update-banner-install').addEventListener('click', async () => {
+    const btn = document.getElementById('update-banner-install');
+    btn.disabled = true;
+    btn.textContent = 'Téléchargement…';
+    try {
+      await fetch('/api/update/install', { method: 'POST' });
+      btn.textContent = 'Installation en cours…';
+      window.toast('Mise à jour en cours — l\'app va se fermer.', 5000);
+    } catch (_) {
+      btn.disabled = false;
+      btn.textContent = 'Installer';
+      window.toast('Erreur lors du lancement de la mise à jour.');
+    }
+  });
+
+  document.getElementById('update-banner-dismiss').addEventListener('click', () => {
+    banner.classList.add('hidden');
+    try { sessionStorage.setItem('update-banner-dismissed', info.latest_version); } catch (_) {}
+  });
+}
+
+checkForUpdate();

@@ -13,6 +13,9 @@ __pycache__/
 .venv/
 venv/
 
+# ── Généré au build (version baking) ──
+src/_version.py
+
 # ── PyInstaller build artefacts ──
 build/
 dist/
