@@ -32,7 +32,7 @@ export async function mountDashboard(host, opts) {
         </section>
 
         <!-- 3. Categories donut -->
-        <section class="card col-5">
+        <section class="card col-4">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
               <i data-lucide="pie-chart" class="w-4 h-4"></i>Distribution par catégorie
@@ -56,7 +56,7 @@ export async function mountDashboard(host, opts) {
         </section>
 
         <!-- 5. Actionable -->
-        <section class="card col-5">
+        <section class="card col-6">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
               <i data-lucide="zap" class="w-4 h-4"></i>À traiter maintenant

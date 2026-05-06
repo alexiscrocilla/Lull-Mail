@@ -1371,7 +1371,7 @@ a.lnk-warn {
    ───────────────────────────────────────────────────────── */
 #view {
   height: 100vh;
-  overflow-y: hidden;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
 }
@@ -1418,15 +1418,15 @@ a.lnk-warn {
 .dash-grid {
   display: grid;
   grid-template-columns: repeat(12, 1fr);
-  /* Rows are auto-sized to their content. We used to force a 4-row
-     template ending in `1fr` to make the old log-feed card stretch to
-     the bottom — that card is gone, and the residual `1fr` left a tall
-     empty row at the bottom of pages with fewer rows (Réglages). */
+  /* Default: rows sized to content, stacked at top.
+     On large screens (>= 1200px) we switch to explicit 4-row template
+     that fills the available height — see the media query below. */
   grid-auto-rows: min-content;
   gap: 12px;
   align-content: start;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 /* Settings variant: the first card (Boîtes mail list) grows to fill the
    remaining vertical space, so users with many mailboxes don't lose
@@ -1475,21 +1475,99 @@ a.lnk-warn {
 .col-3  { grid-column: span 3; }
 .col-2  { grid-column: span 2; }
 @media (max-width: 1280px) {
-  .dash { padding: 20px 20px 36px; }
+  .dash { padding: 16px 20px 12px; }
+}
+
+/* ── No-scroll fill layout for desktop (>= 1200px wide) ──
+   The dashboard has exactly 4 rows:
+     Row 1  : col-12  accounts strip           (auto height)
+     Row 2  : col-5 + col-2 + col-5            (1fr)
+     Row 3  : col-6 + col-6                    (1fr)
+     Row 4  : col-7 + col-5                    (1fr)
+   Cards are constrained to their row height; overflow is hidden
+   and internal scroll zones handle any extra content.            */
+@media (min-width: 1200px) {
+  #view { overflow-y: hidden; }
+
+  /* ── Dashboard only (NOT settings/dash-grid--fill) ── */
+  .dash-grid:not(.dash-grid--fill) {
+    grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+    grid-auto-rows: 0;
+    align-content: stretch;
+  }
+
+  /* Cards must not push past the row boundary — dashboard only */
+  .dash-grid:not(.dash-grid--fill) .card {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* Internal scrollable zones: stretch instead of fixed max-height */
+  .acc-bars  { max-height: none; flex: 1; }
+  .todo-list { max-height: none; flex: 1; }
+
+  /* Spark chart: fill remaining vertical space in the AI-queue card */
+  .spark-wrap {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .spark { flex: 1; min-height: 0; height: auto; }
+
+  /* Donut: already uses flex-direction:row in base — just lift height cap */
+  .donut { max-height: none; }
+}
+
+/* ── Medium width: re-stack columns, keep the same grid-auto sizing ── */
+@media (max-width: 1199px) and (min-width: 1100px) {
+  /* At this range the 4-row pattern still holds if we keep col-2 narrow */
+  .col-5 { grid-column: span 5; } /* keep original */
+  .col-2 { grid-column: span 2; } /* keep original */
 }
 @media (max-width: 1100px) {
   .col-3, .col-4 { grid-column: span 6; }
-  .col-8 { grid-column: span 12; }
-  .col-5 { grid-column: span 6; }
-  .col-2 { grid-column: span 12; }
+  .col-8  { grid-column: span 12; }
+  .col-5  { grid-column: span 6; }
+  .col-7  { grid-column: span 12; }
+  /* col-2 gets a bit of breathing room but stays in its row */
+  .col-2  { grid-column: span 4; }
 }
 @media (max-width: 860px) {
   .dash { padding: 16px 14px 28px; }
-  .dash-grid { gap: 12px; }
+  .dash-grid { gap: 10px; }
 }
 @media (max-width: 720px) {
-  .col-2, .col-3, .col-4, .col-5, .col-6, .col-8 { grid-column: span 12; }
-  .dash { padding: 12px 10px 24px; }
+  .col-2, .col-3, .col-4, .col-5, .col-6, .col-7, .col-8 { grid-column: span 12; }
+  .dash { padding: 12px 10px 20px; }
+}
+
+/* ── Height-based compact mode (desktop only, >= 1200px wide) ───────────────
+   Reduces padding / font sizes on short screens so the 4-row layout still
+   fits without clipping. Scoped to wide screens so it never affects the
+   small-screen scrollable layout.                                          */
+@media (min-width: 1200px) and (max-height: 780px) {
+  .dash { padding: 10px 20px 8px; }
+  .dash-head { margin-bottom: 8px; }
+  .dash-head h1 { font-size: 20px; }
+  .card { padding: 12px 14px; }
+  .card h3 { margin-bottom: 8px; font-size: 13px; }
+  .dash-grid { gap: 8px; }
+  .kpi .num { font-size: 28px; }
+  .acc-strip { padding-bottom: 2px; }
+
+  /* Unsub card: hide the sender list, keep only stats + CTA */
+  .ux-list { display: none; }
+}
+@media (min-width: 1200px) and (max-height: 650px) {
+  .dash { padding: 8px 16px 6px; }
+  .dash-grid { gap: 6px; }
+  .card { padding: 8px 12px; border-radius: 10px; }
+  .card h3 { margin-bottom: 6px; font-size: 12px; }
+  .dash-head h1 { font-size: 18px; }
+  .kpi .num { font-size: 22px; }
+  .kpi .lbl { font-size: 11px; }
 }
 
 .kpi {
@@ -1594,11 +1672,35 @@ a.lnk-warn {
   box-shadow: 0 2px 8px var(--shadow-sm);
 }
 
-/* Donut */
-.donut { width: 100%; height: auto; max-height: 200px; display: block; }
-.donut-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; }
-.donut { width: 100%; max-height: 180px; }
-.donut-legend { width: 100%; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 12px; font-size: 12.5px; text-align: center; vertical-align: middle; }
+/* Donut — horizontal layout: SVG left, legend right */
+.donut-wrap {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.donut {
+  display: block;
+  aspect-ratio: 1;
+  height: 100%;
+  max-height: 150px;
+  min-width: 70px;
+  width: auto;
+  flex-shrink: 0;
+}
+.donut-legend {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px 10px;
+  align-content: start;
+  font-size: 12.5px;
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
 .donut-legend .row { display: flex; align-items: center; gap: 6px; color: var(--muted); min-width: 0; }
 .pip-num { font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 20px; }
 
@@ -4591,18 +4693,20 @@ kbd {
   overflow: hidden;  /* keep KPI+list+CTA within the row's 1fr height */
 }
 .ux-stats {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .ux-num-block {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
-  padding: 12px 14px;
+  flex: 1;
+  padding: 8px 10px;
   background: var(--accent-soft);
-  border-radius: 10px;
+  border-radius: 8px;
   border: 1px solid transparent;
 }
 .ux-num-block.subtle {
@@ -4610,7 +4714,7 @@ kbd {
   border-color: var(--border);
 }
 .ux-num {
-  font-size: 28px;
+  font-size: 20px;
   font-weight: 800;
   color: var(--accent-ink);
   line-height: 1;
@@ -4618,7 +4722,7 @@ kbd {
 }
 .ux-num-block.subtle .ux-num { color: var(--text); }
 .ux-lbl {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
