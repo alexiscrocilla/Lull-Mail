@@ -80,12 +80,17 @@ result as a draft release. Procedure:
 
 ```cmd
 :: 1. Bump the version in scripts\installer.iss (#define MyAppVersion).
-:: 2. Commit, push.
-:: 3. Tag.
+:: 2. Merge the work into main and push.
+git checkout main
+git merge develop
+git push origin main
+:: 3. Tag and push the tag (this triggers the workflow).
 git tag v0.4.0
-git push --tags
+git push origin v0.4.0
 :: 4. The workflow runs ~10 min on a Windows runner. A draft release
 ::    appears in the Releases tab with the exe attached. Verify, publish.
+:: 5. Back to the develop branch.
+git checkout develop
 ```
 
 ## Repo structure
