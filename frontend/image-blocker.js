@@ -72,10 +72,43 @@ export function rewriteRemoteImages(html) {
   let blocked = 0;
 
   // <img src="https://…">
+  // Three size buckets so the placeholder isn't visually disruptive:
+  //   • Tracking pixel (any dim ≤ 4)  → mark + CSS hides entirely.
+  //     1×1 GIFs and "spacer" images are 99% of these.
+  //   • Hero / banner (width ≥ 300 or height ≥ 200) → cap to 200×80
+  //     so a single email with a giant 600×400 banner doesn't fill
+  //     the whole reading pane with empty grey.
+  //   • Everything else → keep declared dimensions. Brand logos
+  //     (typically 32-150 px) stay at their natural slot, so the
+  //     surrounding layout doesn't shift.
   doc.querySelectorAll('img[src]').forEach((img) => {
     const src = img.getAttribute('src') || '';
     if (!isRemoteUrl(src)) return;
     img.setAttribute('data-blocked-src', src);
+
+    const wNum = parseInt(img.getAttribute('width') || '0', 10);
+    const hNum = parseInt(img.getAttribute('height') || '0', 10);
+
+    if ((wNum > 0 && wNum <= 4) || (hNum > 0 && hNum <= 4)) {
+      // Tracking pixel — hide. The CSS rule on data-blocked-tracker
+      // does the work, but we set inline style too as a belt-and-
+      // braces because some email-side CSS overrides display.
+      img.setAttribute('data-blocked-tracker', '1');
+      img.setAttribute('style',
+        (img.getAttribute('style') || '') + ';display:none!important;'
+      );
+    } else if (wNum >= 300 || hNum >= 200) {
+      // Hero — cap to a banner-sized box that's still recognisable
+      // as a placeholder but doesn't dominate the reading pane.
+      img.setAttribute('width', '200');
+      img.setAttribute('height', '80');
+      img.setAttribute('style',
+        (img.getAttribute('style') || '')
+        + ';width:200px!important;height:80px!important;max-width:200px!important;'
+      );
+    }
+    // else: small / medium image → keep original dimensions.
+
     img.setAttribute('src', TRANSPARENT_PIXEL);
     // `srcset` would also be fetched by the browser even when src is
     // a data URL — strip it.

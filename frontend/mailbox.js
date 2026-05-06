@@ -16,11 +16,63 @@ import { rewriteRemoteImages, senderDomain } from '/static/image-blocker.js';
 // `forceShowImages` skips the blocker just for this render — used by the
 // "Charger pour ce mail" button without touching the DB.
 function buildHtmlBodyBlock(em, forceShowImages = false) {
+  // The image-blocker styles render any <img data-blocked-src=…> as a
+  // soft grey rectangle with a tiny "image" icon in the centre. The
+  // image keeps whatever dimensions the email designer set (so a
+  // 600×400 banner still occupies its slot — no layout collapse), but
+  // the empty space is now obviously a placeholder, not a render bug.
+  // Same treatment for [data-blocked-style] so background-image slots
+  // get a faint grey wash instead of an invisible nothing.
+  //
+  // Inline SVG as a data URI keeps the iframe self-contained (no
+  // extra HTTP requests, defeats the purpose of blocking otherwise).
+  // IMPORTANT: keep the SVG source with literal '#' for colour values —
+  // encodeURIComponent turns '#' into '%23' which is what CSS data URIs
+  // expect. Pre-encoding (%23666) would be doubly encoded by encode-
+  // URIComponent (%2523666) and the browser would render an invalid
+  // colour, leaving the placeholder transparent.
+  const PLACEHOLDER_ICON = "data:image/svg+xml;utf8,"
+    + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" '
+      + 'viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="1.5" '
+      + 'stroke-linecap="round" stroke-linejoin="round">'
+      + '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>'
+      + '<circle cx="9" cy="9" r="2"/>'
+      + '<path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>'
+      + '</svg>'
+    );
   const INJECT = `<style>
     html,body{margin:0;padding:8px;overflow-x:hidden!important;box-sizing:border-box;word-break:break-word;}
     img,video{max-width:100%!important;height:auto!important;}
     table{max-width:100%!important;table-layout:fixed!important;}
     td,th{word-break:break-word;}
+    /* Image-blocker placeholder. The JS has already classified each
+       image into one of three buckets (tracker / hero / normal) and
+       set the right dimensions; the CSS just paints the visual.
+       Tracking pixels are hidden outright. The chosen #cbd5e1 /
+       #6b7280 pair reads as a dim grey on white email bodies AND as
+       a brighter grey on the rare dark bodies, so it stays visible
+       either way (we deliberately do not honour the system
+       prefers-color-scheme — most emails are white regardless). */
+    img[data-blocked-tracker]{ display: none !important; }
+    img[data-blocked-src]:not([data-blocked-tracker]){
+      background-color: #cbd5e1 !important;
+      background-image: url("${PLACEHOLDER_ICON}") !important;
+      background-repeat: no-repeat !important;
+      background-position: center !important;
+      background-size: 24px 24px !important;
+      border: 1px dashed #6b7280 !important;
+      border-radius: 4px !important;
+      /* Some emails set object-fit/object-position on imgs which
+         hides the background — neutralise. */
+      object-fit: fill !important;
+    }
+    [data-blocked-style]{
+      background-color: #cbd5e1 !important;
+      background-image: none !important;
+      border: 1px dashed #6b7280 !important;
+      border-radius: 4px !important;
+    }
   </style>`;
 
   // 1. Anti-phishing link rewriting (Lot A).
@@ -103,7 +155,19 @@ function attachImageBlockerHandlers(em) {
     const domain = banner.dataset.senderDomain || '';
     if (!domain) return;
     try {
-      await api('POST', `/api/senders/${encodeURIComponent(domain)}/images-trusted`, { trusted: true });
+      // The shared `api` import is an object of pre-built methods, not
+      // a generic POST helper — call /api/senders/.../images-trusted
+      // directly via fetch. Mirrors the pattern used elsewhere when no
+      // dedicated method exists yet.
+      const r = await fetch(
+        `/api/senders/${encodeURIComponent(domain)}/images-trusted`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ trusted: true }),
+        },
+      );
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
       em.sender_images_trusted = true;
       reRender(false);  // forceShow=false but trusted=true → blocker skipped
       window.toast?.(`Images activées pour ${domain}`, 2500);
