@@ -1,0 +1,71 @@
+name: 🐛 Bug
+description: "Quelque chose ne marche pas comme prévu."
+title: "[Bug] "
+labels: ["bug"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Merci de signaler ce bug ! Plus le rapport est précis, plus le
+        fix arrive vite. Vérifiez d'abord que le bug n'est pas déjà
+        listé dans les [issues ouvertes](../issues).
+
+  - type: input
+    id: version
+    attributes:
+      label: Version de Lull Mail
+      description: "Visible dans Réglages → À propos, ou dans le nom de l'installeur (`LullMail-Setup-X.Y.Z.exe`)."
+      placeholder: "0.3.0"
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Version de Windows
+      placeholder: "Windows 11 23H2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: Ce qui se passe
+      description: "Décrivez le bug en quelques phrases. Captures d'écran bienvenues."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ce à quoi vous vous attendiez
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Étapes pour reproduire
+      placeholder: |
+        1. Aller dans Réglages → …
+        2. Cliquer sur …
+        3. Voir l'erreur
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Extrait du journal
+      description: |
+        Le fichier `%APPDATA%\LullMail\data\lull_mail.log` contient les
+        erreurs récentes. Collez les 50 dernières lignes (ou la stack trace
+        si vous en voyez une). **Caviardez vos adresses mail.**
+      render: shell
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Autre contexte
+      description: "Compte mail concerné (Gmail/Outlook/…), réseau particulier, antivirus exotique, etc."

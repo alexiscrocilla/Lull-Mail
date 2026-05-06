@@ -1,0 +1,58 @@
+@echo off
+setlocal
+:: Run from project root regardless of where it's invoked from.
+cd /d "%~dp0.."
+
+echo.
+echo === Lull Mail - Build de l'installeur Inno Setup ===
+echo.
+
+:: ─── 1. Refresh the PyInstaller bundle ───────────────────────────────────
+echo [1/3] Compilation de l'application (scripts\build.bat)...
+:: Skip the explorer-pop / pause at the end of build.bat so this chain
+:: runs without manual intervention.
+set LULLMAIL_NOINTERACT=1
+call scripts\build.bat
+set LULLMAIL_NOINTERACT=
+if errorlevel 1 (
+    echo [ERREUR] build.bat a echoue. L'installeur ne peut pas etre cree.
+    exit /b 1
+)
+
+if not exist "dist\LullMail\LullMail.exe" (
+    echo [ERREUR] dist\LullMail\LullMail.exe introuvable apres le build.
+    exit /b 1
+)
+
+:: ─── 2. Locate Inno Setup ────────────────────────────────────────────────
+echo.
+echo [2/3] Recherche d'Inno Setup...
+set "ISCC="
+if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe"      set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+if "%ISCC%"=="" (
+    echo [ERREUR] Inno Setup 6 introuvable.
+    echo Installez-le depuis https://jrsoftware.org/isdl.php puis relancez.
+    exit /b 1
+)
+echo [OK] %ISCC%
+
+:: ─── 3. Compile the installer ────────────────────────────────────────────
+echo.
+echo [3/3] Compilation de l'installeur (peut prendre 1-2 min - compression LZMA2 ultra)...
+"%ISCC%" /Qp "scripts\installer.iss"
+if errorlevel 1 (
+    echo [ERREUR] Inno Setup a renvoye un code non nul.
+    exit /b 1
+)
+
+echo.
+echo === Installeur cree ! ===
+echo.
+echo Cherchez le fichier dans : dist\LullMail-Setup-*.exe
+echo.
+
+:: Ouvre l'explorateur sur le dossier dist pour eviter la chasse au tresor.
+start "" explorer "%CD%\dist"
+
+endlocal

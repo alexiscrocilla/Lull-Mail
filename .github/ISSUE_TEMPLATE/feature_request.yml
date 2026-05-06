@@ -1,0 +1,32 @@
+name: ✨ Idée / suggestion
+description: "Une fonctionnalité que vous aimeriez voir, ou une amélioration de l'existant."
+title: "[Idée] "
+labels: ["enhancement"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Merci pour la suggestion. Une bonne idée d'amélioration part
+        d'un problème concret — décrivez d'abord ce que vous essayez
+        de faire avant la solution que vous proposez.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Quel problème ça résout ?
+      description: "Le frottement, la situation, la friction que vous rencontrez aujourd'hui."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Ce que vous proposez
+      description: "Pas obligatoire — si vous savez déjà comment ça pourrait marcher, expliquez. Sinon décrivez juste le résultat espéré."
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Solutions de contournement actuelles
+      description: "Comment vous gérez ça aujourd'hui (avec ou sans Lull Mail) ?"

@@ -1,0 +1,8 @@
+# Disable the default "blank issue" link so contributors land on one
+# of the structured templates below instead of staring at an empty box.
+blank_issues_enabled: false
+
+contact_links:
+  - name: ❓ Question d'utilisation
+    url: https://github.com/Alexis-Crocilla/lull-mail/discussions
+    about: "Pour les questions générales (configuration, comment faire X) — ouvrez plutôt une Discussion."

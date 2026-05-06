@@ -1,0 +1,128 @@
+name: Release
+
+# Tag the repo with vX.Y.Z to trigger a build. The workflow produces
+# dist\LullMail-Setup-X.Y.Z.exe and uploads it as a *draft* release on
+# GitHub — review the artefact, then click "Publish release" manually
+# so a botched build never goes live by accident.
+#
+# workflow_dispatch is also wired so you can fire a build by hand from
+# the Actions tab without having to push a tag.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (without leading 'v', e.g. 0.4.0). Required when running manually."
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      # Needed by softprops/action-gh-release to create the draft release.
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ───────────────────────────────────────────────────────────────
+      # Resolve the version we'll bake into the installer + filename.
+      # On tag push: strip the leading "v" from refs/tags/vX.Y.Z.
+      # On manual run: use the input the user typed.
+      # ───────────────────────────────────────────────────────────────
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building Lull Mail $VERSION"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Create venv & install deps
+        shell: cmd
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python -m pip install --upgrade pip
+          .venv\Scripts\pip install -r requirements.txt
+          .venv\Scripts\pip install pyinstaller==6.11.1
+
+      # build.bat normally pops Explorer + pauses at the end; this env
+      # var short-circuits that so the workflow can keep running.
+      - name: Build app (PyInstaller)
+        shell: cmd
+        env:
+          LULLMAIL_NOINTERACT: '1'
+        run: call scripts\build.bat
+
+      - name: Verify build output
+        shell: cmd
+        run: |
+          if not exist "dist\LullMail\LullMail.exe" (
+            echo [ERROR] dist\LullMail\LullMail.exe missing.
+            exit /b 1
+          )
+
+      # Inno Setup is pre-installed on windows-latest runners; if that
+      # ever changes, swap to: choco install innosetup -y --no-progress
+      - name: Locate Inno Setup
+        id: iscc
+        shell: cmd
+        run: |
+          set "ISCC="
+          if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+          if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe"      set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+          if "%ISCC%"=="" (
+            echo Inno Setup not found, installing via Chocolatey...
+            choco install innosetup -y --no-progress
+            set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+          )
+          echo ISCC=%ISCC%>> %GITHUB_ENV%
+
+      # /D overrides the #define inside the .iss so the version stays
+      # in lock-step with the git tag. The OutputBaseFilename derives
+      # from MyAppVersion automatically.
+      - name: Compile installer
+        shell: cmd
+        run: |
+          "%ISCC%" /Qp /DMyAppVersion=${{ steps.ver.outputs.version }} scripts\installer.iss
+
+      - name: Verify installer output
+        shell: cmd
+        run: |
+          if not exist "dist\LullMail-Setup-${{ steps.ver.outputs.version }}.exe" (
+            echo [ERROR] Installer not produced.
+            dir dist\
+            exit /b 1
+          )
+
+      - name: Upload installer as workflow artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LullMail-Setup-${{ steps.ver.outputs.version }}
+          path: dist/LullMail-Setup-${{ steps.ver.outputs.version }}.exe
+          retention-days: 30
+
+      - name: Create draft GitHub release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Lull Mail ${{ steps.ver.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          generate_release_notes: true
+          files: dist/LullMail-Setup-${{ steps.ver.outputs.version }}.exe
