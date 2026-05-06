@@ -366,6 +366,17 @@ def list_accounts() -> List[Dict[str, Any]]:
     return [_mask_account(a) for a in (data.get("accounts") or [])]
 
 
+def _enforce_tls_safety(payload: AccountPayload) -> None:
+    """Refuse to persist `verify_ssl=False` on a remote host.
+    Returns 400 with a clear message; ProtonMail Bridge on 127.0.0.1
+    remains accepted (its preset uses `verify_ssl: false`)."""
+    from src.security.tls import assert_verify_ssl_allowed, UnsafeTLSError
+    try:
+        assert_verify_ssl_allowed(payload.imap_host, payload.verify_ssl)
+    except UnsafeTLSError as e:
+        raise HTTPException(400, str(e))
+
+
 @router.post("/accounts")
 def add_account(payload: AccountPayload) -> Dict[str, Any]:
     data = _load_or_default()
@@ -374,6 +385,7 @@ def add_account(payload: AccountPayload) -> Dict[str, Any]:
         raise HTTPException(409, f"Un compte avec l'adresse {payload.email} existe déjà.")
     if payload.password == MASK or not payload.password:
         raise HTTPException(400, "Mot de passe requis pour créer un compte.")
+    _enforce_tls_safety(payload)
     accounts.append(payload.model_dump())
     data["accounts"] = accounts
     _persist(data)
@@ -390,6 +402,7 @@ def update_account(email: str, payload: AccountPayload) -> Dict[str, Any]:
             new["password"] = _unmask_password(new["password"], a.get("password", ""))
             if not new["password"]:
                 raise HTTPException(400, "Mot de passe vide.")
+            _enforce_tls_safety(payload)
             accounts[i] = new
             data["accounts"] = accounts
             _persist(data)
@@ -429,6 +442,8 @@ def test_account(payload: AccountPayload) -> Dict[str, Any]:
                 break
     if not pwd:
         raise HTTPException(400, "Mot de passe manquant pour le test.")
+
+    _enforce_tls_safety(payload)
 
     try:
         if payload.ssl:

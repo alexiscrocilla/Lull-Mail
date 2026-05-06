@@ -180,6 +180,10 @@ def main() -> int:
     port = int(forced) if forced and forced.isdigit() else _pick_ephemeral_port()
     url = f"http://127.0.0.1:{port}"
 
+    # Publish the bound port so the origin-check middleware can build
+    # its allowlist (see src/security/origin.py).
+    fastapi_app.state.bound_port = port
+
     server = _ServerThread(host=host, port=port)
     server.start()
 

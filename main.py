@@ -51,6 +51,10 @@ def main():
     host = "127.0.0.1"
     port = int(os.environ.get("LULLMAIL_PORT", "8000"))
 
+    # Publish the bound port so the origin-check middleware can build
+    # its allowlist (see src/security/origin.py).
+    app.state.bound_port = port
+
     logger.info(f"Dashboard : http://localhost:{port}")
     uvicorn.run(app, host=host, port=port, log_level="warning")
 

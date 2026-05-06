@@ -26,6 +26,14 @@ app = FastAPI(title="Lull Mail", docs_url=None, redoc_url=None)
 # frontend rewrites to when an email link is detected as a homograph spoof.
 app.include_router(_safe_link_router)
 
+# Origin-check CSRF guard. Mutating requests (POST/PATCH/DELETE/PUT) must
+# carry an Origin header pointing at our own loopback host. The bound port
+# is published by the entry points (main.py / app_gui.py) via
+# app.state.bound_port — when absent, the middleware accepts any loopback
+# origin (lenient fallback so dev tools on ephemeral ports keep working).
+from src.security.origin import OriginCheckMiddleware  # noqa: E402
+app.add_middleware(OriginCheckMiddleware)
+
 
 def _frontend_dir() -> Path:
     # When frozen by PyInstaller, static assets live in the temp _MEIPASS dir.

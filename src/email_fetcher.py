@@ -348,6 +348,13 @@ def _make_connection(account: Dict) -> imaplib.IMAP4:
     starttls = account.get("starttls", False)
     verify = account.get("verify_ssl", True)
 
+    # Defence-in-depth: refuse to open the socket if a stale or manually-
+    # edited config.yaml combined verify_ssl=False with a remote host.
+    # The wizard already rejects this at save-time but a config edited
+    # by hand could slip past — fail closed here too.
+    from src.security.tls import assert_verify_ssl_allowed
+    assert_verify_ssl_allowed(host, verify)
+
     ctx = ssl.create_default_context()
     if not verify:
         ctx.check_hostname = False
@@ -642,32 +649,31 @@ def batch_scan_attachments(
 
 def unsubscribe_http(url: str, timeout_s: float = 5.0) -> Tuple[bool, int, str]:
     """Fire the RFC 8058 one-click POST. Returns (ok, status_code, error).
-    Both 2xx and 3xx are treated as success — many providers redirect to a
-    "you've unsubscribed" page after the POST."""
+
+    The URL is attacker-controlled (it comes from the email headers),
+    so we route through `safe_post` which:
+      • refuses any non-http(s) scheme,
+      • rejects hosts that resolve to private / loopback / link-local /
+        multicast IPs (an attacker-controlled List-Unsubscribe URL
+        targeting `192.168.1.1` or `127.0.0.1:<port>` would otherwise
+        let us probe the user's home network or own private API),
+      • follows up to 5 redirects manually, validating each Location
+        the same way (auto-redirect would skip the check on hops),
+      • treats 2xx/3xx final status as success — many providers
+        redirect to a "you've unsubscribed" page after the POST.
+    """
     if not url:
         return (False, 0, "empty url")
-    try:
-        import requests
-    except ImportError:
-        return (False, 0, "requests library not available")
-    try:
-        resp = requests.post(
-            url,
-            data={"List-Unsubscribe": "One-Click"},
-            headers={
-                "User-Agent": "LullMail/1.0 (+https://github.com/alexiscrocilla/Lull-Mail)",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            timeout=timeout_s,
-            allow_redirects=True,
-        )
-        ok = 200 <= resp.status_code < 400
-        err = "" if ok else f"HTTP {resp.status_code}"
-        return (ok, resp.status_code, err)
-    except requests.Timeout:
-        return (False, 0, "timeout")
-    except requests.RequestException as e:
-        return (False, 0, str(e))
+    from src.security.url_safety import safe_post
+    return safe_post(
+        url,
+        data={"List-Unsubscribe": "One-Click"},
+        headers={
+            "User-Agent": "LullMail/1.0 (+https://github.com/alexiscrocilla/Lull-Mail)",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        timeout=timeout_s,
+    )
 
 
 def batch_mark_seen(account: Dict, uids: List[str], on_each=None) -> List[bool]:
