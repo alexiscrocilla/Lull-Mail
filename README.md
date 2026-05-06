@@ -121,6 +121,9 @@ your machine, stays on your machine.**
   No link to your identity.
 - **Your provider's IMAP** — to fetch your email. Direct, no
   middleman.
+- **GitHub Releases API** — once every 6 h to check for a newer
+  Lull Mail version. The check sends nothing about you, just a
+  GET on the public releases feed.
 
 **Erase everything**: *Settings → Storage → Delete my data* wipes
 config + SQLite + attachments + keyring entries in one click.

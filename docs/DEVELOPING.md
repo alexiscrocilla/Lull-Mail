@@ -26,6 +26,26 @@ Guide to clone, run in dev mode, build the exe and the installer.
 `scripts/`. It's the single entry point at the root — same role as
 a `Makefile` or `npm run` in other ecosystems.
 
+## Running the test suite
+
+```cmd
+.venv\Scripts\pip install -r requirements-dev.txt
+.venv\Scripts\python -m pytest -q
+```
+
+The test suite (~56 tests, ~3.5 s on a recent laptop) covers the
+security guards (origin-check middleware, SSRF block, TLS lock,
+sandbox iframe), the anti-phishing analyser (`src/safe_link.py`),
+the OS-keyring round-trip, the attachment-security helpers, the
+SPF/DKIM/DMARC parser, and the Pydantic config schema. Tests use a
+per-test tempdir + an in-memory keyring backend so they never touch
+your real `%APPDATA%\LullMail\` or your Credential Manager.
+
+CI runs the same `pytest -q` on every push to `develop` / `main`
+and on every PR via [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
+A red CI doesn't block the release workflow today, but the assertion
+is loud enough to catch in review.
+
 ## First run
 
 ```cmd
@@ -101,6 +121,8 @@ lull_mail.spec        ← PyInstaller spec
 app_gui.py            ← native app entry point (PyInstaller)
 main.py               ← console / dev entry point
 requirements.txt
+requirements-dev.txt  ← test-only deps (pytest, httpx, keyrings.alt)
+pytest.ini
 README.md
 
 assets/
@@ -112,21 +134,46 @@ frontend/             ← UI served by FastAPI
   onboarding.html / onboarding.js
   i18n.js             ← FR/EN translation module
   api.js / style.css
+  image-blocker.js    ← strips remote <img>/<source>/CSS url(…) before
+                        the email body lands in the iframe
   assets/             ← logos / icons used in the UI
 
 src/                  ← Python code
-  api.py              ← FastAPI: dashboard routes
+  api.py              ← FastAPI: dashboard routes + middlewares
   setup_api.py        ← FastAPI: onboarding & settings routes
   paths.py            ← path resolution (dev vs frozen) + migrations
-  config.py           ← config.yaml I/O + validation
-  database.py         ← SQLite (emails, sync_state)
-  email_fetcher.py    ← IMAP polling
+  config.py           ← config.yaml I/O + Pydantic validation
+                        + keyring sentinel resolution
+  database.py         ← SQLite (emails, sync_state, attachments,
+                        sender_cache, custom_rules, kv)
+  email_fetcher.py    ← IMAP polling + auth-results extraction
   ai_processor.py     ← OpenAI call + structured parsing
   local_classifier.py ← fast heuristics (before LLM)
   attachment_security.py
+  auth_results.py     ← SPF/DKIM/DMARC verdict parser
+  safe_link.py        ← anti-phishing interstitial (`/safe-link?url=…`)
+  brands.py           ← curated brand list for typosquat / subdomain-spoof
+  secrets_store.py    ← OS-keyring wrapper (Credential Manager / Keychain
+                        / Secret Service) — IMAP passwords + OpenAI key
+  secrets_migration.py← one-shot move of clear-text secrets into the keyring
   scheduler.py        ← apscheduler — periodic jobs
   notifier.py         ← ntfy push
   lifecycle.py        ← start/stop services
+  updater.py          ← GitHub Releases poller + one-click install
+  security/           ← cross-cutting hardening helpers
+    tls.py            ← refuse verify_ssl=False on non-loopback hosts
+    url_safety.py     ← SSRF block on outbound HTTP (private IPs etc.)
+    origin.py         ← FastAPI middleware: cross-origin POST → 403
+    rate_limit.py     ← shared slowapi `Limiter` instance
+
+tests/                ← pytest suite (run via `python -m pytest -q`)
+  conftest.py         ← per-test tempdir + in-memory keyring fixtures
+  test_security.py
+  test_safe_link.py
+  test_secrets_store.py
+  test_attachment_security.py
+  test_auth_results.py
+  test_config_validation.py
 
 scripts/              ← dev scripts (never run directly, go through dev.bat)
   install.bat         ← venv + dependencies
@@ -138,8 +185,13 @@ scripts/              ← dev scripts (never run directly, go through dev.bat)
   open_when_ready.ps1 ← waits for the port before opening the browser
 
 docs/
-  MARKETING.md        ← positioning, pitch, manifesto
-  DEVELOPING.md       ← this file
+  MARKETING.md         ← positioning, pitch, manifesto
+  DEVELOPING.md        ← this file
+  SECURITY-ROADMAP.md  ← long-term security work that's still on the table
+
+.github/workflows/
+  ci.yml               ← pytest on every push / PR
+  release.yml          ← .exe + installer build on tag, draft release
 ```
 
 ## Environment variables
@@ -154,29 +206,37 @@ docs/
 ## Architecture in 30 seconds
 
 ```
-        ┌───────────────────────────────┐
-        │   LullMail.exe (pywebview)    │
-        │   ┌─────────────────────┐     │
+        ┌───────────────────────────────────┐
+        │   LullMail.exe (pywebview)        │
+        │   ┌─────────────────────┐         │
         │   │ Edge WebView2       │ ←── frontend/* (HTML/JS)
-        │   └────────┬────────────┘     │
-        │            │ HTTP loopback    │
-        │   ┌────────▼────────────┐     │
-        │   │ FastAPI (uvicorn)   │     │
-        │   └──────┬──────────────┘     │
-        │          │                    │
-        │   ┌──────▼──────┐  ┌────────┐ │
-        │   │ APScheduler │  │ SQLite │ │
-        │   └──────┬──────┘  └────────┘ │
-        │          │                    │
-        │   ┌──────▼──────┐             │
+        │   └────────┬────────────┘         │
+        │            │ HTTP loopback        │
+        │            │ + Origin-check       │
+        │            │ + rate-limit         │
+        │   ┌────────▼────────────┐         │
+        │   │ FastAPI (uvicorn)   │         │
+        │   └──────┬──────────────┘         │
+        │          │                        │
+        │   ┌──────▼──────┐  ┌────────────┐ │
+        │   │ APScheduler │  │ SQLite     │ │
+        │   └──────┬──────┘  └────────────┘ │
+        │          │         ┌────────────┐ │
+        │          │         │ OS keyring │ ←── IMAP pwd + OpenAI key
+        │          │         └────────────┘ │
+        │   ┌──────▼──────┐                 │
         │   │ IMAP poll   │ ───── OpenAI (summaries)
-        │   │  + ntfy push│ ───── ntfy.sh (notifications)
-        │   └─────────────┘             │
-        └───────────────────────────────┘
+        │   │  + ntfy push│ ───── ntfy.sh  (notifications)
+        │   └─────────────┘ ───── GitHub   (updater check)
+        └───────────────────────────────────┘
 ```
 
 Everything is local except outbound calls to OpenAI (summaries +
-score) and ntfy.sh (push). IMAP credentials never leave the machine.
+score), ntfy.sh (push), and the GitHub Releases API (auto-update
+poll, every 6 h). IMAP credentials stay in the OS keyring on the
+machine. The optional one-click List-Unsubscribe POST goes through
+the SSRF guard in `src/security/url_safety.py` so an attacker-
+controlled URL can't probe the local network.
 
 ## Internationalisation (i18n)
 
