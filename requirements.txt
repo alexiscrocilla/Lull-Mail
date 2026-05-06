@@ -7,6 +7,12 @@ aiofiles==24.1.0
 apscheduler==3.10.4
 python-dateutil==2.9.0
 
+# Cross-platform secret store (Windows Credential Manager / macOS
+# Keychain / Linux Secret Service). Replaces clear-text passwords +
+# OpenAI key in config.yaml — see src/secrets_store.py and
+# src/secrets_migration.py.
+keyring==25.5.0
+
 # --- Desktop app (Windows) ---
 pywebview==5.3.2
 pystray==0.19.5

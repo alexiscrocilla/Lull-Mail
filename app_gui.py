@@ -86,6 +86,7 @@ import uvicorn  # noqa: E402
 from src import config as cfg  # noqa: E402
 from src import database as db  # noqa: E402
 from src import lifecycle  # noqa: E402
+from src import secrets_migration  # noqa: E402
 from src.api import app as fastapi_app  # noqa: E402
 
 
@@ -163,6 +164,16 @@ def main() -> int:
     # The DB is needed by every API route, even in setup mode (the wizard's
     # /api/setup/* endpoints don't touch it, but plain GET / does).
     db.init_db()
+
+    # One-shot migration of any clear-text passwords / OpenAI key found
+    # in config.yaml into the OS keyring (Windows Credential Manager).
+    # Idempotent — accounts already migrated are skipped instantly.
+    try:
+        moved = secrets_migration.run()
+        if moved:
+            logger.info("Migration keyring : %d secret(s) déplacé(s)", moved)
+    except Exception:
+        logger.exception("Migration keyring a échoué (on continue)")
 
     # Try to start email services. Failure is fine — the wizard takes over.
     if lifecycle.start_email_services():

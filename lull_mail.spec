@@ -23,6 +23,12 @@ datas += collect_data_files("apscheduler")
 hiddenimports = []
 hiddenimports += collect_submodules("apscheduler")
 hiddenimports += collect_submodules("webview")
+# `keyring` discovers its OS backends at runtime (Windows Vault, macOS
+# Keychain, Linux Secret Service…). PyInstaller's static analysis
+# misses them, so we collect every submodule explicitly. Without this
+# the frozen .exe would fall back to `keyring.backends.fail` on every
+# machine — and our credential migration would silently no-op.
+hiddenimports += collect_submodules("keyring")
 hiddenimports += [
     "pystray._win32",
     "PIL._tkinter_finder",

@@ -30,6 +30,7 @@ import uvicorn
 from src import config as cfg
 from src import database as db
 from src import lifecycle
+from src import secrets_migration
 from src.api import app
 
 
@@ -40,6 +41,18 @@ def main():
     logger.info("Données : %s", paths.APP_DATA_DIR)
 
     db.init_db()
+
+    # One-shot migration of any clear-text passwords / OpenAI key found
+    # in config.yaml into the OS keyring (Windows Credential Manager /
+    # macOS Keychain / Linux Secret Service). Idempotent — accounts
+    # already migrated are skipped instantly. Falls back silently when
+    # the keyring is unavailable on this machine.
+    try:
+        moved = secrets_migration.run()
+        if moved:
+            logger.info("Migration keyring : %d secret(s) déplacé(s)", moved)
+    except Exception:
+        logger.exception("Migration keyring a échoué (on continue)")
 
     if lifecycle.start_email_services():
         logger.info("Configuration OK — services email démarrés")

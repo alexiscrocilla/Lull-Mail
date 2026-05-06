@@ -251,6 +251,11 @@ def _persist(data: Dict[str, Any]) -> None:
         import yaml
         with open(cfg.CONFIG_PATH, "w", encoding="utf-8") as f:
             yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+    # Always sync the in-memory cache with what's on disk so that
+    # cfg.get() callers (e.g. GET /api/accounts) see the updated state
+    # immediately without waiting for a restart. try_load() is silent
+    # on partial/invalid configs so this is safe during wizard saves.
+    cfg.reload()
 
 
 def _mask_account(acc: Dict[str, Any]) -> Dict[str, Any]:
@@ -263,6 +268,48 @@ def _mask_account(acc: Dict[str, Any]) -> Dict[str, Any]:
 def _unmask_password(new_value: str, existing: str) -> str:
     """Replace MASK with the existing value so masked submits work."""
     return existing if new_value == MASK else new_value
+
+
+def _store_imap_secret(email: str, plain_password: str) -> str:
+    """Push `plain_password` into the OS keyring under `email` and
+    return the sentinel to write into config.yaml. Falls back to the
+    plain value if the keyring is unavailable on this machine."""
+    from src import secrets_store
+    try:
+        return secrets_store.store_imap(email, plain_password)
+    except secrets_store.SecretsBackendError as e:
+        logger.warning(
+            "keyring write for %s failed (%s) — clear-text fallback in YAML",
+            email, e,
+        )
+        return plain_password
+
+
+def _store_openai_secret(plain_key: str) -> str:
+    """Same as `_store_imap_secret` but for the OpenAI key."""
+    from src import secrets_store
+    try:
+        return secrets_store.store_openai(plain_key)
+    except secrets_store.SecretsBackendError as e:
+        logger.warning(
+            "keyring write for OpenAI key failed (%s) — clear-text fallback",
+            e,
+        )
+        return plain_key
+
+
+def _resolve_imap_secret(stored_value: str) -> str:
+    """Return the real password behind a sentinel, or the value itself
+    when it's already plain. Used to recover the actual password when
+    the user submitted MASK and we need it for the auto-test."""
+    from src import secrets_store
+    if not secrets_store.is_sentinel(stored_value):
+        return stored_value or ""
+    try:
+        return secrets_store.resolve(stored_value, secrets_store.SERVICE_IMAP)
+    except secrets_store.SecretsBackendError as e:
+        logger.warning("resolve_imap_secret failed: %s", e)
+        return ""
 
 
 # ── Status / read ────────────────────────────────────────────────────────────
@@ -327,8 +374,15 @@ def save_openai(payload: OpenAIPayload) -> Dict[str, Any]:
     new_key = _unmask_password(payload.api_key, existing_key)
     if not new_key:
         raise HTTPException(400, "Clé API OpenAI requise.")
-    if not (new_key.startswith("sk-") or new_key.startswith("sk_")):
-        raise HTTPException(400, "Format de clé OpenAI inattendu (devrait commencer par sk-).")
+    # If new_key is already a sentinel (came from existing_key via MASK
+    # — user kept the saved key), we write it back unchanged. If it's a
+    # fresh user input, validate the format and push it into the
+    # keyring before storing the sentinel in YAML.
+    from src import secrets_store
+    if not secrets_store.is_sentinel(new_key):
+        if not (new_key.startswith("sk-") or new_key.startswith("sk_")):
+            raise HTTPException(400, "Format de clé OpenAI inattendu (devrait commencer par sk-).")
+        new_key = _store_openai_secret(new_key)
     data["openai"] = {"api_key": new_key, "model": payload.model or "gpt-4o-mini"}
     _persist(data)
     return {"ok": True}
@@ -402,17 +456,27 @@ def add_account(payload: AccountPayload) -> Dict[str, Any]:
     if payload.password == MASK or not payload.password:
         raise HTTPException(400, "Mot de passe requis pour créer un compte.")
     _enforce_tls_safety(payload)
-    accounts.append(payload.model_dump())
+
+    # Push the password into the OS keyring before writing config.yaml,
+    # then rewrite the dict's `password` field with the sentinel. The
+    # real password stays in `payload.password` for the auto-test below
+    # (and only there — it never reaches disk).
+    real_password = payload.password
+    sentinel = _store_imap_secret(payload.email, real_password)
+    acc_dict = payload.model_dump()
+    acc_dict["password"] = sentinel
+    accounts.append(acc_dict)
     data["accounts"] = accounts
     _persist(data)
+
     # Auto-test: run an IMAP login right after save and persist the
     # outcome via record_test_result. Save always succeeds (the user's
     # input is preserved); a failed test surfaces in the Settings list
     # via the red status icon.
-    test = _safe_test_and_record(payload, payload.password)
+    test = _safe_test_and_record(payload, real_password)
     return {
         "ok": True,
-        "account": _mask_account(payload.model_dump()),
+        "account": _mask_account(acc_dict),
         "test": test,
     }
 
@@ -421,17 +485,34 @@ def add_account(payload: AccountPayload) -> Dict[str, Any]:
 def update_account(email: str, payload: AccountPayload) -> Dict[str, Any]:
     data = _load_or_default()
     accounts = data.get("accounts") or []
+    from src import secrets_store
     for i, a in enumerate(accounts):
         if a.get("email", "").lower() == email.lower():
             new = payload.model_dump()
-            new["password"] = _unmask_password(new["password"], a.get("password", ""))
-            if not new["password"]:
+            stored_pwd = a.get("password", "")
+            # `_unmask_password` returns the existing stored value when
+            # the user kept "***" in the form. After Lot C migration
+            # that existing value is a sentinel, not a plain password.
+            resolved_or_sentinel = _unmask_password(new["password"], stored_pwd)
+            if not resolved_or_sentinel:
                 raise HTTPException(400, "Mot de passe vide.")
             _enforce_tls_safety(payload)
+
+            if secrets_store.is_sentinel(resolved_or_sentinel):
+                # Sentinel reused — keep it. Recover the real password
+                # for the auto-test (we can't login with a sentinel).
+                actual_pwd_for_test = _resolve_imap_secret(resolved_or_sentinel)
+                new["password"] = resolved_or_sentinel
+            else:
+                # Fresh password — store in keyring and replace with
+                # sentinel. Falls back to clear text if keyring fails.
+                actual_pwd_for_test = resolved_or_sentinel
+                new["password"] = _store_imap_secret(payload.email, resolved_or_sentinel)
+
             accounts[i] = new
             data["accounts"] = accounts
             _persist(data)
-            test = _safe_test_and_record(payload, new["password"])
+            test = _safe_test_and_record(payload, actual_pwd_for_test)
             return {
                 "ok": True,
                 "account": _mask_account(new),
@@ -456,6 +537,12 @@ def delete_account(email: str) -> Dict[str, Any]:
         db.remove_account_state(email)
     except Exception:
         logger.exception("remove_account_state failed")
+    # Drop the keyring entry. Idempotent — silently no-ops if missing.
+    try:
+        from src import secrets_store
+        secrets_store.delete_imap(email)
+    except Exception:
+        logger.exception("delete_imap failed")
     return {"ok": True, "remaining": len(new_list)}
 
 
@@ -465,14 +552,17 @@ def delete_account(email: str) -> Dict[str, Any]:
 def _resolve_password(payload: AccountPayload) -> str:
     """Return the actual password for `payload`, replacing the MASK
     sentinel with the value already saved in config.yaml when the user
-    submits a "keep existing password" form. Empty string when nothing
+    submits a "keep existing password" form. After Lot C, the saved
+    value may be a `keyring:…` sentinel — we resolve that too so the
+    IMAP login receives the real password. Empty string when nothing
     is available."""
     pwd = payload.password
     if pwd == MASK:
         data = _load_or_default()
         for a in (data.get("accounts") or []):
             if a.get("email", "").lower() == payload.email.lower():
-                return a.get("password", "")
+                stored = a.get("password", "")
+                return _resolve_imap_secret(stored)
         return ""
     return pwd or ""
 
@@ -700,7 +790,29 @@ def wipe_data(payload: WipeConfirm) -> Dict[str, Any]:
     except Exception:
         logger.exception("Arrêt scheduler avant wipe a échoué (on continue)")
 
-    # 2. Forget the cached in-memory config.
+    # 2. Drop every keyring entry tied to the configured accounts AND
+    # the OpenAI key. We do this BEFORE removing config.yaml so we
+    # still have the list of emails to iterate over. Failures are
+    # logged but never abort the wipe — better to leave a few stale
+    # keyring rows than to leave the local data in place.
+    try:
+        from src import secrets_store
+        existing = _load_or_default()
+        for acc in (existing.get("accounts") or []):
+            email = acc.get("email", "")
+            if email:
+                try:
+                    secrets_store.delete_imap(email)
+                except Exception:
+                    logger.exception("wipe: delete_imap %s failed", email)
+        try:
+            secrets_store.delete_openai()
+        except Exception:
+            logger.exception("wipe: delete_openai failed")
+    except Exception:
+        logger.exception("wipe: keyring cleanup failed (continuing)")
+
+    # 3. Forget the cached in-memory config.
     try:
         cfg.reload()
     except Exception:
@@ -709,7 +821,7 @@ def wipe_data(payload: WipeConfirm) -> Dict[str, Any]:
     deleted: List[str] = []
     failed: List[str] = []
 
-    # 3. Remove config.yaml.
+    # 4. Remove config.yaml.
     try:
         if cfg.CONFIG_PATH.exists():
             cfg.CONFIG_PATH.unlink()
