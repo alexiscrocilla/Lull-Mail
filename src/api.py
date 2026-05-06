@@ -156,6 +156,18 @@ def get_email(int_id: int, bg: BackgroundTasks):
     rows = db.get_attachments_for_message(em["message_id"])
     em["attachments"] = [_attachment_summary(r) for r in rows]
     em["attachments_pending_scan"] = not bool(em.get("attachments_scanned_at"))
+    # Image-blocker (Lot D): tell the frontend whether to render remote
+    # images directly or behind a placeholder. Defaults to False — only
+    # senders the user has explicitly trusted via the banner load.
+    sender_domain = ""
+    raw_sender = em.get("sender") or ""
+    m = re.search(r"@([\w.\-]+)", raw_sender)
+    if m:
+        sender_domain = m.group(1).lower()
+    em["sender_domain"] = sender_domain
+    em["sender_images_trusted"] = (
+        db.is_sender_trusted_for_images(sender_domain) if sender_domain else False
+    )
     return em
 
 
@@ -1062,6 +1074,29 @@ def cleanup_unsubscribe_bulk(req: UnsubscribeBulkReq, bg: BackgroundTasks):
     job_id = _make_job("unsubscribe", "unsubscribe:bulk", len(plan))
     bg.add_task(_run_unsubscribe_job, job_id, plan)
     return {"ok": True, "job_id": job_id, "total": len(plan), "skipped": skipped}
+
+
+# ── Sender trust (remote-image blocking — Lot D) ─────────────────────────────
+
+
+class TrustImagesReq(BaseModel):
+    trusted: bool = True
+
+
+@app.get("/api/senders/{domain}/images-trusted")
+def sender_images_trusted(domain: str):
+    """Return whether the user has opted-in to load remote images for
+    `domain`. The frontend hits this when rendering an email body so
+    it knows whether to swap <img src=https://…> for the placeholder."""
+    return {"domain": domain.lower(), "trusted": db.is_sender_trusted_for_images(domain)}
+
+
+@app.post("/api/senders/{domain}/images-trusted")
+def set_sender_images_trusted(domain: str, body: TrustImagesReq):
+    """Toggle the per-domain image-trust flag. Triggered by the
+    "Toujours pour cet expéditeur" button on the in-mail banner."""
+    db.set_sender_trusted_for_images(domain, body.trusted)
+    return {"ok": True, "domain": domain.lower(), "trusted": body.trusted}
 
 
 # ── Update ────────────────────────────────────────────────────────────────────

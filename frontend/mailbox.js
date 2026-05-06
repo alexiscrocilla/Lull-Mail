@@ -5,6 +5,158 @@ import {
   shortDate, longDate, escapeHtml, linkify, isHomographUrl, safeLinkUrl,
   CATEGORY_LABEL, CATEGORY_COLOR, scoreClass,
 } from '/static/api.js';
+import { rewriteRemoteImages, senderDomain } from '/static/image-blocker.js';
+
+// Build the HTML <body> block for an email — sandboxed iframe with the
+// remote-image blocker applied unless the sender is trusted. Includes a
+// banner above the iframe when images were stripped.
+//
+// `em` must carry `body_html`, `sender`, `sender_domain` and
+// `sender_images_trusted` (the last three are emitted by /api/emails/{id}).
+// `forceShowImages` skips the blocker just for this render — used by the
+// "Charger pour ce mail" button without touching the DB.
+function buildHtmlBodyBlock(em, forceShowImages = false) {
+  const INJECT = `<style>
+    html,body{margin:0;padding:8px;overflow-x:hidden!important;box-sizing:border-box;word-break:break-word;}
+    img,video{max-width:100%!important;height:auto!important;}
+    table{max-width:100%!important;table-layout:fixed!important;}
+    td,th{word-break:break-word;}
+  </style>`;
+
+  // 1. Anti-phishing link rewriting (Lot A).
+  let safeHtml = markSuspiciousLinksInHtml(em.body_html);
+
+  // 2. Remote-image blocker (Lot D). Skipped when the user previously
+  //    trusted the sender or just clicked "Charger pour ce mail".
+  let blockedCount = 0;
+  const trusted = !!em.sender_images_trusted;
+  if (!trusted && !forceShowImages) {
+    const out = rewriteRemoteImages(safeHtml);
+    safeHtml = out.html;
+    blockedCount = out.blockedCount;
+  }
+
+  // 3. Inject our reset CSS and serialise.
+  const finalHtml = safeHtml.replace(/<head([^>]*)>/i, `<head$1>${INJECT}`)
+                            || (INJECT + safeHtml);
+
+  // SECURITY: no `allow-scripts`. Email JavaScript never runs.
+  // `allow-popups` keeps `<a target="_blank">` opening in a new tab;
+  // `allow-popups-to-escape-sandbox` lets that tab inherit a normal
+  // (non-sandboxed) context so the OS browser handler can pick the
+  // link up cleanly.
+  const iframe = `<iframe sandbox="allow-popups allow-popups-to-escape-sandbox" srcdoc="${escapeHtml(finalHtml)}" class="mb-body-iframe"></iframe>`;
+
+  // Banner only when we actually blocked something. The two buttons
+  // are wired up by attachImageBlockerHandlers() right after the
+  // iframe is injected into the DOM.
+  if (!blockedCount) return iframe;
+
+  const domain = em.sender_domain || senderDomain(em.sender) || '';
+  const label = blockedCount === 1
+    ? '1 image distante bloquée'
+    : `${blockedCount} images distantes bloquées`;
+  const banner = `
+    <div class="mb-img-banner" data-int-id="${escapeHtml(String(em.int_id))}" data-sender-domain="${escapeHtml(domain)}">
+      <i data-lucide="image-off" class="w-4 h-4"></i>
+      <span class="mb-img-banner-label">${label}</span>
+      <span class="mb-img-banner-spacer"></span>
+      <button class="mb-img-banner-btn" data-act="show-once" type="button">
+        Charger pour ce mail
+      </button>
+      <button class="mb-img-banner-btn mb-img-banner-btn-trust" data-act="trust-sender" type="button" ${domain ? '' : 'disabled'}>
+        Toujours pour ${domain ? escapeHtml(domain) : 'cet expéditeur'}
+      </button>
+    </div>`;
+  return banner + iframe;
+}
+
+
+// Wire up the banner buttons after the iframe has been mounted. Called
+// from the same place that mounts the read pane. The closure keeps a
+// reference to `em` so we can re-render on demand.
+function attachImageBlockerHandlers(em) {
+  const banner = document.querySelector('#read-pane .mb-img-banner');
+  if (!banner) return;
+
+  const reRender = (forceShow) => {
+    // The body block currently consists of the banner + the iframe
+    // immediately after it. Insert the freshly-built block before the
+    // banner, then drop both old elements. Same DOM position, no
+    // visible reflow.
+    const oldIframe = banner.nextElementSibling;
+    banner.insertAdjacentHTML('beforebegin', buildHtmlBodyBlock(em, forceShow));
+    if (oldIframe) oldIframe.remove();
+    banner.remove();
+    const pane = document.querySelector('#read-pane');
+    if (pane) window.lucide?.createIcons({ el: pane });
+    // Re-attach handlers on the new banner (if any). When forceShow
+    // is true the new build has no banner, so this no-ops.
+    attachImageBlockerHandlers(em);
+  };
+
+  banner.querySelector('[data-act="show-once"]')?.addEventListener('click', () => {
+    reRender(true);
+  });
+
+  banner.querySelector('[data-act="trust-sender"]')?.addEventListener('click', async () => {
+    const domain = banner.dataset.senderDomain || '';
+    if (!domain) return;
+    try {
+      await api('POST', `/api/senders/${encodeURIComponent(domain)}/images-trusted`, { trusted: true });
+      em.sender_images_trusted = true;
+      reRender(false);  // forceShow=false but trusted=true → blocker skipped
+      window.toast?.(`Images activées pour ${domain}`, 2500);
+    } catch (e) {
+      window.toast?.('Erreur : ' + e.message, 3500);
+    }
+  });
+}
+
+
+// Render the SPF/DKIM/DMARC verdict badge next to the sender name.
+// `auth_results` is the JSON string captured at ingest by
+// src/auth_results.py. Roll-up colour:
+//   green   → all three pass
+//   amber   → mixed (some pass, some none/neutral)
+//   red     → at least one fail / softfail / policy
+//   grey    → no Authentication-Results header
+function authBadgeHtml(authJson) {
+  let data = null;
+  try { data = authJson ? JSON.parse(authJson) : null; } catch (_) {}
+  const verdicts = data ? Object.entries(data).filter(([_, v]) => v) : [];
+  let kind, icon, label, tooltip;
+  if (!verdicts.length) {
+    kind = 'unknown';
+    icon = 'help-circle';
+    label = 'non vérifié';
+    tooltip = 'Aucun en-tête Authentication-Results trouvé sur ce mail.';
+  } else {
+    const allPass = verdicts.every(([_, v]) => v === 'pass');
+    const anyBad = verdicts.some(([_, v]) => v === 'fail' || v === 'softfail' || v === 'policy');
+    if (anyBad) {
+      kind = 'fail';
+      icon = 'shield-x';
+      label = 'authentification échouée';
+    } else if (allPass) {
+      kind = 'pass';
+      icon = 'shield-check';
+      label = 'authentifié';
+    } else {
+      kind = 'warn';
+      icon = 'shield-alert';
+      label = 'authentification partielle';
+    }
+    tooltip = verdicts
+      .map(([m, v]) => `${m.toUpperCase()}: ${v}`)
+      .join(' · ');
+  }
+  return `<span class="mb-auth-badge mb-auth-${kind}" title="${escapeHtml(tooltip)}">
+    <i data-lucide="${icon}" class="w-3 h-3"></i>
+    <span>${escapeHtml(label)}</span>
+  </span>`;
+}
+
 
 // Walk every <a> in the email HTML and tag it visually when its href looks
 // like a homograph spoof (Cyrillic/Greek in the host) or already arrived in
@@ -1271,26 +1423,25 @@ export async function mountMailbox(host, _opts) {
       </div>
     `;
 
+    // Build the body block. Three branches:
+    //   • plain-text body (already linkified for homograph URLs)
+    //   • HTML body in a sandboxed iframe — with optional image-blocker
+    //     banner above when remote images were stripped
+    //   • empty placeholder
+    //
+    // The image-blocker honours `em.sender_images_trusted` (provided by
+    // the API). When the sender is trusted, the iframe renders the
+    // original HTML untouched. Otherwise we run rewriteRemoteImages,
+    // count what got stripped, and surface a banner with two buttons:
+    //   – "Charger pour ce mail" : re-render this email's iframe
+    //     without the blocker (no DB write, one-shot).
+    //   – "Toujours pour cet expéditeur" : POST the trust flag and
+    //     re-render. Future emails from the same domain skip the
+    //     blocker automatically.
     const body = em.body_text && em.body_text.trim().length
       ? `<div class="mb-body-text">${linkify(em.body_text)}</div>`
       : (em.body_html
-         ? (() => {
-             const INJECT = `<style>
-               html,body{margin:0;padding:8px;overflow-x:hidden!important;box-sizing:border-box;word-break:break-word;}
-               img,video{max-width:100%!important;height:auto!important;}
-               table{max-width:100%!important;table-layout:fixed!important;}
-               td,th{word-break:break-word;}
-             </style>`;
-             const safeHtml = markSuspiciousLinksInHtml(em.body_html);
-             const html = safeHtml.replace(/<head([^>]*)>/i, `<head$1>${INJECT}`)
-                            || (INJECT + safeHtml);
-             // SECURITY: no `allow-scripts`. Email JavaScript never runs.
-             // `allow-popups` keeps `<a target="_blank">` opening in a new
-             // tab; `allow-popups-to-escape-sandbox` lets that tab inherit a
-             // normal (non-sandboxed) context so the OS browser handler can
-             // pick the link up cleanly.
-             return `<iframe sandbox="allow-popups allow-popups-to-escape-sandbox" srcdoc="${escapeHtml(html)}" class="mb-body-iframe"></iframe>`;
-           })()
+         ? buildHtmlBodyBlock(em)
          : `<div style="color:var(--muted);font-style:italic">(corps du mail vide)</div>`);
 
     $('#read-pane').innerHTML = `
@@ -1324,7 +1475,7 @@ export async function mountMailbox(host, _opts) {
               ${logoImg}
             </div>
             <div>
-              <div class="name">${escapeHtml(sName || 'Inconnu')}</div>
+              <div class="name">${escapeHtml(sName || 'Inconnu')}${authBadgeHtml(em.auth_results)}</div>
               <div class="meta meta-route">
                 <i data-lucide="send" class="w-3 h-3 meta-icon"></i><span class="meta-addr">${escapeHtml(sEmail)}</span>
                 <i data-lucide="arrow-right" class="w-3 h-3 meta-arrow"></i>
@@ -1380,6 +1531,11 @@ export async function mountMailbox(host, _opts) {
       host.querySelectorAll('.mb-card').forEach((c) => c.classList.remove('selected'));
       renderEmpty();
     });
+
+    // Wire up the "Charger pour ce mail" / "Toujours pour cet expéditeur"
+    // banner buttons after the iframe has been mounted. No-op when the
+    // sender is already trusted (no banner present).
+    attachImageBlockerHandlers(em);
 
     $('#btn-print').addEventListener('click', () => {
       // CSS `@media print` hides the rest of the chrome; we only need to

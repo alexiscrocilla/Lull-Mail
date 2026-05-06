@@ -862,6 +862,15 @@ def fetch_emails(
                 lu_post = msg.get("List-Unsubscribe-Post")
                 parsed_lu = parse_list_unsubscribe(lu_raw, lu_post)
 
+                # Authentication-Results (RFC 8601) — SPF/DKIM/DMARC
+                # verdicts stamped by the receiving MTA. Stored as
+                # compact JSON so the read pane can render the badge
+                # without re-parsing headers. See src/auth_results.py.
+                from src.auth_results import parse_email as _parse_auth
+                from json import dumps as _json_dumps
+                auth_dict = _parse_auth(msg)
+                auth_json = _json_dumps(auth_dict) if any(auth_dict.values()) else None
+
                 results.append({
                     "uid": uid.decode(),
                     "message_id": message_id,
@@ -876,6 +885,7 @@ def fetch_emails(
                     "list_unsubscribe_post": parsed_lu["list_unsubscribe_post"],
                     "unsubscribe_url": parsed_lu["unsubscribe_url"],
                     "unsubscribe_mailto": parsed_lu["unsubscribe_mailto"],
+                    "auth_results": auth_json,
                     "_attachment_parts": attachment_parts,  # consumed by scheduler
                 })
             except Exception as e:

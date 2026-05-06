@@ -114,6 +114,13 @@ def init_db():
         # consumes this column to know which messages still need a re-fetch.
         if "attachments_scanned_at" not in cols:
             con.execute("ALTER TABLE emails ADD COLUMN attachments_scanned_at TEXT")
+        # Authentication-Results snapshot (SPF/DKIM/DMARC verdicts)
+        # captured at ingest. Stored as compact JSON so the frontend
+        # can decide one badge colour without re-parsing the headers.
+        # NULL means "header was absent" → grey "non vérifié" badge.
+        # See src/auth_results.py for the parsing logic.
+        if "auth_results" not in cols:
+            con.execute("ALTER TABLE emails ADD COLUMN auth_results TEXT")
         con.execute("CREATE INDEX IF NOT EXISTS idx_emails_folder ON emails(folder)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_emails_favourite ON emails(is_favourite)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_emails_unsub ON emails(unsubscribe_url, unsubscribe_mailto)")
@@ -126,14 +133,24 @@ def init_db():
             )
         """)
 
-        # Sender domain memoisation cache.
+        # Sender domain memoisation cache. Holds two pieces of state
+        # per domain:
+        #   • category — last AI/local classification, used to skip
+        #     re-classifying every newsletter from the same sender.
+        #   • images_trusted — opt-in bypass of the remote-image
+        #     blocker (Lot D). 0 = images stay blocked, 1 = render as
+        #     normal. Toggled by the user via the per-email banner.
         con.execute("""
             CREATE TABLE IF NOT EXISTS sender_cache (
-                domain      TEXT PRIMARY KEY,
-                category    TEXT NOT NULL,
-                updated_at  TEXT DEFAULT (datetime('now'))
+                domain          TEXT PRIMARY KEY,
+                category        TEXT NOT NULL,
+                updated_at      TEXT DEFAULT (datetime('now')),
+                images_trusted  INTEGER DEFAULT 0
             )
         """)
+        sc_cols = {row["name"] for row in con.execute("PRAGMA table_info(sender_cache)")}
+        if "images_trusted" not in sc_cols:
+            con.execute("ALTER TABLE sender_cache ADD COLUMN images_trusted INTEGER DEFAULT 0")
 
         # User-defined cleanup rules ("plugins").
         con.execute("""
@@ -195,8 +212,8 @@ def insert_email(data: Dict[str, Any]) -> bool:
                     (message_id, account_email, uid, subject, sender, recipient,
                      date_received, body_text, body_html,
                      list_unsubscribe, list_unsubscribe_post,
-                     unsubscribe_url, unsubscribe_mailto)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     unsubscribe_url, unsubscribe_mailto, auth_results)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data["message_id"],
                 data["account"],
@@ -211,6 +228,7 @@ def insert_email(data: Dict[str, Any]) -> bool:
                 data.get("list_unsubscribe_post"),
                 data.get("unsubscribe_url"),
                 data.get("unsubscribe_mailto"),
+                data.get("auth_results"),
             ))
         return True
     except Exception as e:
@@ -1154,6 +1172,38 @@ def set_sender_category(domain: str, category: str) -> None:
                 category   = excluded.category,
                 updated_at = excluded.updated_at
         """, (domain.lower(), category))
+
+
+def is_sender_trusted_for_images(domain: str) -> bool:
+    """True iff the user has explicitly opted-in to load remote images
+    from `domain`. Default (no row, or row with images_trusted=0) is
+    blocked — that's the whole point of the Lot D image-blocker."""
+    if not domain:
+        return False
+    with _conn() as con:
+        row = con.execute(
+            "SELECT images_trusted FROM sender_cache WHERE domain = ?",
+            (domain.lower(),),
+        ).fetchone()
+        return bool(row and row["images_trusted"])
+
+
+def set_sender_trusted_for_images(domain: str, trusted: bool) -> None:
+    """Toggle the per-domain image-trust flag. Inserts a row with an
+    empty category when the domain isn't yet known to sender_cache —
+    `get_sender_category` returns "" then None for that case, which is
+    fine (it just means the AI fast-path won't kick in)."""
+    if not domain:
+        return
+    flag = 1 if trusted else 0
+    with _conn() as con:
+        con.execute("""
+            INSERT INTO sender_cache (domain, category, images_trusted, updated_at)
+            VALUES (?, '', ?, datetime('now'))
+            ON CONFLICT(domain) DO UPDATE SET
+                images_trusted = excluded.images_trusted,
+                updated_at     = excluded.updated_at
+        """, (domain.lower(), flag))
 
 
 # ── Custom rules ("plugins") ──────────────────────────────────────────────────

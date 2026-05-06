@@ -1253,6 +1253,84 @@ button { font: inherit; }
   color: var(--text);
 }
 .mb-body-text a { color: var(--accent); text-decoration: underline; }
+
+/* Image-blocker banner — sits above the email-body iframe when remote
+   images were stripped. Two buttons: load once / trust sender. */
+.mb-img-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  margin: 0 0 8px;
+  background: var(--surface-2, rgba(0,0,0,0.03));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.mb-img-banner svg { color: var(--muted); flex: 0 0 auto; }
+.mb-img-banner-label { color: var(--text); font-weight: 500; }
+.mb-img-banner-spacer { flex: 1; }
+.mb-img-banner-btn {
+  appearance: none;
+  cursor: pointer;
+  padding: 5px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  transition: filter 0.1s ease, border-color 0.1s ease;
+}
+.mb-img-banner-btn:hover { filter: brightness(1.05); border-color: var(--accent); }
+.mb-img-banner-btn-trust {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.mb-img-banner-btn-trust:hover { filter: brightness(1.08); }
+.mb-img-banner-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* SPF/DKIM/DMARC verdict badge — sits next to the sender name in
+   the read pane. Subtle, single line, hover for the per-mechanism
+   detail (e.g. "SPF: pass · DKIM: pass · DMARC: pass"). */
+.mb-auth-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 2px 7px 2px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  vertical-align: 1px;
+  cursor: help;
+  border: 1px solid transparent;
+}
+.mb-auth-badge svg { width: 12px; height: 12px; flex: 0 0 auto; }
+.mb-auth-pass {
+  background: rgba(34, 197, 94, 0.10);
+  border-color: rgba(34, 197, 94, 0.35);
+  color: rgb(22, 163, 74);
+}
+.mb-auth-warn {
+  background: rgba(217, 119, 6, 0.10);
+  border-color: rgba(217, 119, 6, 0.35);
+  color: rgb(180, 83, 9);
+}
+.mb-auth-fail {
+  background: rgba(220, 38, 38, 0.12);
+  border-color: rgba(220, 38, 38, 0.45);
+  color: var(--danger, rgb(220, 38, 38));
+}
+.mb-auth-unknown {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: var(--border);
+  color: var(--muted);
+}
+
 /* Anti-phishing : URL contenant des caractères Cyrilliques/Grecs.
    Correspond à la règle homographe utilisée pour les pièces jointes
    (src/attachment_security.py:425-429). Désactivable rien qu'en
