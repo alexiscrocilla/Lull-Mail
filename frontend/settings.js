@@ -816,7 +816,7 @@ export async function mountSettings(host, opts = {}) {
   }
 
   async function removeAccount(email) {
-    if (!confirm(`Retirer la boîte ${email} ?\n(Les emails déjà téléchargés restent accessibles.)`)) return;
+    if (!confirm(`Retirer la boîte ${email} ?\n(Les emails de cette boîte n'apparaîtront plus dans l'application.)`)) return;
     try {
       await api('DELETE', `/api/setup/accounts/${encodeURIComponent(email)}`);
       window.toast?.(`${email} retirée`);
