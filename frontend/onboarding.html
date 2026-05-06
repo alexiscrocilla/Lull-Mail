@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title data-i18n="ob.title">Configuration — Lull Mail</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+<script>
+  (function () {
+    try {
+      var saved = localStorage.getItem('theme');
+      var preferDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      var t = saved || (preferDark ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (_) {}
+  })();
+</script>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: ['selector', '[data-theme="dark"]'],
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['Plus Jakarta Sans', 'system-ui', 'sans-serif'],
+          mono: ['JetBrains Mono', 'monospace'],
+        }
+      }
+    }
+  };
+</script>
+
+<style>
+  /* ── Design tokens — aligned with style.css so the wizard matches the app ── */
+  :root, [data-theme="light"] {
+    --bg:          #F6F8FA;
+    --surface:     #FFFFFF;
+    --surface-2:   #F0F2F5;
+    --text:        #0F172A;
+    --muted:       #64748B;
+    --border:      #E2E8F0;
+    --accent:      #0D9488;
+    --accent-soft: #CCFBF1;
+    --accent-ink:  #134E4A;
+    --accent-on:   #FFFFFF;
+    --danger:      #EF4444;
+    --success:     #10B981;
+    --info:        #3B82F6;
+    --shadow-md:   rgba(15, 23, 42, .12);
+    --shadow-lg:   rgba(15, 23, 42, .22);
+    --glass-bg:    rgba(255, 255, 255, 0.55);
+    --glass-bg-2:  rgba(255, 255, 255, 0.35);
+    --glass-stroke: rgba(15, 23, 42, 0.08);
+    color-scheme: light;
+  }
+  [data-theme="dark"] {
+    --bg:          #0B0F17;
+    --surface:     #141925;
+    --surface-2:   #1C2333;
+    --text:        #E6EDF7;
+    --muted:       #9AA7BC;
+    --border:      #232B3D;
+    --accent:      #5EEAD4;
+    --accent-soft: rgba(94, 234, 212, 0.14);
+    --accent-ink:  #A7F3D9;
+    --accent-on:   #042F2A;
+    --danger:      #FB7185;
+    --success:     #4ADE80;
+    --info:        #7DD3FC;
+    --shadow-md:   rgba(0, 0, 0, .45);
+    --shadow-lg:   rgba(0, 0, 0, .65);
+    --glass-bg:    rgba(20, 25, 37, 0.55);
+    --glass-bg-2:  rgba(28, 35, 51, 0.45);
+    --glass-stroke: rgba(230, 237, 247, 0.08);
+    color-scheme: dark;
+  }
+
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+    color: var(--text);
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    overflow-x: hidden;
+    letter-spacing: -0.005em;
+  }
+
+  /* Soft accent-coloured blobs behind the glass panels — the whole reason
+     glassmorphism is interesting. Fixed so they don't scroll with content. */
+  body::before, body::after {
+    content: '';
+    position: fixed;
+    pointer-events: none;
+    z-index: -1;
+    border-radius: 50%;
+    filter: blur(80px);
+    opacity: 0.55;
+  }
+  body::before {
+    width: 520px; height: 520px;
+    top: -120px; left: -120px;
+    background: radial-gradient(circle, var(--accent), transparent 70%);
+  }
+  body::after {
+    width: 620px; height: 620px;
+    bottom: -180px; right: -180px;
+    background: radial-gradient(circle, var(--info), transparent 70%);
+    opacity: 0.35;
+  }
+  [data-theme="dark"] body::before { opacity: 0.30; }
+  [data-theme="dark"] body::after  { opacity: 0.22; }
+
+  /* ── Glass panel ── */
+  .panel {
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: blur(28px) saturate(140%);
+    backdrop-filter: blur(28px) saturate(140%);
+    border: 1px solid var(--glass-stroke);
+    border-radius: 20px;
+    box-shadow:
+      0 30px 60px -25px var(--shadow-lg),
+      0 1px 0 rgba(255, 255, 255, 0.4) inset;
+  }
+  [data-theme="dark"] .panel {
+    box-shadow:
+      0 30px 60px -25px var(--shadow-lg),
+      0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  }
+
+  /* ── Inputs ── */
+  .input, .select {
+    width: 100%;
+    background: var(--glass-bg-2);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    color: var(--text);
+    border: 1px solid var(--glass-stroke);
+    border-radius: 12px;
+    padding: 11px 13px;
+    font-size: 14px;
+    font-family: inherit;
+    transition: border-color .15s, box-shadow .15s, background .15s;
+  }
+  .input::placeholder { color: var(--muted); opacity: 0.7; }
+  .input:focus, .select:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+    background: var(--surface);
+  }
+
+  /* ── Custom model dropdown (onboarding) ── */
+  .ob-drop-wrap { position: relative; width: 100%; }
+  .ob-drop-btn {
+    width: 100%;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px;
+    background: var(--glass-bg-2);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    color: var(--text);
+    border: 1px solid var(--glass-stroke);
+    border-radius: 12px;
+    padding: 11px 13px;
+    font: inherit; font-size: 14px;
+    cursor: pointer;
+    text-align: left;
+    transition: border-color .15s, box-shadow .15s, background .15s;
+  }
+  .ob-drop-btn:hover { border-color: var(--accent); }
+  .ob-drop-wrap.open .ob-drop-btn {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+    background: var(--surface);
+  }
+  .ob-drop-btn svg { opacity: 0.5; flex-shrink: 0; transition: transform 160ms ease; }
+  .ob-drop-wrap.open .ob-drop-btn svg { transform: rotate(180deg); }
+  .ob-drop-menu {
+    position: fixed;
+    background: var(--surface);
+    border: 1px solid var(--glass-stroke);
+    border-radius: 12px;
+    box-shadow: 0 8px 28px var(--shadow-lg);
+    z-index: 9999;
+    padding: 4px;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 160px;
+  }
+  .ob-drop-opt {
+    padding: 10px 13px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text);
+    transition: background 120ms ease;
+  }
+  .ob-drop-opt:hover { background: var(--surface-2); }
+  .ob-drop-opt.active {
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    font-weight: 600;
+  }
+  [data-theme="dark"] .ob-drop-opt.active { color: var(--accent); }
+
+  /* ── Custom select ── */
+  select.select {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    padding-right: 36px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748B' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    background-size: 16px;
+    cursor: pointer;
+  }
+  [data-theme="dark"] select.select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239AA7BC' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  }
+  select.select option {
+    background: var(--surface);
+    color: var(--text);
+  }
+
+  .label {
+    font-size: 11px; font-weight: 700; color: var(--muted);
+    margin-bottom: 6px; display: block;
+    letter-spacing: .04em; text-transform: uppercase;
+  }
+
+  /* ── Buttons ── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: var(--accent);
+    color: var(--accent-on);
+    border: none;
+    padding: 10px 18px;
+    border-radius: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 14px;
+    transition: filter .15s, transform .05s, box-shadow .15s;
+    box-shadow: 0 6px 18px -8px color-mix(in oklab, var(--accent) 70%, transparent);
+  }
+  .btn > i, .btn > svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    stroke-width: 2.25;
+  }
+  .btn:hover:not(:disabled) { filter: brightness(1.08); }
+  .btn:active:not(:disabled) { transform: translateY(1px); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+  .btn-ghost {
+    background: var(--glass-bg-2);
+    color: var(--text);
+    border: 1px solid var(--glass-stroke);
+    box-shadow: none;
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: var(--surface);
+    filter: none;
+  }
+
+  /* ── Stepper ── */
+  .step-dot {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: var(--glass-bg-2);
+    color: var(--muted);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 13px;
+    border: 1px solid var(--glass-stroke);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    transition: all .25s ease;
+  }
+  .step-dot.active {
+    background: var(--accent); color: var(--accent-on);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 5px var(--accent-soft);
+  }
+  .step-dot.done {
+    background: var(--success); color: white;
+    border-color: var(--success);
+  }
+  .step-line {
+    flex: 1; height: 2px;
+    background: var(--glass-stroke);
+    border-radius: 2px;
+  }
+  .step-line.done { background: var(--success); }
+
+  /* ── Provider tiles — same vertical layout as the Add-mailbox modal ── */
+  .provider-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 16px 8px;
+    background: var(--glass-bg-2);
+    border: 1.5px solid var(--glass-stroke);
+    border-radius: 14px;
+    cursor: pointer;
+    transition: border-color .15s, transform .05s, background .15s, box-shadow .15s;
+    text-align: center;
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    font-family: inherit;
+    color: var(--text);
+    width: 100%;
+    min-height: 96px;
+  }
+  .provider-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-1px);
+    background: color-mix(in oklab, var(--surface) 45%, var(--glass-bg-2));
+  }
+  .provider-card:active { transform: translateY(0); }
+  .provider-card.selected {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    box-shadow:
+      0 0 0 2px var(--accent-soft) inset,
+      0 8px 24px -10px color-mix(in oklab, var(--accent) 50%, transparent);
+  }
+  .provider-logo {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background: #fff;
+    border: 1px solid var(--border);
+    display: grid; place-items: center;
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+  .provider-logo img {
+    width: 100%; height: 100%;
+    object-fit: contain;
+    padding: 6px;
+  }
+  .provider-logo i {
+    color: var(--muted);
+    width: 20px; height: 20px;
+  }
+  .provider-name {
+    font-weight: 600;
+    font-size: 12.5px;
+    line-height: 1.25;
+    color: var(--text);
+    text-align: center;
+  }
+
+  /* ── Account row (added accounts list) ── */
+  .acc-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px;
+    border: 1px solid var(--glass-stroke);
+    border-radius: 12px;
+    background: var(--glass-bg-2);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+  }
+  .acc-row .provider-logo { width: 32px; height: 32px; }
+  .acc-row .provider-logo i { width: 16px; height: 16px; }
+
+  /* ── App-password quick link (next to the password field) ── */
+  .pwd-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+  .quick-link {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--accent);
+    text-decoration: none;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    border: 1px solid color-mix(in oklab, var(--accent) 25%, transparent);
+    transition: filter .15s, transform .05s;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .quick-link:hover { filter: brightness(1.08); transform: translateY(-1px); }
+  .quick-link i, .quick-link svg { width: 12px; height: 12px; stroke-width: 2.5; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 999px;
+    font-size: 10px; font-weight: 700;
+    background: var(--accent-soft); color: var(--accent-ink);
+    text-transform: uppercase; letter-spacing: .03em;
+  }
+  [data-theme="dark"] .badge { color: var(--accent); }
+
+  /* ── Help banner ── */
+  .help-banner {
+    background: var(--accent-soft);
+    border: 1px solid color-mix(in oklab, var(--accent) 25%, transparent);
+    color: var(--accent-ink);
+    border-radius: 12px;
+    padding: 12px 14px;
+    font-size: 12.5px;
+    line-height: 1.55;
+  }
+  [data-theme="dark"] .help-banner { color: var(--text); }
+  .help-banner a { color: var(--accent-ink); font-weight: 600; }
+  [data-theme="dark"] .help-banner a { color: var(--accent); }
+
+  /* ── Toast ── */
+  .toast {
+    position: fixed; bottom: 24px; right: 24px;
+    padding: 14px 18px; border-radius: 12px;
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--glass-stroke);
+    color: var(--text); font-weight: 500; font-size: 14px;
+    box-shadow: 0 18px 40px var(--shadow-lg);
+    transform: translateY(120%); opacity: 0;
+    transition: transform .3s cubic-bezier(.4,0,.2,1), opacity .3s;
+    z-index: 100;
+    max-width: 380px;
+  }
+  .toast.show { transform: translateY(0); opacity: 1; }
+  .toast.ok  { border-left: 3px solid var(--success); }
+  .toast.err { border-left: 3px solid var(--danger); }
+
+  /* ── Spinner ── */
+  .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid color-mix(in oklab, currentColor 30%, transparent);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+    display: inline-block;
+    vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Test result colors ── */
+  .test-ok  { color: var(--success); font-weight: 500; }
+  .test-err { color: var(--danger); font-weight: 500; }
+
+  /* ── Logo theme switch ── */
+  .lull-logo-dark  { display: none; }
+  .lull-logo-light { display: block; }
+  [data-theme="dark"] .lull-logo-light { display: none; }
+  [data-theme="dark"] .lull-logo-dark  { display: block; }
+
+  /* ── Misc ── */
+  details > summary { list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before {
+    content: '▸ ';
+    display: inline-block;
+    transition: transform .15s;
+  }
+  details[open] > summary::before { transform: rotate(90deg); }
+
+  code.inline {
+    background: var(--surface-2);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+  }
+
+  /* Simple checkbox styling so they pick up the accent colour */
+  input[type="checkbox"] { accent-color: var(--accent); }
+  input[type="range"]    { accent-color: var(--accent); }
+
+  /* ── Toggle row (used for "Activer les notifications push") ── */
+  .toggle-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px;
+    padding: 14px 16px;
+    background: var(--glass-bg-2);
+    border: 1px solid var(--glass-stroke);
+    border-radius: 14px;
+    cursor: pointer;
+    transition: border-color .15s, background .15s, box-shadow .15s;
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    user-select: none;
+  }
+  .toggle-row:hover {
+    border-color: color-mix(in oklab, var(--accent) 40%, var(--glass-stroke));
+    background: color-mix(in oklab, var(--surface) 40%, var(--glass-bg-2));
+  }
+  .toggle-row.is-on {
+    border-color: color-mix(in oklab, var(--accent) 60%, transparent);
+    background: var(--accent-soft);
+    box-shadow: 0 8px 24px -12px color-mix(in oklab, var(--accent) 50%, transparent);
+  }
+  .toggle-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .toggle-title { font-weight: 600; color: var(--text); font-size: 14px; }
+  .toggle-sub   { color: var(--muted); font-size: 12px; }
+
+  .toggle { position: relative; display: inline-block; flex-shrink: 0; }
+  .toggle input {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    opacity: 0; margin: 0; cursor: pointer;
+  }
+  .toggle-track {
+    width: 44px; height: 26px;
+    background: color-mix(in oklab, var(--text) 18%, transparent);
+    border-radius: 999px;
+    display: block;
+    position: relative;
+    transition: background .25s ease;
+    border: 1px solid var(--glass-stroke);
+  }
+  .toggle-thumb {
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 20px; height: 20px;
+    background: white;
+    border-radius: 50%;
+    box-shadow: 0 2px 6px rgba(0,0,0,.25), 0 0 0 1px rgba(0,0,0,.04);
+    transition: transform .25s cubic-bezier(.4,0,.2,1);
+  }
+  .toggle input:checked + .toggle-track {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .toggle input:checked + .toggle-track .toggle-thumb {
+    transform: translateX(18px);
+  }
+  .toggle input:focus-visible + .toggle-track {
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+</style>
+</head>
+
+<body>
+<div class="min-h-screen flex items-center justify-center p-6">
+  <div class="w-full max-w-3xl">
+
+    <!-- Header -->
+    <div class="text-center mb-8">
+      <div class="mb-3 flex justify-center">
+        <!-- Light theme logo -->
+        <svg class="lull-logo-light" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" style="height:140px;width:auto;" aria-label="Lull Mail">
+          <path style="fill:#6fdabd" d="M326.5,154.49l67.68-58,.03,191.95H105.79s.13-192.18.13-192.18l121.15,104.13,23,19.41,76.43-65.31ZM374.71,255.58v-116.96s-65.35,56.45-65.35,56.45l65.35,60.5ZM190.93,195.19l-65.49-56.4v116.96s65.49-60.56,65.49-60.56ZM359.61,268.32l-65.22-60.65-44.22,37.93-44.55-37.93-27.45,25.91-37.91,34.9,49.19-.09,170.15-.07Z"/>
+          <path style="fill:#6fdabd" d="M295.01,139.25c-8.21,25.18-36.58,37.99-60.61,28.54-24.68-9.71-36.75-37.52-26.13-62.28,5.52-12.86,16.02-22.62,30.32-26.24-10,17.25-8.47,38.39,5,52.69,13.31,14.13,33.65,17.29,51.41,7.29Z"/>
+          <text font-family="'Plus Jakarta Sans', ui-sans-serif, sans-serif" font-size="96.75" font-weight="700" transform="translate(62.95 398.65)">
+            <tspan style="fill:#6fdabd">Lull</tspan><tspan style="fill:#0e1525"> Mail</tspan>
+          </text>
+        </svg>
+        <!-- Dark theme logo -->
+        <svg class="lull-logo-dark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" style="height:140px;width:auto;" aria-label="Lull Mail">
+          <path style="fill:#6fdabd" d="M326.37,154.36l67.56-57.9.03,191.62H106.04s.13-191.85.13-191.85l120.94,103.95,22.96,19.38,76.3-65.2ZM374.49,255.27v-116.75s-65.24,56.36-65.24,56.36l65.24,60.4ZM191.03,194.99l-65.37-56.3v116.76s65.37-60.46,65.37-60.46ZM359.42,267.99l-65.11-60.54-44.14,37.87-44.47-37.87-27.4,25.87-37.84,34.84,49.11-.09,169.86-.07Z"/>
+          <path style="fill:#6fdabd" d="M294.93,139.15c-8.2,25.14-36.52,37.93-60.5,28.49-24.63-9.69-36.69-37.45-26.08-62.18,5.51-12.84,15.99-22.58,30.27-26.19-9.98,17.22-8.46,38.33,4.99,52.6,13.29,14.1,33.6,17.26,51.32,7.27Z"/>
+          <text font-family="'Plus Jakarta Sans', ui-sans-serif, sans-serif" font-size="96.58" font-weight="700" transform="translate(63.28 398.69)">
+            <tspan style="fill:#6fdabd">Lull</tspan><tspan style="fill:#f4f7f9"> Mail</tspan>
+          </text>
+        </svg>
+      </div>
+      <div style="color: var(--muted);" class="text-sm" data-i18n="ob.subtitle">Configurons votre boîte intelligente — quelques minutes suffisent.</div>
+    </div>
+
+    <!-- Stepper -->
+    <div class="flex items-center gap-2 mb-6 px-2">
+      <div id="dot-1" class="step-dot active">1</div>
+      <div id="line-1" class="step-line"></div>
+      <div id="dot-2" class="step-dot">2</div>
+      <div id="line-2" class="step-line"></div>
+      <div id="dot-3" class="step-dot">3</div>
+      <div id="line-3" class="step-line"></div>
+      <div id="dot-4" class="step-dot">4</div>
+    </div>
+
+    <!-- Step 1 — Welcome / OpenAI key -->
+    <section id="step-1" class="panel p-8">
+      <h2 class="text-2xl font-bold mb-2" data-i18n="ob.step1.title">Bienvenue</h2>
+      <p style="color: var(--muted);" class="mb-6 text-sm" data-i18n="ob.step1.desc">
+        Lull Mail trie, résume et priorise vos emails grâce à OpenAI.
+        On commence par votre clé API.
+      </p>
+
+      <label class="label" data-i18n="ob.step1.key_label">Clé API OpenAI</label>
+      <input id="openai-key" type="password" class="input font-mono" placeholder="sk-…" autocomplete="off" />
+
+      <div class="mt-3 text-xs" style="color: var(--muted);">
+        <span data-i18n="ob.step1.no_key_prefix">Pas encore de clé ?</span>
+        <a href="https://platform.openai.com/api-keys" target="_blank"
+           style="color: var(--accent);" class="underline font-medium"
+           data-i18n="ob.step1.no_key_link">
+          Créez-en une ici
+        </a>
+      </div>
+
+      <label class="label mt-5" data-i18n="ob.step1.model_label">Modèle (optionnel)</label>
+      <input type="hidden" id="openai-model" value="gpt-4o-mini" />
+      <div class="ob-drop-wrap" id="openai-model-wrap">
+        <button class="ob-drop-btn" id="openai-model-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
+          <span id="openai-model-label" data-i18n="ob.step1.model_mini">gpt-4o-mini — recommandé (rapide &amp; abordable)</span>
+          <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="ob-drop-menu" id="openai-model-drop" role="listbox" style="display:none">
+          <div class="ob-drop-opt active" data-val="gpt-4o-mini" data-label-key="ob.step1.model_mini" role="option" aria-selected="true">gpt-4o-mini <span style="opacity:.6;font-size:11px">— <span data-i18n="ob.step1.model_mini_short">recommandé</span></span></div>
+          <div class="ob-drop-opt" data-val="gpt-4o" data-label-key="ob.step1.model_4o" role="option" aria-selected="false">gpt-4o <span style="opacity:.6;font-size:11px">— <span data-i18n="ob.step1.model_4o_short">plus précis, plus cher</span></span></div>
+          <div class="ob-drop-opt" data-val="gpt-4.1-mini" data-label-key="ob.step1.model_4o" role="option" aria-selected="false">gpt-4.1-mini</div>
+        </div>
+      </div>
+
+      <div class="flex justify-end mt-8 gap-3">
+        <button class="btn" onclick="saveOpenAIAndNext()">
+          <span data-i18n="ob.step1.cta">Continuer</span> <i data-lucide="arrow-right"></i>
+        </button>
+      </div>
+    </section>
+
+    <!-- Step 2 — Email accounts -->
+    <section id="step-2" class="panel p-8 hidden">
+      <h2 class="text-2xl font-bold mb-2" data-i18n="ob.step2.title">Vos comptes email</h2>
+      <p style="color: var(--muted);" class="mb-6 text-sm" data-i18n="ob.step2.desc">
+        Ajoutez au moins un compte. Vous pouvez en ajouter d'autres plus tard depuis les réglages.
+      </p>
+
+      <!-- Provider grid -->
+      <label class="label" data-i18n="ob.step2.choose_provider">Choisir un fournisseur</label>
+      <div id="provider-grid" class="grid grid-cols-3 gap-2 mb-5"></div>
+
+      <!-- Account form -->
+      <div id="account-form" class="space-y-3">
+        <!-- Provider help banner -->
+        <div id="provider-help" class="hidden help-banner"></div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="label" data-i18n="ob.step2.name_label">Nom du compte</label>
+            <input id="acc-name" class="input" data-i18n-placeholder="ob.step2.name_ph" placeholder="Boulot, Perso…" />
+          </div>
+          <div>
+            <label class="label" data-i18n="ob.step2.email_label">Adresse email</label>
+            <input id="acc-email" type="email" class="input" data-i18n-placeholder="ob.step2.email_ph" placeholder="vous@exemple.com" />
+          </div>
+        </div>
+
+        <div>
+          <div class="pwd-row">
+            <label class="label" style="margin: 0;" data-i18n="ob.step2.password_label">Mot de passe IMAP / Mot de passe d'application</label>
+            <a id="app-pwd-link" class="quick-link hidden" target="_blank" rel="noopener" href="#">
+              <i data-lucide="external-link"></i> <span data-i18n="ob.step2.app_pwd_link">Créer un mot de passe d'application</span>
+            </a>
+          </div>
+          <input id="acc-password" type="password" class="input font-mono" data-i18n-placeholder="ob.step2.password_ph" placeholder="Votre mot de passe" autocomplete="new-password" />
+        </div>
+
+        <details class="text-xs">
+          <summary style="color: var(--muted); cursor: pointer; user-select: none;" class="select-none" data-i18n="ob.step2.advanced">
+            Réglages avancés (serveur IMAP, port, SSL)
+          </summary>
+          <div class="grid grid-cols-3 gap-3 mt-3">
+            <div class="col-span-2">
+              <label class="label" data-i18n="ob.step2.host_label">Serveur IMAP</label>
+              <input id="acc-host" class="input" data-i18n-placeholder="ob.step2.host_ph" placeholder="imap.exemple.com" />
+            </div>
+            <div>
+              <label class="label" data-i18n="ob.step2.port_label">Port</label>
+              <input id="acc-port" type="number" class="input" />
+            </div>
+            <div class="col-span-3 flex gap-4 text-xs" style="color: var(--muted);">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input id="acc-ssl" type="checkbox" /> <span data-i18n="ob.step2.ssl">SSL/TLS</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input id="acc-starttls" type="checkbox" /> <span data-i18n="ob.step2.starttls">STARTTLS</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input id="acc-verify" type="checkbox" /> <span data-i18n="ob.step2.verify">Vérifier le certificat</span>
+              </label>
+            </div>
+          </div>
+        </details>
+
+        <div class="flex justify-center gap-3 pt-2">
+          <button class="btn btn-ghost" onclick="testConnection()" id="btn-test">
+            <i data-lucide="plug-zap"></i> <span data-i18n="ob.step2.test">Tester la connexion</span>
+          </button>
+          <button class="btn" onclick="addAccount()" id="btn-add-acc">
+            <i data-lucide="plus"></i> <span data-i18n="ob.step2.add">Ajouter ce compte</span>
+          </button>
+        </div>
+
+        <div id="test-result" class="text-sm"></div>
+      </div>
+
+      <!-- Existing accounts list -->
+      <div class="mt-6">
+        <div class="label" data-i18n="ob.step2.added_label">Comptes ajoutés</div>
+        <div id="accounts-list" class="space-y-2">
+          <div style="color: var(--muted);" class="text-sm italic" data-i18n="ob.step2.no_accounts">Aucun compte pour le moment.</div>
+        </div>
+      </div>
+
+      <div class="flex justify-between mt-8 gap-3">
+        <button class="btn btn-ghost" onclick="goToStep(1)">
+          <i data-lucide="arrow-left"></i> <span data-i18n="ob.step2.back">Retour</span>
+        </button>
+        <button class="btn" onclick="goToStep(3)" id="btn-next-accounts" disabled>
+          <span data-i18n="ob.step2.cta">Continuer</span> <i data-lucide="arrow-right"></i>
+        </button>
+      </div>
+    </section>
+
+    <!-- Step 3 — Notifications (optional) -->
+    <section id="step-3" class="panel p-8 hidden">
+      <h2 class="text-2xl font-bold mb-2" data-i18n="ob.step3.title">Notifications mobiles (optionnel)</h2>
+      <p style="color: var(--muted);" class="mb-6 text-sm" data-i18n-html="ob.step3.desc_html">
+        Recevez une notification push quand un email vraiment important arrive.
+        Utilise <a href="https://ntfy.sh" target="_blank" style="color: var(--accent);" class="underline">ntfy.sh</a> — gratuit, pas de compte requis.
+      </p>
+
+      <label class="toggle-row mb-4" id="ntfy-toggle-row">
+        <span class="toggle-text">
+          <span class="toggle-title" data-i18n="ob.step3.toggle_title">Activer les notifications push</span>
+          <span class="toggle-sub" data-i18n="ob.step3.toggle_sub">Une alerte sur votre téléphone quand un email vraiment urgent arrive.</span>
+        </span>
+        <span class="toggle">
+          <input id="ntfy-enabled" type="checkbox" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </span>
+      </label>
+
+      <div id="ntfy-fields" class="space-y-3 hidden">
+        <div>
+          <label class="label" data-i18n="ob.step3.topic_label">Topic ntfy (choisissez un nom unique difficile à deviner)</label>
+          <div class="flex gap-2">
+            <input id="ntfy-topic" class="input font-mono" data-i18n-placeholder="ob.step3.topic_ph" placeholder="lullmail-vous-x7k2p" />
+            <button class="btn btn-ghost" onclick="generateTopic()" data-i18n="ob.step3.random">Aléatoire</button>
+          </div>
+          <div class="text-xs mt-2" style="color: var(--muted);" data-i18n-html="ob.step3.topic_hint_html">
+            Installez l'app ntfy (<a href="https://ntfy.sh/app" target="_blank" style="color: var(--accent);" class="underline">App Store / Play Store</a>) puis abonnez-vous à ce topic.
+          </div>
+        </div>
+
+        <div>
+          <label class="label" data-i18n="ob.step3.min_label">Score d'importance minimum (1-10)</label>
+          <input id="ntfy-min" type="range" min="1" max="10" value="7" class="w-full" oninput="document.getElementById('ntfy-min-val').textContent = this.value" />
+          <div class="text-xs flex justify-between" style="color: var(--muted);">
+            <span data-i18n="ob.step3.scale_low">1 (tout)</span>
+            <span><span id="ntfy-min-val">7</span> <span data-i18n="ob.step3.scale_mid">et plus</span></span>
+            <span data-i18n="ob.step3.scale_high">10 (urgent)</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex justify-between mt-8 gap-3">
+        <button class="btn btn-ghost" onclick="goToStep(2)">
+          <i data-lucide="arrow-left"></i> <span data-i18n="ob.step3.back">Retour</span>
+        </button>
+        <div class="flex gap-2">
+          <button class="btn btn-ghost" onclick="skipNtfyAndFinish()" data-i18n="ob.step3.skip">Passer</button>
+          <button class="btn" onclick="saveNtfyAndFinish()">
+            <span data-i18n="ob.step3.finish">Terminer</span> <i data-lucide="check"></i>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 4 — Done -->
+    <section id="step-4" class="panel p-8 hidden text-center">
+      <div class="text-5xl mb-4">✨</div>
+      <h2 class="text-2xl font-bold mb-2" data-i18n="ob.step4.title">Tout est prêt</h2>
+      <p style="color: var(--muted);" class="mb-6 text-sm" data-i18n="ob.step4.desc">
+        Lull Mail va commencer à analyser vos emails. La première synchronisation
+        peut prendre quelques minutes selon la taille de vos boîtes.
+      </p>
+
+      <div id="finalize-status" class="my-4 text-sm"></div>
+
+      <button class="btn" onclick="window.location.href = '/'" data-i18n="ob.step4.open_dashboard">
+        Ouvrir le dashboard
+      </button>
+    </section>
+
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<script src="/static/i18n.js"></script>
+<script src="/static/onboarding.js"></script>
+</body>
+</html>
