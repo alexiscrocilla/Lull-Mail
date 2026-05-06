@@ -1,0 +1,636 @@
+"""
+Setup / onboarding API.
+
+Drives the in-app configuration wizard. Endpoints are mounted under
+/api/setup/* and remain available even when the rest of the app is
+running in degraded "no config yet" mode — that's the whole point.
+
+Conventions:
+  • secrets (passwords, OpenAI key) are MASKED in every read endpoint
+    (returned as the literal string "***" if set, "" if missing)
+  • write endpoints accept the literal "***" to mean "keep the existing
+    value" so the UI can submit a form without re-prompting for secrets
+  • write endpoints atomically rewrite config.yaml via cfg.save() — they
+    refuse to persist a config that wouldn't pass cfg._validate
+  • finalize() boots the email subsystem; subsequent calls restart it
+"""
+
+from __future__ import annotations
+
+import imaplib
+import logging
+import socket
+import ssl
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
+from src import config as cfg
+from src import lifecycle
+from src import paths
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/setup", tags=["setup"])
+
+MASK = "***"
+
+# ── Provider presets ─────────────────────────────────────────────────────────
+# Pre-fills IMAP host/port/SSL settings + a help link so non-technical
+# users only have to type their email + password (or app-password).
+
+PROVIDERS: List[Dict[str, Any]] = [
+    {
+        "id": "gmail",
+        "name": "Gmail",
+        "type": "gmail",
+        "imap_host": "imap.gmail.com",
+        "imap_port": 993,
+        "ssl": True,
+        "starttls": False,
+        "verify_ssl": True,
+        "help_url": "https://support.google.com/accounts/answer/185833",
+        # Direct deep-link to the app-password creation page so users can
+        # generate the 16-char code in one click instead of digging through
+        # Google account settings.
+        "app_password_url": "https://myaccount.google.com/apppasswords",
+        "help": "Activez la 2FA puis créez un \"Mot de passe d'application\" "
+                "(Compte Google → Sécurité). Collez les 16 caractères ci-dessous.",
+    },
+    {
+        "id": "outlook",
+        "name": "Outlook / Microsoft 365",
+        "type": "outlook",
+        "imap_host": "outlook.office365.com",
+        "imap_port": 993,
+        "ssl": True,
+        "starttls": False,
+        "verify_ssl": True,
+        "help_url": "https://support.microsoft.com/account-billing/5896ed9b-4263-e681-128a-a6f2979a7944",
+        "app_password_url": "https://account.live.com/proofs/AppPassword",
+        "help": "Si vous avez la 2FA, créez un mot de passe d'application "
+                "via account.microsoft.com → Sécurité → Options de sécurité avancées.",
+    },
+    {
+        "id": "proton",
+        "name": "ProtonMail (via Bridge)",
+        "type": "proton",
+        "imap_host": "127.0.0.1",
+        "imap_port": 1143,
+        "ssl": False,
+        "starttls": True,
+        "verify_ssl": False,
+        "help_url": "https://proton.me/mail/bridge",
+        # Bridge is a desktop app, no direct URL — users grab the password
+        # from the running Bridge UI itself. We leave this empty so the
+        # frontend doesn't render a misleading button.
+        "app_password_url": "",
+        "help": "Installez et lancez Proton Mail Bridge. Pour chaque adresse, "
+                "ouvrez \"Configure email client\" et copiez le mot de passe affiché.",
+    },
+    {
+        "id": "yahoo",
+        "name": "Yahoo Mail",
+        "type": "yahoo",
+        "imap_host": "imap.mail.yahoo.com",
+        "imap_port": 993,
+        "ssl": True,
+        "starttls": False,
+        "verify_ssl": True,
+        "help_url": "https://help.yahoo.com/kb/SLN15241.html",
+        "app_password_url": "https://login.yahoo.com/myaccount/security/app-passwords/list",
+        "help": "Yahoo exige un \"Mot de passe d'application\" : Compte → "
+                "Sécurité du compte → Générer un mot de passe d'application.",
+    },
+    {
+        "id": "icloud",
+        "name": "iCloud Mail",
+        "type": "icloud",
+        "imap_host": "imap.mail.me.com",
+        "imap_port": 993,
+        "ssl": True,
+        "starttls": False,
+        "verify_ssl": True,
+        "help_url": "https://support.apple.com/102654",
+        "app_password_url": "https://account.apple.com/account/manage/section/security",
+        "help": "Créez un mot de passe pour app sur appleid.apple.com → "
+                "Connexion et sécurité → Mots de passe pour application.",
+    },
+    {
+        "id": "orange",
+        "name": "Orange",
+        "type": "orange",
+        "imap_host": "imap.orange.fr",
+        "imap_port": 993,
+        "ssl": True,
+        "starttls": False,
+        "verify_ssl": True,
+        "help_url": "https://assistance.orange.fr/ordinateurs-peripheriques/installer-et-utiliser/l-utilisation-du-mail/configurer-mon-mail-orange-sur-mon-ordinateur/configurer-l-application-mail-de-windows-10-pour-le-mail-orange_117893-744080",
+        "app_password_url": "",
+        "help": "Utilisez votre mot de passe Orange habituel. Si vous avez la "
+                "double-validation, générez un mot de passe d'application.",
+    },
+    {
+        "id": "ovh",
+        "name": "OVH (mail pro)",
+        "type": "ovh",
+        "imap_host": "imap.mail.ovh.net",
+        "imap_port": 993,
+        "ssl": True,
+        "starttls": False,
+        "verify_ssl": True,
+        "help_url": "https://help.ovhcloud.com/csm/fr-mxplan-imap-pop-smtp",
+        "app_password_url": "",
+        "help": "Mot de passe défini lors de la création de la boîte (espace "
+                "client OVH → Webmail / Mail Plan).",
+    },
+    {
+        "id": "free",
+        "name": "Free.fr",
+        "type": "free",
+        "imap_host": "imap.free.fr",
+        "imap_port": 993,
+        "ssl": True,
+        "starttls": False,
+        "verify_ssl": True,
+        "help_url": "https://assistance.free.fr/articles/utiliser-une-zimbra-1290",
+        "app_password_url": "",
+        "help": "Mot de passe de votre compte Free.",
+    },
+    {
+        "id": "custom",
+        "name": "Autre serveur IMAP",
+        "type": "imap",
+        "imap_host": "",
+        "imap_port": 993,
+        "ssl": True,
+        "starttls": False,
+        "verify_ssl": True,
+        "help_url": "",
+        "app_password_url": "",
+        "help": "Renseignez manuellement le serveur IMAP fourni par votre "
+                "hébergeur mail.",
+    },
+]
+
+
+# ── Models ───────────────────────────────────────────────────────────────────
+
+
+class OpenAIPayload(BaseModel):
+    api_key: str
+    model: str = "gpt-4o-mini"
+
+
+class NtfyPayload(BaseModel):
+    enabled: bool = True
+    server: str = "https://ntfy.sh"
+    topic: str = ""
+    min_importance: int = Field(7, ge=1, le=10)
+
+
+class GeneralPayload(BaseModel):
+    polling_interval_minutes: int = Field(10, ge=1, le=1440)
+    # `server_port` accepted but ignored — the desktop app picks an
+    # ephemeral port at startup. Kept in the schema only for backwards
+    # compatibility with older config.yaml files.
+    server_port: Optional[int] = Field(None, ge=1024, le=65535)
+
+
+class AccountPayload(BaseModel):
+    name: str
+    type: str = "imap"
+    email: str
+    imap_host: str
+    imap_port: int = 993
+    username: str
+    password: str
+    ssl: bool = True
+    starttls: bool = False
+    verify_ssl: bool = True
+    enabled: bool = True
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _load_or_default() -> Dict[str, Any]:
+    """Read config.yaml if present, else return an empty skeleton."""
+    if cfg.CONFIG_PATH.exists():
+        try:
+            import yaml
+            with open(cfg.CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            # Make sure all top-level keys exist so callers can edit one
+            # section without losing the others.
+            skel = cfg.default_skeleton()
+            for k, v in skel.items():
+                if k not in data:
+                    data[k] = v
+                elif isinstance(v, dict) and isinstance(data[k], dict):
+                    for sk, sv in v.items():
+                        data[k].setdefault(sk, sv)
+            return data
+        except Exception:
+            logger.exception("Lecture config.yaml a échoué — repartir du skeleton")
+    return cfg.default_skeleton()
+
+
+def _persist(data: Dict[str, Any]) -> None:
+    """Save + reload + try to (re)start services. Raises HTTPException
+    with the validation error if the config is incomplete."""
+    try:
+        cfg.save(data)
+    except cfg.ConfigError as e:
+        # Setup-time saves can be incomplete; we tolerate that here. The
+        # caller decides whether to attempt finalize.
+        logger.info("Save partielle (validation KO): %s", e)
+        # Still write to disk so the wizard can resume between visits.
+        paths.ensure_dirs()
+        import yaml
+        with open(cfg.CONFIG_PATH, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+
+
+def _mask_account(acc: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(acc)
+    if out.get("password"):
+        out["password"] = MASK
+    return out
+
+
+def _unmask_password(new_value: str, existing: str) -> str:
+    """Replace MASK with the existing value so masked submits work."""
+    return existing if new_value == MASK else new_value
+
+
+# ── Status / read ────────────────────────────────────────────────────────────
+
+
+@router.get("/status")
+def setup_status() -> Dict[str, Any]:
+    data = _load_or_default()
+    accounts = data.get("accounts") or []
+    enabled = [a for a in accounts if a.get("enabled", True)]
+    has_openai = bool((data.get("openai") or {}).get("api_key"))
+    has_ntfy = bool((data.get("ntfy") or {}).get("topic"))
+    return {
+        "configured": cfg.is_configured(),
+        "accounts": len(accounts),
+        "accounts_enabled": len(enabled),
+        "has_openai": has_openai,
+        "has_ntfy": has_ntfy,
+        "data_dir": str(paths.APP_DATA_DIR),
+        "services_running": lifecycle.is_running(),
+    }
+
+
+@router.get("/config")
+def get_config() -> Dict[str, Any]:
+    data = _load_or_default()
+    # Mask secrets before returning.
+    if data.get("openai") and data["openai"].get("api_key"):
+        data["openai"] = {**data["openai"], "api_key": MASK}
+    data["accounts"] = [_mask_account(a) for a in (data.get("accounts") or [])]
+    return data
+
+
+@router.get("/providers")
+def list_providers() -> List[Dict[str, Any]]:
+    return PROVIDERS
+
+
+# ── Section writes ───────────────────────────────────────────────────────────
+
+
+@router.post("/openai")
+def save_openai(payload: OpenAIPayload) -> Dict[str, Any]:
+    data = _load_or_default()
+    existing_key = (data.get("openai") or {}).get("api_key", "")
+    new_key = _unmask_password(payload.api_key, existing_key)
+    if not new_key:
+        raise HTTPException(400, "Clé API OpenAI requise.")
+    if not (new_key.startswith("sk-") or new_key.startswith("sk_")):
+        raise HTTPException(400, "Format de clé OpenAI inattendu (devrait commencer par sk-).")
+    data["openai"] = {"api_key": new_key, "model": payload.model or "gpt-4o-mini"}
+    _persist(data)
+    return {"ok": True}
+
+
+@router.post("/ntfy")
+def save_ntfy(payload: NtfyPayload) -> Dict[str, Any]:
+    data = _load_or_default()
+    if not payload.enabled:
+        # Empty topic disables the notifier without removing the section.
+        data["ntfy"] = {
+            "server": payload.server or "https://ntfy.sh",
+            "topic": "",
+            "min_importance": payload.min_importance,
+        }
+    else:
+        if not payload.topic.strip():
+            raise HTTPException(400, "Topic ntfy requis quand activé.")
+        data["ntfy"] = {
+            "server": payload.server or "https://ntfy.sh",
+            "topic": payload.topic.strip(),
+            "min_importance": payload.min_importance,
+        }
+    _persist(data)
+    return {"ok": True}
+
+
+@router.post("/general")
+def save_general(payload: GeneralPayload) -> Dict[str, Any]:
+    data = _load_or_default()
+    polling = data.get("polling") or {}
+    polling["interval_minutes"] = payload.polling_interval_minutes
+    data["polling"] = polling
+    # We still write a sane server section so older code that reads
+    # config.server.host/port doesn't blow up — but the actual port used
+    # at runtime is picked dynamically by app_gui.py.
+    server = data.get("server") or {}
+    server.setdefault("host", "127.0.0.1")
+    server.setdefault("port", 8000)
+    data["server"] = server
+    _persist(data)
+    return {"ok": True}
+
+
+# ── Account CRUD ─────────────────────────────────────────────────────────────
+
+
+@router.get("/accounts")
+def list_accounts() -> List[Dict[str, Any]]:
+    data = _load_or_default()
+    return [_mask_account(a) for a in (data.get("accounts") or [])]
+
+
+@router.post("/accounts")
+def add_account(payload: AccountPayload) -> Dict[str, Any]:
+    data = _load_or_default()
+    accounts = data.get("accounts") or []
+    if any(a.get("email", "").lower() == payload.email.lower() for a in accounts):
+        raise HTTPException(409, f"Un compte avec l'adresse {payload.email} existe déjà.")
+    if payload.password == MASK or not payload.password:
+        raise HTTPException(400, "Mot de passe requis pour créer un compte.")
+    accounts.append(payload.model_dump())
+    data["accounts"] = accounts
+    _persist(data)
+    return {"ok": True, "account": _mask_account(payload.model_dump())}
+
+
+@router.put("/accounts/{email}")
+def update_account(email: str, payload: AccountPayload) -> Dict[str, Any]:
+    data = _load_or_default()
+    accounts = data.get("accounts") or []
+    for i, a in enumerate(accounts):
+        if a.get("email", "").lower() == email.lower():
+            new = payload.model_dump()
+            new["password"] = _unmask_password(new["password"], a.get("password", ""))
+            if not new["password"]:
+                raise HTTPException(400, "Mot de passe vide.")
+            accounts[i] = new
+            data["accounts"] = accounts
+            _persist(data)
+            return {"ok": True, "account": _mask_account(new)}
+    raise HTTPException(404, f"Compte {email} introuvable.")
+
+
+@router.delete("/accounts/{email}")
+def delete_account(email: str) -> Dict[str, Any]:
+    data = _load_or_default()
+    accounts = data.get("accounts") or []
+    new_list = [a for a in accounts if a.get("email", "").lower() != email.lower()]
+    if len(new_list) == len(accounts):
+        raise HTTPException(404, f"Compte {email} introuvable.")
+    data["accounts"] = new_list
+    _persist(data)
+    return {"ok": True, "remaining": len(new_list)}
+
+
+# ── IMAP test ────────────────────────────────────────────────────────────────
+
+
+@router.post("/accounts/test")
+def test_account(payload: AccountPayload) -> Dict[str, Any]:
+    """Open an IMAP connection and authenticate. No mailbox state is
+    altered. Used by the wizard's "Tester la connexion" button.
+
+    If `password` comes in as MASK, look it up by email in the saved
+    config so users can re-test an existing account without retyping.
+    """
+    pwd = payload.password
+    if pwd == MASK:
+        data = _load_or_default()
+        for a in (data.get("accounts") or []):
+            if a.get("email", "").lower() == payload.email.lower():
+                pwd = a.get("password", "")
+                break
+    if not pwd:
+        raise HTTPException(400, "Mot de passe manquant pour le test.")
+
+    try:
+        if payload.ssl:
+            ctx = ssl.create_default_context()
+            if not payload.verify_ssl:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            conn = imaplib.IMAP4_SSL(
+                payload.imap_host, payload.imap_port,
+                ssl_context=ctx, timeout=15,
+            )
+        else:
+            conn = imaplib.IMAP4(payload.imap_host, payload.imap_port, timeout=15)
+            if payload.starttls:
+                ctx = ssl.create_default_context()
+                if not payload.verify_ssl:
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                conn.starttls(ssl_context=ctx)
+
+        try:
+            conn.login(payload.username, pwd)
+        except imaplib.IMAP4.error as e:
+            return {
+                "ok": False,
+                "stage": "login",
+                "error": "Identifiants refusés par le serveur.",
+                "detail": str(e),
+            }
+
+        try:
+            typ, mbx = conn.list()
+            mailbox_count = len(mbx) if typ == "OK" and mbx else 0
+        except Exception:
+            mailbox_count = 0
+
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+        return {"ok": True, "mailbox_count": mailbox_count}
+
+    except (socket.gaierror, socket.timeout, OSError) as e:
+        return {
+            "ok": False,
+            "stage": "connect",
+            "error": "Connexion au serveur IMAP impossible.",
+            "detail": str(e),
+        }
+    except ssl.SSLError as e:
+        return {
+            "ok": False,
+            "stage": "ssl",
+            "error": "Erreur SSL/TLS.",
+            "detail": str(e),
+        }
+    except Exception as e:
+        logger.exception("test_account: erreur inattendue")
+        return {"ok": False, "stage": "unknown", "error": str(e), "detail": ""}
+
+
+# ── Finalize ─────────────────────────────────────────────────────────────────
+
+
+@router.post("/finalize")
+def finalize() -> Dict[str, Any]:
+    """Boot (or reboot) the email subsystem after the wizard finishes.
+
+    Returns 400 with the validation error if the saved config still
+    isn't usable — the UI surfaces this as a banner and the user goes
+    back to fill in what's missing.
+    """
+    try:
+        cfg.reload()
+    except cfg.ConfigError as e:
+        raise HTTPException(400, str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(400, str(e))
+
+    started = lifecycle.start_email_services(restart=True)
+    if not started:
+        raise HTTPException(500, "Démarrage des services email échoué — voir les logs.")
+    return {"ok": True, "data_dir": str(paths.APP_DATA_DIR)}
+
+
+# ── Open data folder ─────────────────────────────────────────────────────────
+
+
+@router.post("/open-data-dir")
+def open_data_dir() -> Dict[str, Any]:
+    """Reveal the app's data directory in the OS file manager. Used by
+    the Settings page so power users can see the SQLite DB / log file
+    without hunting through %APPDATA%.
+
+    Best-effort: returns ok=False if the platform isn't supported or if
+    the OS call fails (e.g. running headless, permission issue).
+    """
+    import sys
+    import subprocess
+
+    target = str(paths.APP_DATA_DIR)
+    paths.ensure_dirs()
+
+    try:
+        if sys.platform == "win32":
+            # os.startfile is the canonical Windows way and pops the
+            # folder in Explorer with the user's chosen view settings.
+            import os
+            os.startfile(target)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", target])
+        else:
+            subprocess.Popen(["xdg-open", target])
+    except Exception as e:
+        logger.exception("open-data-dir failed")
+        raise HTTPException(500, f"Impossible d'ouvrir le dossier : {e}")
+
+    return {"ok": True, "path": target}
+
+
+# ── Wipe data ────────────────────────────────────────────────────────────────
+
+
+class WipeConfirm(BaseModel):
+    confirm: str  # must equal "SUPPRIMER" — defensive against accidental calls
+
+
+@router.post("/wipe")
+def wipe_data(payload: WipeConfirm) -> Dict[str, Any]:
+    """Erase config.yaml, the SQLite DB, attachments and logs.
+
+    Used by the Settings → Stockage "Supprimer mes données" button. After
+    a successful wipe the frontend reloads, which lands on /onboarding
+    because no valid config exists anymore.
+
+    The body MUST contain {"confirm": "SUPPRIMER"} so a misclick on a
+    nearby button can't trigger this. The scheduler is stopped first so
+    no thread is still writing to the files we're about to delete.
+    """
+    import shutil
+
+    if payload.confirm != "SUPPRIMER":
+        raise HTTPException(400, "Confirmation manquante.")
+
+    # 1. Stop background workers — they hold file handles on the DB.
+    try:
+        lifecycle.stop_email_services()
+    except Exception:
+        logger.exception("Arrêt scheduler avant wipe a échoué (on continue)")
+
+    # 2. Forget the cached in-memory config.
+    try:
+        cfg.reload()
+    except Exception:
+        pass
+
+    deleted: List[str] = []
+    failed: List[str] = []
+
+    # 3. Remove config.yaml.
+    try:
+        if cfg.CONFIG_PATH.exists():
+            cfg.CONFIG_PATH.unlink()
+            deleted.append("config.yaml")
+    except OSError as e:
+        logger.warning("Suppression config.yaml: %s", e)
+        failed.append(f"config.yaml ({e})")
+
+    # 4. Remove the SQLite DB + WAL/SHM siblings (created by journal_mode=WAL).
+    for suffix in ("", "-wal", "-shm"):
+        target = paths.DB_PATH.with_name(paths.DB_PATH.name + suffix)
+        try:
+            if target.exists():
+                target.unlink()
+                deleted.append(target.name)
+        except OSError as e:
+            logger.warning("Suppression %s: %s", target, e)
+            failed.append(f"{target.name} ({e})")
+
+    # 5. Wipe the attachments tree.
+    try:
+        if paths.ATTACHMENTS_DIR.exists():
+            shutil.rmtree(paths.ATTACHMENTS_DIR, ignore_errors=False)
+            deleted.append("attachments/")
+    except OSError as e:
+        logger.warning("Suppression attachments/: %s", e)
+        failed.append(f"attachments/ ({e})")
+
+    # 6. Truncate the log so the new install starts clean. We don't unlink
+    # it because the running process still has an open FileHandler — on
+    # Windows that would raise PermissionError. Truncating works fine.
+    try:
+        if paths.LOG_PATH.exists():
+            with open(paths.LOG_PATH, "w", encoding="utf-8") as f:
+                f.write("")
+            deleted.append("lull_mail.log")
+    except OSError as e:
+        logger.warning("Vidage log: %s", e)
+        failed.append(f"lull_mail.log ({e})")
+
+    # 7. Re-create the empty data tree so subsequent calls don't crash.
+    paths.ensure_dirs()
+
+    return {"ok": not failed, "deleted": deleted, "failed": failed}

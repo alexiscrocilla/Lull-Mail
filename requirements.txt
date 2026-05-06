@@ -1,0 +1,13 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+openai==1.57.0
+pyyaml==6.0.2
+requests==2.32.3
+aiofiles==24.1.0
+apscheduler==3.10.4
+python-dateutil==2.9.0
+
+# --- Desktop app (Windows) ---
+pywebview==5.3.2
+pystray==0.19.5
+Pillow==10.4.0

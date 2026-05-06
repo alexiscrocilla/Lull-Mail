@@ -1,0 +1,28 @@
+# ── Secrets / runtime data ──
+config.yaml
+data/
+*.db
+*.db-wal
+*.db-shm
+*.log
+.env
+
+# ── Python ──
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ── PyInstaller build artefacts ──
+build/
+dist/
+*.spec.bak
+
+# ── IDE / OS ──
+.cursor/
+.vscode/
+.idea/
+.vs/
+*.lnk
+Thumbs.db
+.DS_Store

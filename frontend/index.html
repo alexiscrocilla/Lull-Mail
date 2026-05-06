@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Lull Mail</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+<script>
+  // No-FOUC theme bootstrap. Runs before paint.
+  (function () {
+    try {
+      var saved = localStorage.getItem('theme');
+      var preferDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      var t = saved || (preferDark ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (_) {}
+  })();
+</script>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: ['selector', '[data-theme="dark"]'],
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['Plus Jakarta Sans', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+          mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+        },
+        colors: {
+          bg:        'var(--bg)',
+          surface:   'var(--surface)',
+          surface2:  'var(--surface-2)',
+          ink:       'var(--text)',
+          muted:     'var(--muted)',
+          line:      'var(--border)',
+          accent:    'var(--accent)',
+          accentSoft:'var(--accent-soft)',
+          danger:    'var(--danger)',
+          warning:   'var(--warning)',
+          success:   'var(--success)',
+        },
+        boxShadow: {
+          card: '0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.03)',
+          pop:  '0 12px 32px -8px rgba(15, 23, 42, 0.18), 0 4px 12px -4px rgba(15, 23, 42, 0.08)',
+        }
+      }
+    }
+  }
+</script>
+
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="font-sans bg-bg text-ink antialiased min-h-screen">
+
+  <div id="app" class="min-h-screen flex">
+    <!-- Rail (left nav) -->
+    <nav id="rail" class="rail" style="position:relative">
+      <div id="rail-indicator" aria-hidden="true"></div>
+      <div class="rail-top">
+        <a href="#/inbox" class="rail-logo" aria-label="Lull Mail">
+          <img src="/static/assets/lullmail-icon.svg" alt="Lull Mail" class="w-8 h-8 object-contain" />
+        </a>
+        <a href="#/inbox" data-route="inbox" class="rail-btn"
+           data-i18n-aria-label="rail.inbox" data-i18n-title="rail.inbox"
+           aria-label="Boîte de réception" title="Boîte de réception">
+          <i data-lucide="inbox" class="w-5 h-5"></i>
+        </a>
+        <a href="#/dashboard" data-route="dashboard" class="rail-btn"
+           data-i18n-aria-label="rail.dashboard" data-i18n-title="rail.dashboard"
+           aria-label="Tableau de bord" title="Tableau de bord">
+          <i data-lucide="activity" class="w-5 h-5"></i>
+        </a>
+        <a href="#/cleanup" data-route="cleanup" class="rail-btn"
+           data-i18n-aria-label="rail.cleanup" data-i18n-title="rail.cleanup.title"
+           aria-label="Nettoyage" title="Nettoyage de la boîte">
+          <i data-lucide="sparkles" class="w-5 h-5"></i>
+        </a>
+        <a href="#/settings" data-route="settings" class="rail-btn"
+           data-i18n-aria-label="rail.settings" data-i18n-title="rail.settings"
+           aria-label="Paramètres" title="Paramètres">
+          <i data-lucide="settings" class="w-5 h-5"></i>
+        </a>
+      </div>
+      <div class="rail-bottom">
+        <button id="theme-toggle" class="rail-btn"
+                data-i18n-aria-label="rail.theme" data-i18n-title="rail.theme.title"
+                aria-label="Basculer thème" title="Basculer clair / sombre">
+          <i data-lucide="sun" class="w-5 h-5 only-light"></i>
+          <i data-lucide="moon" class="w-5 h-5 only-dark"></i>
+        </button>
+        <div class="rail-avatar" id="rail-avatar"
+             data-i18n-aria-label="rail.account"
+             aria-label="Compte actif">•</div>
+      </div>
+    </nav>
+
+    <!-- Page view (mailbox / dashboard) -->
+    <main id="view" class="flex-1 min-w-0"></main>
+  </div>
+
+  <!-- Toast container -->
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- Unsubscribe confirm modal -->
+  <div id="unsub-modal" class="unsub-modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="unsub-modal-title">
+    <div class="unsub-modal-card">
+      <div class="unsub-modal-head">
+        <span class="unsub-modal-av" id="unsub-modal-av"></span>
+        <div class="unsub-modal-titles">
+          <h3 class="unsub-modal-title" id="unsub-modal-title"></h3>
+          <p class="unsub-modal-email" id="unsub-modal-email"></p>
+        </div>
+      </div>
+      <div class="unsub-modal-body">
+        <p class="unsub-modal-desc" id="unsub-modal-desc"></p>
+        <label class="unsub-modal-purge" id="unsub-modal-purge-label">
+          <input type="checkbox" id="unsub-modal-purge-cb">
+          <span id="unsub-modal-purge-text"></span>
+        </label>
+      </div>
+      <div class="unsub-modal-footer">
+        <button class="unsub-modal-cancel" id="unsub-modal-cancel" data-i18n="unsub.cancel">Annuler</button>
+        <button class="unsub-modal-confirm" id="unsub-modal-confirm">
+          <i data-lucide="zap" class="w-4 h-4" id="unsub-modal-icon"></i>
+          <span id="unsub-modal-confirm-label" data-i18n="unsub.confirm">Se désabonner</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Keyboard cheat sheet -->
+  <div id="cheat-overlay" class="cheat-overlay hidden" role="dialog"
+       data-i18n-aria-label="shortcuts.title" aria-label="Raccourcis clavier">
+    <div class="cheat-card">
+      <div class="cheat-header">
+        <h2 data-i18n="shortcuts.title">Raccourcis clavier</h2>
+        <button class="cheat-close" data-i18n-aria-label="shortcuts.close" aria-label="Fermer"><i data-lucide="x" class="w-5 h-5"></i></button>
+      </div>
+      <ul class="cheat-list">
+        <li><kbd>j</kbd> / <kbd>k</kbd><span data-i18n="shortcuts.next_prev">Mail suivant / précédent</span></li>
+        <li><kbd>Enter</kbd><span data-i18n="shortcuts.open">Ouvrir le mail sélectionné</span></li>
+        <li><kbd>e</kbd><span data-i18n="shortcuts.mark_read">Marquer comme lu</span></li>
+        <li><kbd>g</kbd> <kbd>i</kbd><span data-i18n="shortcuts.go_inbox">Boîte de réception</span></li>
+        <li><kbd>g</kbd> <kbd>d</kbd><span data-i18n="shortcuts.go_dashboard">Tableau de bord</span></li>
+        <li><kbd>g</kbd> <kbd>c</kbd><span data-i18n="shortcuts.go_cleanup">Nettoyage</span></li>
+        <li><kbd>c</kbd><span data-i18n="shortcuts.compose">Composer</span></li>
+        <li><kbd>/</kbd><span data-i18n="shortcuts.search">Rechercher</span></li>
+        <li><kbd>?</kbd><span data-i18n="shortcuts.help">Afficher cette aide</span></li>
+      </ul>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+  <script src="/static/i18n.js"></script>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
