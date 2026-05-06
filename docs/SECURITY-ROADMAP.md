@@ -1,12 +1,13 @@
 # Security roadmap (long-term)
 
 This file tracks security improvements that go **beyond** the work
-delivered in Lots A → E (sandbox + anti-phishing interstitial,
-network hardening, OS keyring, image-blocker + auth badges,
-rate-limit + tests). Each entry is a deliberate scope cut — the
-underlying problem is real but the remediation is heavier (new deps,
-significant code, or business-grade infrastructure) and warrants its
-own focused work.
+already shipped (sandboxed iframe + anti-phishing interstitial,
+TLS / SSRF / origin-check network guards, OS-keyring credential
+storage, remote-image blocker + SPF/DKIM/DMARC verdict badges,
+per-endpoint rate-limit, automated test suite). Each entry below is
+a deliberate scope cut — the underlying problem is real but the
+remediation is heavier (new deps, significant code, or business-
+grade infrastructure) and warrants its own focused work.
 
 Order is rough priority — top entries land first when capacity allows.
 
@@ -138,8 +139,8 @@ the recovery path — re-setup from scratch.
 
 ## 6. DMARC / DKIM aggregate reports for power users
 
-**Problem.** Lull Mail surfaces SPF/DKIM/DMARC verdicts per email
-(Lot D), but doesn't aggregate them across the whole inbox. A user
+**Problem.** Lull Mail already surfaces SPF/DKIM/DMARC verdicts
+per email, but doesn't aggregate them across the whole inbox. A user
 running their own domain might want to see "98% of mail purporting
 to be from `mydomain.com` failed DMARC last month" — a signal of
 active spoofing campaigns.
@@ -187,5 +188,5 @@ could trigger a destructive action AND scrub the log line.
 
 ---
 
-_Last review: 2026-05-07. Re-review every 6 months or whenever a
-new lot ships._
+_Last review: 2026-05-07. Re-review every 6 months or whenever
+significant new security work ships._

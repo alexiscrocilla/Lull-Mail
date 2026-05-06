@@ -75,11 +75,11 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
     }
   </style>`;
 
-  // 1. Anti-phishing link rewriting (Lot A).
+  // 1. Anti-phishing link rewriting.
   let safeHtml = markSuspiciousLinksInHtml(em.body_html);
 
-  // 2. Remote-image blocker (Lot D). Skipped when the user previously
-  //    trusted the sender or just clicked "Charger pour ce mail".
+  // 2. Remote-image blocker. Skipped when the user previously trusted
+  //    the sender or just clicked "Charger pour ce mail".
   let blockedCount = 0;
   const trusted = !!em.sender_images_trusted;
   if (!trusted && !forceShowImages) {

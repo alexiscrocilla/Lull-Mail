@@ -191,9 +191,9 @@ def get_email(int_id: int, bg: BackgroundTasks):
     rows = db.get_attachments_for_message(em["message_id"])
     em["attachments"] = [_attachment_summary(r) for r in rows]
     em["attachments_pending_scan"] = not bool(em.get("attachments_scanned_at"))
-    # Image-blocker (Lot D): tell the frontend whether to render remote
+    # Remote-image blocker: tell the frontend whether to render remote
     # images directly or behind a placeholder. Defaults to False — only
-    # senders the user has explicitly trusted via the banner load.
+    # senders the user has explicitly trusted via the in-mail banner.
     sender_domain = ""
     raw_sender = em.get("sender") or ""
     m = re.search(r"@([\w.\-]+)", raw_sender)
@@ -1117,7 +1117,7 @@ def cleanup_unsubscribe_bulk(request: Request, req: UnsubscribeBulkReq, bg: Back
     return {"ok": True, "job_id": job_id, "total": len(plan), "skipped": skipped}
 
 
-# ── Sender trust (remote-image blocking — Lot D) ─────────────────────────────
+# ── Sender trust (remote-image blocking) ─────────────────────────────────────
 
 
 class TrustImagesReq(BaseModel):

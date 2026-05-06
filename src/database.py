@@ -138,8 +138,8 @@ def init_db():
         #   • category — last AI/local classification, used to skip
         #     re-classifying every newsletter from the same sender.
         #   • images_trusted — opt-in bypass of the remote-image
-        #     blocker (Lot D). 0 = images stay blocked, 1 = render as
-        #     normal. Toggled by the user via the per-email banner.
+        #     blocker. 0 = images stay blocked, 1 = render as normal.
+        #     Toggled by the user via the per-email banner.
         con.execute("""
             CREATE TABLE IF NOT EXISTS sender_cache (
                 domain          TEXT PRIMARY KEY,
@@ -1177,7 +1177,7 @@ def set_sender_category(domain: str, category: str) -> None:
 def is_sender_trusted_for_images(domain: str) -> bool:
     """True iff the user has explicitly opted-in to load remote images
     from `domain`. Default (no row, or row with images_trusted=0) is
-    blocked — that's the whole point of the Lot D image-blocker."""
+    blocked — that's the whole point of the remote-image blocker."""
     if not domain:
         return False
     with _conn() as con:

@@ -13,9 +13,9 @@ python-dateutil==2.9.0
 # src/secrets_migration.py.
 keyring==25.5.0
 
-# Per-route rate limiting (Lot E / step 10). Key=remote address so on
-# 127.0.0.1 every request is bucketed to the same limit — useful as
-# a brake on misbehaving local scripts (or a future plugin) hammering
+# Per-route rate limiting. Key=remote address so on 127.0.0.1 every
+# request is bucketed to the same limit — useful as a brake on
+# misbehaving local scripts (or a future plugin) hammering
 # /api/setup/* or destructive cleanup endpoints. See src/api.py.
 slowapi==0.1.9
 

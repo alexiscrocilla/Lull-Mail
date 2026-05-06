@@ -499,7 +499,7 @@ def update_account(
             new = payload.model_dump()
             stored_pwd = a.get("password", "")
             # `_unmask_password` returns the existing stored value when
-            # the user kept "***" in the form. After Lot C migration
+            # the user kept "***" in the form. After the keyring migration
             # that existing value is a sentinel, not a plain password.
             resolved_or_sentinel = _unmask_password(new["password"], stored_pwd)
             if not resolved_or_sentinel:
@@ -561,8 +561,8 @@ def delete_account(request: Request, email: str) -> Dict[str, Any]:
 def _resolve_password(payload: AccountPayload) -> str:
     """Return the actual password for `payload`, replacing the MASK
     sentinel with the value already saved in config.yaml when the user
-    submits a "keep existing password" form. After Lot C, the saved
-    value may be a `keyring:…` sentinel — we resolve that too so the
+    submits a "keep existing password" form. The saved value may be
+    a `keyring:…` sentinel — we resolve that too so the
     IMAP login receives the real password. Empty string when nothing
     is available."""
     pwd = payload.password
