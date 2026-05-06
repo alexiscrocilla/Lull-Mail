@@ -77,6 +77,16 @@ def init_db():
         sync_cols = {row["name"] for row in con.execute("PRAGMA table_info(sync_state)")}
         if "last_error" not in sync_cols:
             con.execute("ALTER TABLE sync_state ADD COLUMN last_error TEXT")
+        # Auto-test on save (Settings / onboarding) records its result here so
+        # the UI can render a status badge per account without re-running the
+        # IMAP login on every Settings page load. Distinct from `last_sync`/
+        # `last_error` which track the actual mail-fetch lifecycle — a failed
+        # test does not corrupt last_sync, and a fresh test does not reset
+        # the last_uid cursor.
+        if "last_test_at" not in sync_cols:
+            con.execute("ALTER TABLE sync_state ADD COLUMN last_test_at TEXT")
+        if "last_test_error" not in sync_cols:
+            con.execute("ALTER TABLE sync_state ADD COLUMN last_test_error TEXT")
 
         if "local_classified" not in cols:
             con.execute("ALTER TABLE emails ADD COLUMN local_classified INTEGER DEFAULT 0")
@@ -422,6 +432,39 @@ def set_sync_error(account_email: str, error: str):
             ON CONFLICT(account_email) DO UPDATE SET
                 last_error = excluded.last_error
         """, (account_email, str(error)[:500]))
+
+
+def record_test_result(account_email: str, ok: bool, error: Optional[str] = None):
+    """Persist the outcome of an explicit IMAP login test (auto-test on
+    save in Settings/onboarding, or manual click on the per-row icon).
+
+    Stamps `last_test_at` with `datetime('now')` regardless of outcome —
+    a row whose `last_test_at IS NOT NULL` has been tested at least once.
+    `last_test_error` carries the human-readable failure detail on
+    failure and is set to NULL on success.
+
+    Stays separate from `last_sync` / `last_error` (the actual mail-fetch
+    lifecycle) so a failing test cannot corrupt the fetch cursor and a
+    fresh test does not reset the last_uid.
+    """
+    with _conn() as con:
+        con.execute("""
+            INSERT INTO sync_state (account_email, last_test_at, last_test_error)
+            VALUES (?, datetime('now'), ?)
+            ON CONFLICT(account_email) DO UPDATE SET
+                last_test_at    = datetime('now'),
+                last_test_error = excluded.last_test_error
+        """, (account_email, None if ok else (str(error or "")[:500])))
+
+
+def remove_account_state(account_email: str):
+    """Drop every sync_state row tied to `account_email` so the row is
+    not left behind when the account is removed via Settings (otherwise
+    a re-add would inherit stale `last_test_*` markers)."""
+    with _conn() as con:
+        con.execute(
+            "DELETE FROM sync_state WHERE account_email = ?", (account_email,)
+        )
 
 
 # ── Dashboard helpers ─────────────────────────────────────────────────────────

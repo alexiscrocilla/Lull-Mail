@@ -292,7 +292,23 @@ def get_config() -> Dict[str, Any]:
     # Mask secrets before returning.
     if data.get("openai") and data["openai"].get("api_key"):
         data["openai"] = {**data["openai"], "api_key": MASK}
-    data["accounts"] = [_mask_account(a) for a in (data.get("accounts") or [])]
+
+    # Enrich each account with its latest auto-test outcome so the
+    # Settings list can render the status icon directly. Keeping the
+    # join here (instead of the frontend doing two API calls) means a
+    # single request renders the page without flicker.
+    from src import database as db
+    enriched: List[Dict[str, Any]] = []
+    for acc in (data.get("accounts") or []):
+        masked = _mask_account(acc)
+        try:
+            state = db.get_sync_state(acc.get("email", "")) or {}
+        except Exception:
+            state = {}
+        masked["last_test_at"] = state.get("last_test_at")
+        masked["last_test_error"] = state.get("last_test_error")
+        enriched.append(masked)
+    data["accounts"] = enriched
     return data
 
 
@@ -389,7 +405,16 @@ def add_account(payload: AccountPayload) -> Dict[str, Any]:
     accounts.append(payload.model_dump())
     data["accounts"] = accounts
     _persist(data)
-    return {"ok": True, "account": _mask_account(payload.model_dump())}
+    # Auto-test: run an IMAP login right after save and persist the
+    # outcome via record_test_result. Save always succeeds (the user's
+    # input is preserved); a failed test surfaces in the Settings list
+    # via the red status icon.
+    test = _safe_test_and_record(payload, payload.password)
+    return {
+        "ok": True,
+        "account": _mask_account(payload.model_dump()),
+        "test": test,
+    }
 
 
 @router.put("/accounts/{email}")
@@ -406,7 +431,12 @@ def update_account(email: str, payload: AccountPayload) -> Dict[str, Any]:
             accounts[i] = new
             data["accounts"] = accounts
             _persist(data)
-            return {"ok": True, "account": _mask_account(new)}
+            test = _safe_test_and_record(payload, new["password"])
+            return {
+                "ok": True,
+                "account": _mask_account(new),
+                "test": test,
+            }
     raise HTTPException(404, f"Compte {email} introuvable.")
 
 
@@ -419,30 +449,45 @@ def delete_account(email: str) -> Dict[str, Any]:
         raise HTTPException(404, f"Compte {email} introuvable.")
     data["accounts"] = new_list
     _persist(data)
+    # Drop the test/sync state too so a re-add of the same email starts
+    # clean (no stale red icon from a previous test).
+    try:
+        from src import database as db
+        db.remove_account_state(email)
+    except Exception:
+        logger.exception("remove_account_state failed")
     return {"ok": True, "remaining": len(new_list)}
 
 
 # ── IMAP test ────────────────────────────────────────────────────────────────
 
 
-@router.post("/accounts/test")
-def test_account(payload: AccountPayload) -> Dict[str, Any]:
-    """Open an IMAP connection and authenticate. No mailbox state is
-    altered. Used by the wizard's "Tester la connexion" button.
-
-    If `password` comes in as MASK, look it up by email in the saved
-    config so users can re-test an existing account without retyping.
-    """
+def _resolve_password(payload: AccountPayload) -> str:
+    """Return the actual password for `payload`, replacing the MASK
+    sentinel with the value already saved in config.yaml when the user
+    submits a "keep existing password" form. Empty string when nothing
+    is available."""
     pwd = payload.password
     if pwd == MASK:
         data = _load_or_default()
         for a in (data.get("accounts") or []):
             if a.get("email", "").lower() == payload.email.lower():
-                pwd = a.get("password", "")
-                break
-    if not pwd:
-        raise HTTPException(400, "Mot de passe manquant pour le test.")
+                return a.get("password", "")
+        return ""
+    return pwd or ""
 
+
+def _perform_imap_test(payload: AccountPayload, password: str) -> Dict[str, Any]:
+    """Open one IMAP connection, login, list mailboxes, log out. Returns a
+    structured dict so callers (manual /test endpoint AND the auto-test
+    that runs on save) can render or persist the result.
+
+    Honours `_enforce_tls_safety` — refuses to even try when
+    `verify_ssl=False` lands on a non-loopback host. The TLS gate raises
+    HTTPException(400) which the FastAPI layer turns into a clean error
+    for the manual endpoint; for the auto-test we catch and convert to a
+    structured failure record (see `_safe_test`).
+    """
     _enforce_tls_safety(payload)
 
     try:
@@ -465,7 +510,7 @@ def test_account(payload: AccountPayload) -> Dict[str, Any]:
                 conn.starttls(ssl_context=ctx)
 
         try:
-            conn.login(payload.username, pwd)
+            conn.login(payload.username, password)
         except imaplib.IMAP4.error as e:
             return {
                 "ok": False,
@@ -504,6 +549,66 @@ def test_account(payload: AccountPayload) -> Dict[str, Any]:
     except Exception as e:
         logger.exception("test_account: erreur inattendue")
         return {"ok": False, "stage": "unknown", "error": str(e), "detail": ""}
+
+
+def _safe_test_and_record(payload: AccountPayload, password: str) -> Dict[str, Any]:
+    """Run the test for the auto-test path (after add/update) and record
+    the outcome in `sync_state.last_test_*`. Never raises — returns a
+    structured failure record for unexpected errors so the save flow
+    completes regardless. The save itself already succeeded by the time
+    we get here; an auto-test failure is informational, not blocking.
+    """
+    from src import database as db
+    if not password:
+        result = {
+            "ok": False,
+            "stage": "missing_password",
+            "error": "Aucun mot de passe disponible pour tester ce compte.",
+            "detail": "",
+        }
+    else:
+        try:
+            result = _perform_imap_test(payload, password)
+        except HTTPException as e:
+            # TLS gate rejected. Already caught at save-time too, so this
+            # path is mostly defensive.
+            result = {
+                "ok": False,
+                "stage": "tls",
+                "error": str(e.detail),
+                "detail": "",
+            }
+        except Exception as e:
+            logger.exception("auto-test: unexpected exception")
+            result = {
+                "ok": False, "stage": "unknown", "error": str(e), "detail": "",
+            }
+    error_msg = (
+        f"{result.get('error', '')} {result.get('detail', '')}".strip()
+        if not result.get("ok") else None
+    )
+    try:
+        db.record_test_result(payload.email, result.get("ok", False), error_msg)
+    except Exception:
+        logger.exception("record_test_result failed")
+    return result
+
+
+@router.post("/accounts/test")
+def test_account(payload: AccountPayload) -> Dict[str, Any]:
+    """Open an IMAP connection and authenticate. No mailbox state is
+    altered. Used by the wizard's "Tester la connexion" button AND by
+    the per-row test icon in Settings.
+
+    If `password` comes in as MASK, look it up by email in the saved
+    config so users can re-test an existing account without retyping.
+    The result is also persisted via `db.record_test_result` so the
+    Settings status badge stays in sync after a manual click.
+    """
+    pwd = _resolve_password(payload)
+    if not pwd:
+        raise HTTPException(400, "Mot de passe manquant pour le test.")
+    return _safe_test_and_record(payload, pwd)
 
 
 # ── Finalize ─────────────────────────────────────────────────────────────────

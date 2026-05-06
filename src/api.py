@@ -1100,6 +1100,10 @@ def get_accounts():
             "type": acc.get("type", "other"),
             "last_sync": state["last_sync"] if state else None,
             "sync_error": state["last_error"] if state else None,
+            # Auto-test status (separate from sync lifecycle). Drives the
+            # green/red/grey badge in the Settings account list.
+            "last_test_at": state["last_test_at"] if state else None,
+            "last_test_error": state["last_test_error"] if state else None,
         })
     return result
 

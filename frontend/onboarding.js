@@ -248,14 +248,38 @@ async function addAccount() {
   const acc = readAccountForm();
   const err = validateAccount(acc);
   if (err) { toast(err, 'err'); return; }
+  // The backend now runs an IMAP login right after writing config.yaml,
+  // so the response carries `test: { ok, error, detail }`. Communicate
+  // that wait to the user — IMAP login on a misconfigured host can take
+  // up to 15 s to time out.
   setBusy('btn-add-acc', true, window.t('ob.busy.adding'));
   try {
-    await api('POST', '/api/setup/accounts', acc);
-    toast(window.t('ob.toast.added', { email: acc.email }), 'ok');
-    document.getElementById('acc-name').value = '';
-    document.getElementById('acc-email').value = '';
-    document.getElementById('acc-password').value = '';
-    document.getElementById('test-result').innerHTML = '';
+    const resp = await api('POST', '/api/setup/accounts', acc);
+    const t = resp?.test;
+    const resultEl = document.getElementById('test-result');
+    if (t && t.ok === false) {
+      // Save succeeded, test failed — keep the form filled in so the
+      // user can fix the bad field (typo in password / wrong port).
+      // Account stays in the list with a warning.
+      const msg = `${t.error || 'Test échoué'}${t.detail ? ' — ' + t.detail : ''}`;
+      toast(`⚠ ${acc.email} ajoutée mais test KO : ${msg}`, 'err');
+      if (resultEl) {
+        resultEl.innerHTML = `<div class="test-err">${window.t('ob.test.err_prefix')} ${escapeHtml(t.error)}<div class="text-xs mt-1" style="color: var(--muted);">${escapeHtml(t.detail || '')}</div></div>`;
+      }
+    } else if (t && t.ok) {
+      toast(`✓ ${window.t('ob.toast.added', { email: acc.email })}`, 'ok');
+      document.getElementById('acc-name').value = '';
+      document.getElementById('acc-email').value = '';
+      document.getElementById('acc-password').value = '';
+      if (resultEl) resultEl.innerHTML = '';
+    } else {
+      // No test field (legacy / unexpected) — fall back to old behaviour.
+      toast(window.t('ob.toast.added', { email: acc.email }), 'ok');
+      document.getElementById('acc-name').value = '';
+      document.getElementById('acc-email').value = '';
+      document.getElementById('acc-password').value = '';
+      if (resultEl) resultEl.innerHTML = '';
+    }
     await refreshAccountsList();
   } catch (e) {
     toast(window.t('ob.toast.error', { error: e.message }), 'err');

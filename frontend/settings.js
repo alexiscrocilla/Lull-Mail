@@ -510,9 +510,7 @@ export async function mountSettings(host, opts = {}) {
             <div class="set-acc-sub">${escapeHtml(a.email)}</div>
           </div>
           <div class="set-acc-actions">
-            <button class="set-icon-btn" data-act="test" data-email="${escapeAttr(a.email)}" title="Vérifier que ça fonctionne">
-              <i data-lucide="zap" class="w-4 h-4"></i>
-            </button>
+            ${testStatusIconHtml(a)}
             <button class="set-icon-btn" data-act="edit" data-email="${escapeAttr(a.email)}" title="Modifier cette boîte">
               <i data-lucide="pencil" class="w-4 h-4"></i>
             </button>
@@ -785,14 +783,26 @@ export async function mountSettings(host, opts = {}) {
     const err = validateModal(acc);
     if (err) { els.mTestRes.innerHTML = `<span class="set-err">${err}</span>`; return; }
     const editing = !!state.editingEmail;
-    setBusy(els.mAdd, true, editing ? 'Enregistrement…' : 'Ajout…');
+    // The save endpoint runs an IMAP login on the backend AFTER writing
+    // config.yaml, so the response can take a few seconds. Communicate
+    // that to the user — "Test de connexion…" instead of "Ajout…".
+    setBusy(els.mAdd, true, editing ? 'Enregistrement & test…' : 'Ajout & test…');
     try {
+      let resp;
       if (editing) {
-        await api('PUT', `/api/setup/accounts/${encodeURIComponent(state.editingEmail)}`, acc);
-        window.toast?.(`${acc.email} mise à jour`);
+        resp = await api('PUT', `/api/setup/accounts/${encodeURIComponent(state.editingEmail)}`, acc);
       } else {
-        await api('POST', '/api/setup/accounts', acc);
-        window.toast?.(`${acc.email} ajoutée`);
+        resp = await api('POST', '/api/setup/accounts', acc);
+      }
+      const t = resp?.test;
+      if (t && t.ok === false) {
+        // Save succeeded but test failed — surface the failure clearly.
+        const msg = `${t.error || 'Test échoué'}${t.detail ? ' — ' + t.detail : ''}`;
+        window.toast?.(`⚠ ${acc.email} enregistrée mais test KO : ${msg}`, 6000);
+      } else if (t && t.ok) {
+        window.toast?.(`✓ ${acc.email} ${editing ? 'mise à jour' : 'ajoutée'} et vérifiée`, 3000);
+      } else {
+        window.toast?.(`${acc.email} ${editing ? 'mise à jour' : 'ajoutée'}`);
       }
       closeModal();
       await loadAll();
@@ -803,14 +813,78 @@ export async function mountSettings(host, opts = {}) {
     } finally { setBusy(els.mAdd, false); }
   }
 
+  // ── Test-status badge ─────────────────────────────────────────────
+  // Each account row shows a single icon that summarises the latest
+  // auto-test outcome:
+  //   • Spinner → currently testing
+  //   • Green check → last test ok
+  //   • Red cross → last test failed (tooltip = error message)
+  //   • Grey question mark → never tested (only happens if the auto-test
+  //     on save was skipped because of TLS lock or similar)
+  // Click triggers a fresh test through /api/setup/accounts/test —
+  // the password is sent as MASK so the backend looks it up.
+  function testStatusIconHtml(a) {
+    const tested = !!a.last_test_at;
+    const ok = tested && !a.last_test_error;
+    const failed = tested && !!a.last_test_error;
+    let icon, klass, title;
+    if (failed) {
+      icon = 'x-circle';
+      klass = 'set-icon-btn test-status test-fail';
+      title = `Échec du test : ${a.last_test_error}`;
+    } else if (ok) {
+      icon = 'check-circle-2';
+      klass = 'set-icon-btn test-status test-ok';
+      title = `Connexion vérifiée le ${a.last_test_at}`;
+    } else {
+      icon = 'help-circle';
+      klass = 'set-icon-btn test-status test-unknown';
+      title = 'Pas encore testé — cliquez pour vérifier';
+    }
+    return `<button class="${klass}" data-act="test" data-email="${escapeAttr(a.email)}" title="${escapeAttr(title)}">
+      <i data-lucide="${icon}" class="w-4 h-4"></i>
+    </button>`;
+  }
+
+  // Replace the icon inline (no full re-render) so the click target
+  // doesn't disappear while the test is running.
+  function setRowTestState(email, kind, message) {
+    const btn = host.querySelector(`.test-status[data-email="${cssEscape(email)}"]`);
+    if (!btn) return;
+    btn.classList.remove('test-ok', 'test-fail', 'test-unknown', 'test-busy');
+    let icon = 'help-circle';
+    if (kind === 'busy') { icon = 'loader-2'; btn.classList.add('test-busy'); }
+    else if (kind === 'ok') { icon = 'check-circle-2'; btn.classList.add('test-ok'); }
+    else if (kind === 'fail') { icon = 'x-circle'; btn.classList.add('test-fail'); }
+    else { btn.classList.add('test-unknown'); }
+    btn.setAttribute('title', message || '');
+    btn.innerHTML = `<i data-lucide="${icon}" class="w-4 h-4"></i>`;
+    window.lucide?.createIcons({ el: btn });
+  }
+
+  function cssEscape(s) {
+    return String(s).replace(/[^a-zA-Z0-9_-]/g, c =>
+      '\\' + c.charCodeAt(0).toString(16).padStart(2, '0') + ' '
+    );
+  }
+
   async function testExisting(email) {
     const acc = (state.config.accounts || []).find(a => a.email.toLowerCase() === email.toLowerCase());
     if (!acc) return;
-    window.toast?.(`Test ${email}…`);
+    setRowTestState(email, 'busy', 'Test en cours…');
     try {
-      const r = await api('POST', '/api/setup/accounts/test', { ...acc });
-      window.toast?.(r.ok ? `✓ ${email} fonctionne` : `✗ ${email} — ${r.error}`, 3500);
+      // MASK in the password tells the backend to use the saved value.
+      const payload = { ...acc, password: MASK };
+      const r = await api('POST', '/api/setup/accounts/test', payload);
+      if (r.ok) {
+        setRowTestState(email, 'ok', `Connexion vérifiée${r.mailbox_count ? ` (${r.mailbox_count} dossiers)` : ''}`);
+        window.toast?.(`✓ ${email} fonctionne`, 2500);
+      } else {
+        setRowTestState(email, 'fail', `Échec : ${r.error || ''}${r.detail ? ' — ' + r.detail : ''}`);
+        window.toast?.(`✗ ${email} — ${r.error}`, 4000);
+      }
     } catch (e) {
+      setRowTestState(email, 'fail', e.message);
       window.toast?.('Erreur : ' + e.message, 3500);
     }
   }
@@ -1192,6 +1266,45 @@ function injectStyles() {
       background: rgba(239, 68, 68, 0.12);
       border-color: var(--danger);
       color: var(--danger);
+    }
+
+    /* Test-status icon: not a destructive action, but uses colour to
+       summarise the latest auto-test outcome. Hover reveals the title. */
+    .set-icon-btn.test-status.test-ok {
+      background: rgba(34, 197, 94, 0.10);
+      border-color: rgba(34, 197, 94, 0.45);
+      color: rgb(22, 163, 74);
+    }
+    .set-icon-btn.test-status.test-ok:hover {
+      background: rgba(34, 197, 94, 0.18);
+      border-color: rgb(22, 163, 74);
+      color: rgb(21, 128, 61);
+    }
+    .set-icon-btn.test-status.test-fail {
+      background: rgba(239, 68, 68, 0.10);
+      border-color: rgba(239, 68, 68, 0.45);
+      color: var(--danger);
+    }
+    .set-icon-btn.test-status.test-fail:hover {
+      background: rgba(239, 68, 68, 0.18);
+      border-color: var(--danger);
+      color: var(--danger);
+    }
+    .set-icon-btn.test-status.test-unknown {
+      color: var(--muted);
+    }
+    /* Spinner during a re-test. The lucide loader-2 icon is animated by
+       us — lucide ships static SVGs, so the spin lives in CSS. */
+    .set-icon-btn.test-status.test-busy {
+      pointer-events: none;
+      color: var(--accent);
+    }
+    .set-icon-btn.test-status.test-busy svg {
+      animation: set-spin 0.9s linear infinite;
+    }
+    @keyframes set-spin {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(360deg); }
     }
 
     /* Modal */
