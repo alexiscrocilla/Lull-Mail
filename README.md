@@ -1,10 +1,10 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="frontend/assets/lullmail-logo-dark.svg">
-  <img src="frontend/assets/lullmail-logo-light.svg" alt="Lull Mail" width="200" align="left">
+  <source media="(prefers-color-scheme: dark)" srcset="frontend/assets/lullmail-logo-dark.png">
+  <img src="frontend/assets/lullmail-logo-light.png" alt="Lull Mail" width="200" align="left">
 </picture>
 
-> **Your inbox, on mute.**
-> Silent by default. Notification by exception. Your data stays yours.
+**Your inbox, on mute.**
+Silent by default. Notification by exception. Your data stays yours.
 
 You get 80 emails a day. Three of them actually matter.
 
@@ -17,8 +17,8 @@ until you have time. Or quietly disappears.
 [![Latest release](https://img.shields.io/github/v/release/alexiscrocilla/Lull-Mail?label=download)](../../releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/alexiscrocilla/Lull-Mail/total)](../../releases)
 
-> **Note**: Lull Mail runs on Windows 10/11. The Python code is
-> cross-platform — only the desktop packaging is Windows-only for now.
+**Note**: Lull Mail runs on Windows 10/11. The Python code is
+cross-platform — only the desktop packaging is Windows-only for now.
 
 <br clear="left">
 
