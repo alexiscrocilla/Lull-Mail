@@ -316,9 +316,10 @@ export async function mountSettings(host, opts = {}) {
 
         <details class="set-advanced">
           <summary>Réglages techniques (rarement nécessaires)</summary>
+          <div class="set-subhead">IMAP — Réception</div>
           <div class="set-grid set-grid-3">
             <label class="set-field" style="grid-column: span 2">
-              <span class="set-label">Serveur de réception</span>
+              <span class="set-label">Serveur</span>
               <input id="m-host" class="set-input" placeholder="imap.exemple.com" />
             </label>
             <label class="set-field">
@@ -327,9 +328,24 @@ export async function mountSettings(host, opts = {}) {
             </label>
           </div>
           <div class="set-checks">
-            <label><input id="m-ssl" type="checkbox" /> Connexion sécurisée (SSL)</label>
-            <label><input id="m-starttls" type="checkbox" /> Sécuriser après connexion</label>
+            <label><input id="m-ssl" type="checkbox" /> SSL</label>
+            <label><input id="m-starttls" type="checkbox" /> STARTTLS</label>
             <label><input id="m-verify" type="checkbox" /> Vérifier le certificat</label>
+          </div>
+          <div class="set-subhead">SMTP — Envoi</div>
+          <div class="set-grid set-grid-3">
+            <label class="set-field" style="grid-column: span 2">
+              <span class="set-label">Serveur</span>
+              <input id="m-smtp-host" class="set-input" placeholder="smtp.exemple.com" />
+            </label>
+            <label class="set-field">
+              <span class="set-label">Port</span>
+              <input id="m-smtp-port" type="number" class="set-input" placeholder="587" />
+            </label>
+          </div>
+          <div class="set-checks">
+            <label><input id="m-smtp-ssl" type="checkbox" /> SMTPS</label>
+            <label><input id="m-smtp-starttls" type="checkbox" /> STARTTLS</label>
           </div>
         </details>
 
@@ -340,10 +356,6 @@ export async function mountSettings(host, opts = {}) {
           <button class="mb-cta set-btn-ghost" id="m-test">Vérifier que ça fonctionne</button>
           <button class="mb-cta set-btn" id="m-add">Ajouter</button>
         </div>
-        <label id="m-enabled-row" class="set-toggle hidden" style="margin-top:8px">
-          <input id="m-enabled" type="checkbox" checked />
-          <span>Boîte active (vérification automatique)</span>
-        </label>
       </div>
     </div>
   `;
@@ -377,14 +389,16 @@ export async function mountSettings(host, opts = {}) {
     mSsl:     host.querySelector('#m-ssl'),
     mStartTls:host.querySelector('#m-starttls'),
     mVerify:  host.querySelector('#m-verify'),
+    mSmtpHost:    host.querySelector('#m-smtp-host'),
+    mSmtpPort:    host.querySelector('#m-smtp-port'),
+    mSmtpSsl:     host.querySelector('#m-smtp-ssl'),
+    mSmtpStartTls:host.querySelector('#m-smtp-starttls'),
     mTestRes: host.querySelector('#m-test-result'),
     mClose:   host.querySelector('#m-close'),
     mCancel:  host.querySelector('#m-cancel'),
     mTest:    host.querySelector('#m-test'),
     mAdd:     host.querySelector('#m-add'),
     mTitle:   host.querySelector('#m-title'),
-    mEnabledRow: host.querySelector('#m-enabled-row'),
-    mEnabled: host.querySelector('#m-enabled'),
     mAppPwdLink: host.querySelector('#m-app-pwd-link'),
   };
 
@@ -499,17 +513,22 @@ export async function mountSettings(host, opts = {}) {
     if (!accounts.length) {
       els.accList.innerHTML = `<div class="sub" style="font-style:italic">Aucune boîte mail. Cliquez sur « Ajouter une boîte » pour commencer.</div>`;
     } else {
-      els.accList.innerHTML = accounts.map(a => `
-        <div class="set-acc-row">
-          <span class="set-svc" title="${escapeHtml(a.type || 'imap')}">${serviceLogoHtml(a)}</span>
+      els.accList.innerHTML = accounts.map(a => {
+        const isOn = a.enabled !== false;
+        return `
+        <div class="set-acc-row${isOn ? '' : ' is-disabled'}">
+          <span class="set-svc">${serviceLogoHtml(a)}</span>
           <div class="set-acc-info">
             <div class="set-acc-name">
               ${escapeHtml(a.name || a.email)}
-              ${a.enabled === false ? '<span class="set-badge warn">en pause</span>' : ''}
+              ${isOn ? '' : '<span class="set-badge warn">en pause</span>'}
             </div>
             <div class="set-acc-sub">${escapeHtml(a.email)}</div>
           </div>
           <div class="set-acc-actions">
+            <button class="set-switch ${isOn ? 'is-on' : 'is-off'}" data-act="toggle-enabled" data-email="${escapeAttr(a.email)}" role="switch" aria-checked="${isOn}" title="${isOn ? 'Mettre en pause cette boîte' : 'Réactiver cette boîte'}">
+              <span class="set-switch-track"><span class="set-switch-thumb"></span></span>
+            </button>
             ${testStatusIconHtml(a)}
             <button class="set-icon-btn" data-act="edit" data-email="${escapeAttr(a.email)}" title="Modifier cette boîte">
               <i data-lucide="pencil" class="w-4 h-4"></i>
@@ -519,14 +538,16 @@ export async function mountSettings(host, opts = {}) {
             </button>
           </div>
         </div>
-      `).join('');
-      els.accList.querySelectorAll('.set-icon-btn[data-act]').forEach(btn => {
+        `;
+      }).join('');
+      els.accList.querySelectorAll('[data-act]').forEach(btn => {
         const act = btn.dataset.act;
         const email = btn.dataset.email;
         btn.addEventListener('click', () => {
-          if (act === 'test')   return testExisting(email);
-          if (act === 'edit')   return openModalForEdit(email);
-          if (act === 'remove') return removeAccount(email);
+          if (act === 'test')           return testExisting(email);
+          if (act === 'edit')           return openModalForEdit(email);
+          if (act === 'remove')         return removeAccount(email);
+          if (act === 'toggle-enabled') return toggleAccountEnabled(email);
         });
       });
     }
@@ -635,8 +656,6 @@ export async function mountSettings(host, opts = {}) {
     els.mTitle.textContent = 'Ajouter une boîte mail';
     els.mAdd.textContent = 'Ajouter';
     els.mEmail.disabled = false;
-    els.mEnabledRow.classList.add('hidden');
-    els.mEnabled.checked = true;
     els.modal.classList.remove('hidden');
     els.mName.value = '';
     els.mEmail.value = '';
@@ -662,8 +681,6 @@ export async function mountSettings(host, opts = {}) {
     els.mTitle.textContent = 'Modifier la boîte mail';
     els.mAdd.textContent = 'Enregistrer';
     els.mEmail.disabled = true;  // email is the primary key — can't change it
-    els.mEnabledRow.classList.remove('hidden');
-    els.mEnabled.checked = acc.enabled !== false;
 
     // Pre-select the matching provider tile (by type)
     const matchingProvider = state.providers.find(p => p.type === acc.type) || state.providers.find(p => p.id === 'custom');
@@ -679,6 +696,12 @@ export async function mountSettings(host, opts = {}) {
     els.mSsl.checked = !!acc.ssl;
     els.mStartTls.checked = !!acc.starttls;
     els.mVerify.checked = !!acc.verify_ssl;
+    // SMTP — empty when no per-account override is set; the backend
+    // falls back to the provider preset for `type` at send time.
+    els.mSmtpHost.value = acc.smtp_host || '';
+    els.mSmtpPort.value = acc.smtp_port ? acc.smtp_port : '';
+    els.mSmtpSsl.checked = !!acc.smtp_ssl;
+    els.mSmtpStartTls.checked = acc.smtp_starttls !== false;
 
     els.mName.focus();
     els.mName.select();
@@ -702,6 +725,13 @@ export async function mountSettings(host, opts = {}) {
     els.mSsl.checked = p.ssl;
     els.mStartTls.checked = p.starttls;
     els.mVerify.checked = p.verify_ssl;
+    // Mirror SMTP defaults from the preset. If the user only edits IMAP
+    // these will be saved as-is (matching the provider's standard SMTP
+    // endpoint); blank means "let the backend resolve at send time".
+    els.mSmtpHost.value = p.smtp_host || '';
+    els.mSmtpPort.value = p.smtp_port || '';
+    els.mSmtpSsl.checked = !!p.smtp_ssl;
+    els.mSmtpStartTls.checked = p.smtp_starttls !== false;
 
     // Dynamic placeholders so users see a concrete example for THIS provider
     const hint = PROVIDER_HINTS[p.type] || PROVIDER_HINTS.imap;
@@ -750,7 +780,17 @@ export async function mountSettings(host, opts = {}) {
       ssl: els.mSsl.checked,
       starttls: els.mStartTls.checked,
       verify_ssl: els.mVerify.checked,
-      enabled: editing ? els.mEnabled.checked : true,
+      // The "Boîte active" toggle now lives on each row in the
+      // accounts list, not in this modal. Editing fields here must
+      // not silently flip the enabled state — preserve whatever is
+      // currently saved in config.
+      enabled: editing
+        ? ((state.config.accounts || []).find(a => (a.email || '').toLowerCase() === (state.editingEmail || '').toLowerCase())?.enabled !== false)
+        : true,
+      smtp_host: els.mSmtpHost.value.trim(),
+      smtp_port: parseInt(els.mSmtpPort.value, 10) || 0,
+      smtp_ssl: els.mSmtpSsl.checked,
+      smtp_starttls: els.mSmtpStartTls.checked,
     };
   }
 
@@ -765,23 +805,23 @@ export async function mountSettings(host, opts = {}) {
   async function modalTest() {
     const acc = readModal();
     const err = validateModal(acc);
-    if (err) { els.mTestRes.innerHTML = `<span class="set-err">${err}</span>`; return; }
+    if (err) { els.mTestRes.innerHTML = `<div class="set-err"><i data-lucide="x-circle" style="width:15px;height:15px;flex-shrink:0;margin-top:1px"></i><span>${err}</span></div>`; return; }
     setBusy(els.mTest, true, 'Test…');
     els.mTestRes.innerHTML = '';
     try {
       const r = await api('POST', '/api/setup/accounts/test', acc);
       els.mTestRes.innerHTML = r.ok
-        ? `<span class="set-ok">✓ Tout fonctionne${r.mailbox_count ? ` — ${r.mailbox_count} dossiers détectés` : ''}</span>`
-        : `<span class="set-err">✗ ${escapeHtml(r.error)}<div class="sub" style="margin-top:4px">${escapeHtml(r.detail || '')}</div></span>`;
+        ? `<div class="set-ok"><i data-lucide="check-circle-2" style="width:15px;height:15px;flex-shrink:0;margin-top:1px"></i><span>Tout fonctionne${r.mailbox_count ? ` — ${r.mailbox_count} dossier${r.mailbox_count > 1 ? 's' : ''} détecté${r.mailbox_count > 1 ? 's' : ''}` : ''}</span></div>`
+        : `<div class="set-err"><i data-lucide="x-circle" style="width:15px;height:15px;flex-shrink:0;margin-top:1px"></i><span>${escapeHtml(r.error)}${r.detail ? `<div class="sub">${escapeHtml(r.detail)}</div>` : ''}</span></div>`;
     } catch (e) {
-      els.mTestRes.innerHTML = `<span class="set-err">✗ ${escapeHtml(e.message)}</span>`;
-    } finally { setBusy(els.mTest, false); }
+      els.mTestRes.innerHTML = `<div class="set-err"><i data-lucide="x-circle" style="width:15px;height:15px;flex-shrink:0;margin-top:1px"></i><span>${escapeHtml(e.message)}</span></div>`;
+    } finally { setBusy(els.mTest, false); if (window.lucide) window.lucide.createIcons(); }
   }
 
   async function modalAdd() {
     const acc = readModal();
     const err = validateModal(acc);
-    if (err) { els.mTestRes.innerHTML = `<span class="set-err">${err}</span>`; return; }
+    if (err) { els.mTestRes.innerHTML = `<div class="set-err"><i data-lucide="x-circle" style="width:15px;height:15px;flex-shrink:0;margin-top:1px"></i><span>${err}</span></div>`; return; }
     const editing = !!state.editingEmail;
     // The save endpoint runs an IMAP login on the backend AFTER writing
     // config.yaml, so the response can take a few seconds. Communicate
@@ -809,7 +849,7 @@ export async function mountSettings(host, opts = {}) {
       // Restart so polling picks up the new credentials / account changes.
       try { await api('POST', '/api/setup/finalize'); await loadAll(); } catch { /* tolerated */ }
     } catch (e) {
-      els.mTestRes.innerHTML = `<span class="set-err">✗ ${escapeHtml(e.message)}</span>`;
+      els.mTestRes.innerHTML = `<div class="set-err"><i data-lucide="x-circle" style="width:15px;height:15px;flex-shrink:0;margin-top:1px"></i><span>${escapeHtml(e.message)}</span></div>`;
     } finally { setBusy(els.mAdd, false); }
   }
 
@@ -894,6 +934,39 @@ export async function mountSettings(host, opts = {}) {
     try {
       await api('DELETE', `/api/setup/accounts/${encodeURIComponent(email)}`);
       window.toast?.(`${email} retirée`);
+      await loadAll();
+    } catch (e) { window.toast?.('Erreur : ' + e.message, 3500); }
+  }
+
+  // Flip the per-account `enabled` flag. The PUT endpoint requires a
+  // full AccountPayload, so we replay the whole stored row with MASK
+  // for the password (the backend keeps the keyring sentinel when it
+  // sees MASK). The scheduler only fetches accounts where enabled=true,
+  // so this gates polling on/off without touching credentials.
+  async function toggleAccountEnabled(email) {
+    const acc = (state.config.accounts || []).find(a => (a.email || '').toLowerCase() === email.toLowerCase());
+    if (!acc) return;
+    const next = acc.enabled === false; // currently off → turn on, and vice versa
+    const payload = {
+      name: acc.name || acc.email,
+      type: acc.type || 'imap',
+      email: acc.email,
+      imap_host: acc.imap_host || '',
+      imap_port: acc.imap_port || 993,
+      username: acc.username || acc.email,
+      password: MASK,
+      ssl: !!acc.ssl,
+      starttls: !!acc.starttls,
+      verify_ssl: !!acc.verify_ssl,
+      enabled: next,
+      smtp_host: acc.smtp_host || '',
+      smtp_port: acc.smtp_port || 0,
+      smtp_ssl: !!acc.smtp_ssl,
+      smtp_starttls: acc.smtp_starttls !== false,
+    };
+    try {
+      await api('PUT', `/api/setup/accounts/${encodeURIComponent(email)}`, payload);
+      window.toast?.(next ? `${email} réactivée` : `${email} mise en pause`);
       await loadAll();
     } catch (e) { window.toast?.('Erreur : ' + e.message, 3500); }
   }
@@ -1268,6 +1341,50 @@ function injectStyles() {
       color: var(--danger);
     }
 
+    /* Account-row enable/pause switch — replaces the modal's old
+       "Boîte active" checkbox. Flips the scheduler's enabled flag
+       inline; visual style follows the iOS-style track + thumb. The
+       outer button matches .set-icon-btn height (32px) so all action
+       controls share the same baseline; the track sits centred inside. */
+    .set-switch {
+      width: 40px; height: 32px;
+      padding: 0; border: 0; background: transparent;
+      cursor: pointer; flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .set-switch-track {
+      position: relative;
+      width: 36px; height: 20px;
+      border-radius: 999px;
+      background: var(--border);
+      transition: background 160ms ease;
+    }
+    .set-switch-thumb {
+      position: absolute;
+      top: 2px; left: 2px;
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+      transition: transform 160ms ease;
+    }
+    .set-switch.is-on .set-switch-track { background: var(--accent); }
+    .set-switch.is-on .set-switch-thumb { transform: translateX(16px); }
+    .set-switch:hover .set-switch-track { filter: brightness(1.05); }
+    .set-switch:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 999px;
+    }
+
+    /* Subtle dim on disabled rows so the visual state matches the
+       switch position. Keeps the row clickable and editable so the
+       user can re-enable from any control. */
+    .set-acc-row.is-disabled .set-acc-name,
+    .set-acc-row.is-disabled .set-acc-sub { opacity: 0.6; }
+
     /* Test-status icon: not a destructive action, but uses colour to
        summarise the latest auto-test outcome. Hover reveals the title. */
     .set-icon-btn.test-status.test-ok {
@@ -1351,16 +1468,100 @@ function injectStyles() {
       padding: 4px 0;
     }
     .set-advanced > summary:hover { color: var(--text); }
+    .set-subhead {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 14px 0 6px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--border-2, var(--border));
+    }
+    .set-subhead:first-of-type { margin-top: 8px; }
     .set-checks {
       display: flex; gap: 16px; flex-wrap: wrap;
-      margin-top: 10px; font-size: 12px; color: var(--muted);
+      margin-top: 10px; font-size: 13px; color: var(--text);
     }
     .set-checks label {
-      display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+      display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
     }
-    .set-test-result { font-size: 12px; min-height: 18px; }
-    .set-test-result .set-ok { color: var(--success); font-weight: 600; }
-    .set-test-result .set-err { color: var(--danger); font-weight: 600; }
+    /* Custom checkbox skin — replaces the native browser widget across
+       the Settings modal (IMAP/SMTP toggles + the "Boîte active" row).
+       The :checked state fills with the accent colour and draws a
+       pseudo-element checkmark; nothing else changes the markup. */
+    .set-checks input[type="checkbox"],
+    .set-toggle input[type="checkbox"] {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      border: 1.5px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg);
+      cursor: pointer;
+      position: relative;
+      flex-shrink: 0;
+      transition: background 120ms ease, border-color 120ms ease;
+    }
+    .set-checks input[type="checkbox"]:hover,
+    .set-toggle input[type="checkbox"]:hover {
+      border-color: var(--accent);
+    }
+    .set-checks input[type="checkbox"]:checked,
+    .set-toggle input[type="checkbox"]:checked {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .set-checks input[type="checkbox"]:checked::after,
+    .set-toggle input[type="checkbox"]:checked::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 4px;
+      height: 8px;
+      border: solid var(--accent-on, #fff);
+      border-width: 0 2px 2px 0;
+      /* Centre via translate, then rotate. The -60% on Y compensates
+         for the visual asymmetry of a tick — the bottom-right corner
+         needs to sit slightly below the geometric centre to read as
+         centred. */
+      transform: translate(-50%, -60%) rotate(45deg);
+    }
+    .set-checks input[type="checkbox"]:focus-visible,
+    .set-toggle input[type="checkbox"]:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .set-test-result { font-size: 13px; min-height: 18px; }
+    .set-test-result .set-ok,
+    .set-test-result .set-err {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 9px 12px;
+      border-radius: 9px;
+      font-weight: 500;
+      line-height: 1.45;
+    }
+    .set-test-result .set-ok {
+      background: color-mix(in oklab, var(--success) 10%, transparent);
+      border: 1px solid color-mix(in oklab, var(--success) 28%, transparent);
+      color: var(--success);
+    }
+    .set-test-result .set-err {
+      background: color-mix(in oklab, var(--danger) 10%, transparent);
+      border: 1px solid color-mix(in oklab, var(--danger) 28%, transparent);
+      color: var(--danger);
+    }
+    .set-test-result .set-err .sub {
+      color: color-mix(in oklab, var(--danger) 75%, var(--text));
+      font-size: 12px;
+      margin-top: 3px;
+      font-weight: 400;
+    }
 
     .set-spinner {
       display: inline-block;

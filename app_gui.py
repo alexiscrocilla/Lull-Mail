@@ -270,8 +270,16 @@ def main() -> int:
     # Closing the window quits the whole app — like every other normal
     # Windows app. webview.start() returns when the last window dies, the
     # finally block tears the server + scheduler down cleanly.
+    #
+    # private_mode=False + an explicit storage_path = persistent localStorage
+    # (sidebar collapsed sections, sort prefs, …) across restarts. pywebview
+    # defaults to private_mode=True which uses an ephemeral WebView2 profile,
+    # so anything written to localStorage is wiped at app close.
+    from src.paths import APP_DATA_DIR
+    webview_storage = APP_DATA_DIR / "webview"
+    webview_storage.mkdir(parents=True, exist_ok=True)
     try:
-        webview.start()
+        webview.start(private_mode=False, storage_path=str(webview_storage))
     finally:
         logger.info("Fermeture en cours")
         server.stop()

@@ -118,6 +118,14 @@ class AccountConfig(BaseModel):
     starttls: bool = False
     verify_ssl: bool = True
     enabled: bool = True
+    # SMTP outbound. Optional at the schema level — when blank, the
+    # sender resolves the provider's preset at runtime (Gmail → smtp.
+    # gmail.com:587, OVH → ssl0.ovh.net:465, …). Same `username` /
+    # `password` as IMAP are reused; only host/port/transport differ.
+    smtp_host: str = ""
+    smtp_port: int = Field(default=0, ge=0, le=65535)
+    smtp_ssl: bool = False
+    smtp_starttls: bool = True
 
     @field_validator("email")
     @classmethod

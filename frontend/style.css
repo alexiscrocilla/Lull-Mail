@@ -197,16 +197,8 @@ button { font: inherit; }
   transition: top 280ms cubic-bezier(.4,0,.2,1),
               opacity 180ms ease;
 }
-.rail-avatar {
-  width: 36px; height: 36px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent), var(--info));
-  color: #fff;
-  display: grid; place-items: center;
-  font-weight: 700;
-  font-size: 12px;
-  letter-spacing: 0.02em;
-}
+/* The legacy #rail-avatar was removed; its visual presence is now provided
+   by .rt-placeholder inside #rail-toast-host (see rail-toast.css). */
 
 /* ─────────────────────────────────────────────────────────
    Mailbox layout
@@ -342,6 +334,33 @@ button { font: inherit; }
 }
 .mb-section-title:hover .mb-collapse-icon { opacity: 0.8; }
 .mb-section-title.is-collapsed .mb-collapse-icon { transform: rotate(-90deg); }
+
+/* Drag-to-reorder of sidebar sections. The title is the handle; the
+   wrapper around (title + content) is what actually moves. The
+   pseudo-elements paint a 2px accent line above/below the hovered
+   target so the drop position is unambiguous. */
+.mb-side-section {
+  position: relative;
+}
+.mb-side-section.is-dragging {
+  opacity: 0.45;
+}
+.mb-side-section.drop-above::before,
+.mb-side-section.drop-below::after {
+  content: '';
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 999px;
+  pointer-events: none;
+  z-index: 5;
+}
+.mb-side-section.drop-above::before { top: -1px; }
+.mb-side-section.drop-below::after  { bottom: -1px; }
+.mb-side-drag-handle { cursor: grab; }
+.mb-side-drag-handle:active { cursor: grabbing; }
 
 /* Collapsible content */
 .mb-collapsible {
@@ -660,6 +679,55 @@ button { font: inherit; }
   font-weight: 600;
 }
 
+/* Account-row inner layout — avatar bubble + name (regular) + email
+   (muted). Reused by the From picker in the composer (button + drop)
+   AND any future account-aware select. */
+.acc-select-opt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.acc-select-av {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+.acc-select-text {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+.acc-select-name {
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.acc-select-email {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.acc-select-opt.active .acc-select-name,
+.acc-select-opt.active .acc-select-email {
+  color: var(--accent-ink);
+}
+
 /* Sort dropdown — sits inline to the right of the search bar */
 .sort-select { position: relative; flex-shrink: 0; }
 
@@ -718,9 +786,22 @@ button { font: inherit; }
   padding: 8px 14px;
   background: color-mix(in oklab, var(--accent) 10%, var(--surface));
   border-bottom: 1px solid color-mix(in oklab, var(--accent) 25%, var(--border));
-  animation: fade-up 200ms cubic-bezier(.25,.46,.45,.94) both;
+  overflow: hidden;
+  animation: mb-sel-bar-in 200ms cubic-bezier(.25,.46,.45,.94) both;
 }
 .mb-sel-bar[hidden] { display: none; }
+.mb-sel-bar.leaving {
+  animation: mb-sel-bar-out 180ms cubic-bezier(.55,0,1,.45) both;
+  pointer-events: none;
+}
+@keyframes mb-sel-bar-in {
+  from { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; transform: translateY(-6px); }
+  to   { opacity: 1; max-height: 60px; padding-top: 8px; padding-bottom: 8px; transform: translateY(0); }
+}
+@keyframes mb-sel-bar-out {
+  from { opacity: 1; max-height: 60px; padding-top: 8px; padding-bottom: 8px; transform: translateY(0); }
+  to   { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; transform: translateY(-6px); }
+}
 .mb-sel-bar .sel-left {
   display: flex;
   align-items: center;
@@ -823,7 +904,7 @@ button { font: inherit; }
   border: 1px solid transparent;
   border-radius: 12px;
   cursor: pointer;
-  transition: background 160ms ease, border-color 160ms ease;
+  transition: background 240ms ease, border-color 160ms ease;
 }
 .mb-card:hover { background: var(--surface-2); }
 .mb-card.selected {
@@ -838,6 +919,8 @@ button { font: inherit; }
   width: 3px;
   border-radius: 0 3px 3px 0;
   background: var(--accent);
+  transform-origin: center;
+  animation: mb-bar-in 200ms cubic-bezier(.25,.46,.45,.94) both;
 }
 .mb-card.unread .mb-sender { font-weight: 700; color: var(--text); }
 .mb-card.unread .mb-subj { color: var(--text); font-weight: 600; }
@@ -919,6 +1002,7 @@ button { font: inherit; }
   flex-shrink: 1; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   font-size: 13.5px; font-weight: 500; color: var(--text);
+  transition: color 240ms ease, font-weight 240ms ease;
 }
 .mb-reply-inline {
   flex-shrink: 0;
@@ -952,6 +1036,7 @@ button { font: inherit; }
   gap: 5px;
   font-size: 13px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: color 240ms ease, font-weight 240ms ease;
 }
 .mb-subj > span {
   overflow: hidden;
@@ -1043,6 +1128,14 @@ button { font: inherit; }
 .mb-list-wrap {
   animation: fade-in 260ms ease 200ms both;
 }
+/* Brief opacity dip when user changes a filter or sort (crossfade) */
+.mb-list--swap {
+  animation: mb-list-swap 180ms ease both;
+}
+@keyframes mb-list-swap {
+  0%   { opacity: 0.4; }
+  100% { opacity: 1; }
+}
 /* Search bar + chips appear just after the list wrapper */
 .mb-search {
   animation: fade-up 220ms cubic-bezier(.25,.46,.45,.94) 260ms both;
@@ -1050,6 +1143,59 @@ button { font: inherit; }
 /* Individual cards: class added only on first render (navigation), not on reload */
 .mb-card-enter {
   animation: fade-up 200ms cubic-bezier(.25,.46,.45,.94) both;
+}
+/* Cards loaded via infinite scroll (pages 2+) — subtle fade only, no translation */
+.mb-card-page {
+  animation: fade-in 150ms ease both;
+}
+/* New cards arriving via background refresh — true push-down slide */
+@keyframes mb-card-arrive {
+  from {
+    max-height: 0;
+    opacity: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    max-height: 120px;
+    opacity: 1;
+    margin-top: 4px;
+    margin-bottom: 4px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+    transform: translateY(0);
+  }
+}
+@keyframes mb-card-highlight {
+  0%   { border-color: color-mix(in oklab, var(--accent) 70%, transparent); }
+  100% { border-color: transparent; }
+}
+.mb-card-new {
+  animation:
+    mb-card-arrive 360ms cubic-bezier(.25,.46,.45,.94) both,
+    mb-card-highlight 800ms ease 360ms both;
+  overflow: hidden;
+}
+
+/* Selected card accent bar — slide in from center */
+@keyframes mb-bar-in {
+  from { transform: scaleY(0); }
+  to   { transform: scaleY(1); }
+}
+
+/* Leaving card — slide out to the left then collapse */
+@keyframes mb-card-leave {
+  0%   { opacity: 1; transform: translateX(0);    max-height: 120px; margin-top: 4px; margin-bottom: 4px; padding-top: 12px; padding-bottom: 12px; }
+  50%  { opacity: 0; transform: translateX(-30px); max-height: 120px; margin-top: 4px; margin-bottom: 4px; padding-top: 12px; padding-bottom: 12px; }
+  100% { opacity: 0; transform: translateX(-30px); max-height: 0;     margin-top: 0;   margin-bottom: 0;   padding-top: 0;    padding-bottom: 0; }
+}
+.mb-card-leaving {
+  animation: mb-card-leave 280ms cubic-bezier(.25,.46,.45,.94) both;
+  overflow: hidden;
+  pointer-events: none;
 }
 @keyframes fade-in {
   from { opacity: 0; }
@@ -1163,6 +1309,42 @@ button { font: inherit; }
 .read-action-btn-ai.loading { opacity: .5; cursor: wait; pointer-events: none; }
 .read-action-btn-ai:not(.has-draft) { opacity: .55; }
 .read-action-btn-ai:not(.has-draft):hover { opacity: 1; }
+
+/* Utility variants for the read pane action strip. Same shape and
+   tinted-background pattern as .read-action-btn-ai so the four
+   buttons (read-toggle, trash, analyze, reply) read as a single
+   coherent control row. */
+.read-action-btn-muted {
+  background: color-mix(in oklab, var(--text) 8%, var(--surface-2));
+  color: var(--muted);
+}
+.read-action-btn-muted:hover {
+  background: color-mix(in oklab, var(--text) 14%, var(--surface-2));
+  color: var(--text);
+  filter: none;
+}
+.read-action-btn-danger {
+  background: color-mix(in oklab, var(--danger) 14%, var(--surface-2));
+  color: var(--danger);
+}
+.read-action-btn-danger:hover {
+  background: color-mix(in oklab, var(--danger) 24%, var(--surface-2));
+  filter: none;
+}
+.mb-thread-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.mb-thread-actions .meta { margin-right: 4px; }
+.mb-thread-actions-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
 .mb-read-body {
   flex: 1;
   min-height: 0;
@@ -1215,35 +1397,45 @@ button { font: inherit; }
 .mb-thread-item .snippet { color: var(--muted); font-size: 13px; }
 
 .mb-ai-box {
-  margin: 18px 0;
-  padding: 14px 16px;
+  margin: 12px 0;
+  padding: 10px 14px;
   background: var(--accent-soft);
   border: 1px solid color-mix(in oklab, var(--accent) 25%, transparent);
-  border-radius: 12px;
+  border-radius: 10px;
+}
+.mb-ai-box .ai-body { min-width: 0; }
+.mb-ai-box .ai-title {
   display: flex;
-  gap: 12px;
-  align-items: flex-start;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
 }
 .mb-ai-box .ai-icon {
-  flex: 0 0 36px;
-  width: 36px; height: 36px;
-  border-radius: 10px;
+  flex: 0 0 18px;
+  width: 18px; height: 18px;
+  border-radius: 5px;
   background: var(--accent);
   color: var(--accent-on);
   display: grid; place-items: center;
 }
-.mb-ai-box .ai-body { flex: 1; min-width: 0; }
-.mb-ai-box .ai-title {
-  font-weight: 700;
+.mb-ai-box .ai-title .score-pill { margin-left: auto; }
+.mb-ai-box .ai-summary {
   font-size: 13px;
-  margin-bottom: 4px;
-  color: var(--accent-ink);
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  line-height: 1.5;
+  color: var(--text);
 }
-.mb-ai-box .ai-summary { font-size: 14px; color: var(--text); }
-.mb-ai-box .ai-reason { font-size: 12.5px; color: var(--muted); margin-top: 6px; font-style: italic; }
+.mb-ai-box .ai-reason {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 5px;
+  font-style: italic;
+  line-height: 1.45;
+}
 
 .mb-body-text {
   white-space: pre-wrap;
@@ -1286,7 +1478,7 @@ button { font: inherit; }
 .mb-img-banner-btn:hover { filter: brightness(1.05); border-color: var(--accent); }
 .mb-img-banner-btn-trust {
   background: var(--accent);
-  color: white;
+  color: var(--accent-on);
   border-color: var(--accent);
 }
 .mb-img-banner-btn-trust:hover { filter: brightness(1.08); }
@@ -1348,7 +1540,13 @@ a.lnk-warn {
 
 .mb-body-iframe {
   flex: 1;
-  min-height: 200px;
+  /* Was 200px — too tall to let the user shrink the read pane when
+     dragging the composer up. 80px keeps the email recognisable as a
+     visible region (rather than collapsing to 0 and disappearing) but
+     low enough that growing the composer never forces a scrollbar on
+     the parent .mb-read-content. The iframe scrolls its own srcdoc
+     when the content is taller than its allotted flex space. */
+  min-height: 80px;
   width: 100%;
   max-width: 100%;
   height: 0;
@@ -1357,56 +1555,73 @@ a.lnk-warn {
   border-radius: 12px;
   background: var(--surface);
   display: block;
-  overflow: hidden;
 }
 
 .mb-draft {
   margin-top: 20px;
   border: 1px solid color-mix(in oklab, var(--success) 35%, transparent);
   border-radius: 14px;
-  background: color-mix(in oklab, var(--success) 10%, var(--surface));
-  padding: 14px 16px;
+  background: color-mix(in oklab, var(--success) 8%, var(--surface));
+  padding: 12px 16px;
 }
 .mb-draft .dh {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.mb-draft .dh-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-weight: 700;
-  font-size: 13px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--success);
-  margin-bottom: 8px;
 }
 .mb-draft .dt {
   white-space: pre-wrap;
   font-size: 14px;
   color: var(--text);
-  line-height: 1.55;
+  line-height: 1.6;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in oklab, var(--success) 20%, transparent);
 }
 .mb-draft .da {
-  margin-top: 12px;
   display: flex;
   gap: 8px;
+  flex-shrink: 0;
 }
 .mb-draft .da button {
-  padding: 8px 14px;
-  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
-  transition: all 160ms ease;
+  transition: filter 160ms ease;
 }
+.mb-draft .da button:hover { background: var(--surface-2); }
 .mb-draft .da .primary {
   background: var(--success);
   color: var(--success-on);
   border-color: var(--success);
 }
-.mb-draft .da .primary:hover { filter: brightness(1.05); }
+.mb-draft .da .primary:hover { filter: brightness(1.06); background: var(--success); }
 
 .mb-composer {
-  margin: 20px 0 0;
+  /* Sibling of .mb-read-content inside .mb-read-body. flex-shrink:0
+     keeps it from collapsing when the email content above is tall;
+     instead the email's own scrollable viewport shrinks. */
+  flex-shrink: 0;
+  margin: 16px 28px 20px;
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--bg);
@@ -1417,11 +1632,658 @@ a.lnk-warn {
   border: none;
   background: transparent;
   color: var(--text);
-  resize: vertical;
+  /* Native resize handle is replaced by .mb-composer-handle on top of
+     the card — see below. */
+  resize: none;
   min-height: 80px;
   font-family: inherit;
   font-size: 14px;
   outline: none;
+}
+
+/* Meta strip above the textarea — From / To / Subject. Each row sits on
+   its own hairline so users can scan the envelope at a glance, and the
+   inputs stay borderless so the visual weight stays on the surrounding
+   composer card. */
+.mb-composer-meta {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 10px;
+}
+.mb-composer-meta .mbc-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 36px;
+  border-bottom: 1px solid var(--border-2);
+  padding: 4px 2px;
+  margin: 0;
+  cursor: text;
+}
+.mb-composer-meta .mbc-row:last-child {
+  border-bottom: 1px solid var(--border-2);
+}
+.mb-composer-meta .mbc-key {
+  flex: 0 0 64px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.mb-composer-meta .mbc-input {
+  flex: 1 1 auto;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 4px 0;
+  outline: none;
+}
+.mb-composer-meta .mbc-input::placeholder {
+  color: var(--muted-2, var(--muted));
+  opacity: 0.6;
+}
+.mb-composer-meta .mbc-row:focus-within {
+  /* Subtle accent on the active row so the user knows which field is
+     receiving keystrokes without a heavy box around each input. */
+  border-bottom-color: var(--accent);
+}
+.mb-composer-meta select.mbc-input {
+  padding-right: 16px;
+  cursor: pointer;
+}
+
+/* Custom From-account picker — same look as the inbox sort-select. The
+   markup is a button + an absolutely-positioned listbox that's hidden
+   by default. A hidden <input> inside the wrap exposes the chosen
+   value to existing form-reading code so callers don't change. */
+.mbc-select {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.mbc-select-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  height: 28px;
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+}
+.mbc-select-btn .mbc-select-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+}
+.mbc-select-btn svg {
+  flex-shrink: 0;
+  opacity: 0.5;
+  transition: transform 160ms ease, opacity 160ms ease;
+}
+.mbc-select-btn:hover svg { opacity: 0.85; }
+.mbc-select.open .mbc-select-btn svg { transform: rotate(180deg); opacity: 1; }
+
+.mbc-select-drop {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  max-width: 480px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px var(--shadow-md);
+  z-index: 300;
+  padding: 4px;
+  flex-direction: column;
+  gap: 2px;
+}
+.mbc-select.open .mbc-select-drop { display: flex; }
+
+/* Page-title heading for the standalone compose pane. Bigger than a
+   .cat-chip so it reads as the primary affordance rather than a
+   secondary tag. The lucide icon picks up the accent colour to match
+   the sidebar CTA users came from. */
+.mb-compose-title {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  color: var(--text);
+  line-height: 1;
+}
+.mb-compose-title i,
+.mb-compose-title svg {
+  width: 22px;
+  height: 22px;
+  color: var(--accent);
+}
+
+/* Inline save indicator next to the Send button — small caps muted
+   text that shows "Enregistrement…" / "Brouillon enregistré" without
+   stealing visual weight. Auto-fades to invisible when empty. */
+.mb-compose-savetag {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  user-select: none;
+  transition: opacity 200ms ease;
+}
+.mb-compose-savetag:empty { opacity: 0; }
+
+/* ─────────────────────────────────────────────────────────
+   Phase 3 — Personal labels (sidebar list, chips, modal,
+   tag popover). Chips use a `<color>33` (≈20% opacity) wash
+   on the background and the raw colour for the dot + text,
+   which reads well in both light and dark themes.
+   ───────────────────────────────────────────────────────── */
+.mb-userlabel-empty {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 2px 16px 4px;
+  font-style: italic;
+  line-height: 1.2;
+}
+.mb-userlabel-dot {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+}
+.mb-userlabel-edit {
+  margin-left: auto;
+  width: 22px; height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+.mb-label:hover .mb-userlabel-edit { opacity: 1; }
+.mb-userlabel-edit:hover { background: var(--surface-2); color: var(--text); }
+
+/* Phase 4 — same affordance for custom sidebar folders. */
+.mb-folder-edit {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+.mb-folder:hover .mb-folder-edit { opacity: 1; }
+.mb-folder-edit:hover { background: var(--surface-2); color: var(--text); }
+
+.mb-label-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 2px 6px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.mb-label-chip-dot {
+  width: 7px; height: 7px;
+  border-radius: 999px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.mb-card-labels {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 4px;
+  margin-left: 6px;
+  vertical-align: middle;
+  /* Cap the inline strip so a card with many labels doesn't push the
+     attachment / reply icons off the row. Excess labels collapse into
+     a "+N" pill via the cardHtml slice. */
+  max-width: 50%;
+  overflow: hidden;
+}
+.mb-label-chip-sm {
+  font-size: 10.5px;
+  padding: 1px 7px 1px 5px;
+}
+.mb-label-chip-more {
+  background: var(--surface-2) !important;
+  color: var(--muted) !important;
+  font-weight: 500;
+}
+
+/* Create/edit/delete label modal — backdrop + centred card. */
+.mb-label-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: mb-label-modal-fade 160ms ease;
+}
+@keyframes mb-label-modal-fade { from { opacity: 0; } to { opacity: 1; } }
+.mb-label-modal-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface);
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  animation: mb-label-modal-pop 200ms cubic-bezier(.2, .9, .3, 1.05);
+}
+@keyframes mb-label-modal-pop {
+  from { transform: translateY(8px) scale(.98); opacity: 0; }
+  to   { transform: translateY(0)   scale(1);    opacity: 1; }
+}
+.mb-label-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-2, var(--border));
+}
+.mb-label-modal-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+.mb-label-modal-close {
+  width: 28px; height: 28px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--muted);
+}
+.mb-label-modal-close:hover { background: var(--surface-2); color: var(--text); }
+.mb-label-modal-body {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.mb-label-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.mb-label-modal-field input[type="text"] {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 120ms ease;
+}
+.mb-label-modal-field input[type="text"]:focus { border-color: var(--accent); }
+.mb-label-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mb-label-swatch {
+  width: 26px; height: 26px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+.mb-label-swatch:hover { transform: scale(1.1); }
+.mb-label-swatch.is-active {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--surface);
+}
+.mb-label-modal-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.mb-label-modal-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-2, var(--border));
+  background: var(--surface-2);
+}
+.mb-label-modal-footer button {
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.mb-label-modal-cancel {
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--border);
+}
+.mb-label-modal-cancel:hover { color: var(--text); border-color: var(--text); }
+.mb-label-modal-save {
+  background: var(--accent);
+  color: var(--accent-on);
+  font-weight: 600;
+}
+.mb-label-modal-save:hover { filter: brightness(1.06); }
+.mb-label-modal-delete {
+  background: transparent;
+  color: var(--danger, #ef4444);
+  border-color: transparent;
+}
+.mb-label-modal-delete:hover {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: var(--danger, #ef4444);
+}
+
+/* Multi-select tag popover — extends .sel-popover with a checkbox
+   list + Apply/Cancel footer. */
+.mb-tag-popover {
+  min-width: 220px;
+  padding: 6px 0;
+}
+.mb-tag-popover-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  padding: 4px 12px 8px;
+}
+.mb-tag-popover-list {
+  max-height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.mb-tag-popover-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.mb-tag-popover-opt:hover { background: var(--surface-2); }
+.mb-tag-popover-opt input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px; height: 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 3px;
+  margin: 0;
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+}
+.mb-tag-popover-opt input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.mb-tag-popover-opt input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 3px; height: 6px;
+  border: solid var(--accent-on, #fff);
+  border-width: 0 2px 2px 0;
+  transform: translate(-50%, -60%) rotate(45deg);
+}
+.mb-tag-popover-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mb-tag-popover-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-2, var(--border));
+  margin-top: 4px;
+}
+.mb-tag-popover-footer button {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 5px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.mb-tag-popover-cancel {
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--border);
+}
+.mb-tag-popover-cancel:hover { color: var(--text); }
+.mb-tag-popover-apply {
+  background: var(--accent);
+  color: var(--accent-on);
+  font-weight: 600;
+}
+.mb-tag-popover-apply:hover { filter: brightness(1.06); }
+
+/* Standalone composer view — used when the user clicks "Nouveau message"
+   from the sidebar (no email selected). The composer card stretches to
+   match the meta+thread block of a real email read view, so the pane
+   doesn't feel half-empty. */
+.mb-read-inner-compose {
+  /* Mirror .mb-read-inner so the close animation (opacity + translate)
+     applies the same way it does to a real opened email. */
+  display: flex;
+  flex-direction: column;
+}
+.mb-read-inner-compose .mb-read-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+.mb-read-inner-compose .mb-read-content { display: none; }
+.mb-read-inner-compose .mb-composer-standalone {
+  margin: 24px 28px 28px;
+  padding: 18px 20px 16px;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  /* The standalone composer holds the entire pane content, so its
+     textarea should grow to fill — unlike the reply variant where the
+     email body sits above. */
+}
+.mb-read-inner-compose .mb-composer-standalone textarea {
+  flex: 1 1 auto;
+  min-height: 220px;
+}
+
+/* Send button visual states: idle / loading (during SMTP roundtrip) /
+   sent (brief success flash before the pane closes). Keep the same
+   button geometry across all three states so nothing reflows; only
+   the icon (and faintly the colour) changes. */
+
+/* Phase 4 — staged outbound attachments. Pills sit above the composer
+   bar; collapsed (data-empty=1) when no files are staged. */
+.mb-attach-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 0 0;
+  margin: 0;
+}
+.mb-attach-strip[data-empty="1"] { display: none; }
+.mb-attach-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 4px 4px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1;
+  max-width: 220px;
+  border: 1px solid var(--border);
+}
+.mb-attach-pill i,
+.mb-attach-pill svg { flex-shrink: 0; color: var(--muted); }
+.mb-attach-pill .mb-attach-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-attach-pill .mb-attach-size {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.mb-attach-pill .mb-attach-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin-left: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.mb-attach-pill .mb-attach-remove:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--danger, #ef4444);
+}
+
+.mb-composer-bar .send {
+  position: relative;
+  transition: background .15s, color .15s, opacity .15s;
+  /* Lock a min-width so swapping the icon during loading/sent doesn't
+     jiggle the button width. ~96px fits the longest French label. */
+  min-width: 104px;
+  justify-content: center;
+}
+.mb-composer-bar .send.loading {
+  cursor: wait;
+  pointer-events: none;
+  /* Same conic-gradient pattern as .mb-ai-draft-btn.loading, adapted
+     for the accent fill: padding-box paints the solid green button
+     surface, border-box rotates a light-on-accent ring so the spinner
+     reads against the green. The 2px border slot makes the ring thick
+     enough to notice without growing the button geometry. */
+  background:
+    linear-gradient(var(--accent), var(--accent)) padding-box,
+    conic-gradient(
+      from var(--ai-angle, 0deg),
+      var(--accent-on),
+      color-mix(in oklab, var(--accent-on) 35%, transparent) 18%,
+      transparent 35%,
+      transparent 65%,
+      color-mix(in oklab, var(--accent-on) 35%, transparent) 82%,
+      var(--accent-on)
+    ) border-box;
+  border: 2px solid transparent;
+  color: var(--accent-on);
+  animation: ai-draft-spin 1.2s linear infinite;
+}
+/* Lucide replaces the placeholder <i> with an inline <svg> after
+   createIcons(); target both so the icon spin works whether the
+   refresh has run or not. */
+.mb-composer-bar .send.loading i,
+.mb-composer-bar .send.loading svg {
+  animation: icon-spin 1s linear infinite;
+}
+.mb-composer-bar .send.is-sent {
+  /* 350ms confirmation pulse before the pane closes. Green tint signals
+     success unambiguously; the button keeps its rounded pill shape. */
+  background: var(--success, #10b981);
+  color: var(--success-on, #fff);
+  border-color: transparent;
+  pointer-events: none;
+}
+
+/* Drag handle anchored at the top of the composer card. The wide hit
+   area (full width × 16px) makes it easy to grab without aiming, and
+   the centred grip pill signals "draggable". Drag UP to enlarge the
+   textarea, DOWN to shrink it. */
+.mb-composer-handle {
+  height: 16px;
+  margin: -10px -16px 6px;  /* pull into the card's padding so it sits flush */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ns-resize;
+  user-select: none;
+  border-top-left-radius: 14px;
+  border-top-right-radius: 14px;
+}
+.mb-composer-handle-grip {
+  width: 38px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  transition: background .18s ease, width .18s ease;
+}
+.mb-composer-handle:hover .mb-composer-handle-grip {
+  background: var(--muted-2);
+  width: 52px;
+}
+.mb-composer-handle.is-dragging .mb-composer-handle-grip {
+  background: var(--accent);
+  width: 64px;
 }
 .mb-composer-bar {
   margin-top: 6px;
@@ -1431,17 +2293,83 @@ a.lnk-warn {
   border-top: 1px solid var(--border-2);
   padding-top: 8px;
 }
+.mb-composer-close {
+  /* Minimal override: keep .icon-btn's grid centering intact. The
+     previous version added padding-left + border-left which shifted
+     the X off-centre. A small left margin gives the visual spacing
+     from the Send button without breaking layout. */
+  margin-left: 4px;
+  color: var(--muted) !important;
+}
+.mb-composer-close:hover { color: var(--text) !important; }
+/* Send + Brouillon IA share an explicit height + box-sizing so any
+   font-weight or border-color difference can never bleed into the
+   outer dimensions. Padding is purely horizontal — the 36px height
+   centers content via flex. */
+.mb-composer-bar .send,
+.mb-ai-draft-btn {
+  height: 36px;
+  box-sizing: border-box;
+  border-radius: 10px;
+  padding: 0 12px;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  line-height: 1;
+}
 .mb-composer-bar .send {
   background: var(--accent);
   color: var(--accent-on);
-  border: none;
-  border-radius: 10px;
-  padding: 8px 14px;
+  /* 1px transparent border keeps the outer box identical to the AI
+     draft button (which has a real 1px border). */
+  border: 1px solid transparent;
   font-weight: 600;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
+}
+.mb-ai-draft-btn {
+  position: relative;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 500;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.mb-ai-draft-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+.mb-ai-draft-btn:disabled { cursor: default; }
+
+/* Loading state: a rotating conic-gradient becomes the border. The
+   inner padding-box layer paints over the conic, leaving only a 1px
+   accent ring that sweeps around the button. @property is what lets
+   the --ai-angle custom prop interpolate smoothly (otherwise the
+   browser would snap 0deg → 360deg with no visible motion). */
+@property --ai-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+.mb-ai-draft-btn.loading {
+  border-color: transparent;
+  color: var(--accent);
+  background:
+    linear-gradient(var(--bg), var(--bg)) padding-box,
+    conic-gradient(
+      from var(--ai-angle),
+      var(--accent),
+      color-mix(in oklab, var(--accent) 35%, transparent) 18%,
+      transparent 35%,
+      transparent 65%,
+      color-mix(in oklab, var(--accent) 35%, transparent) 82%,
+      var(--accent)
+    ) border-box;
+  animation: ai-draft-spin 1.2s linear infinite;
+}
+.mb-ai-draft-btn.loading i {
+  animation: icon-spin 1.6s linear infinite;
+  color: var(--accent);
+}
+@keyframes ai-draft-spin {
+  to { --ai-angle: 360deg; }
 }
 
 /* ─────────────────────────────────────────────────────────
@@ -2138,31 +3066,11 @@ a.lnk-warn {
 /* ─────────────────────────────────────────────────────────
    Toast + cheat sheet
    ───────────────────────────────────────────────────────── */
-.toast {
-  position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%) translateY(20px);
-  background: var(--text);
-  color: var(--surface);
-  padding: 10px 18px;
-  border-radius: 10px;
-  font-size: 13px;
-  font-weight: 500;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 200ms ease, transform 200ms ease;
-  z-index: 100;
-  box-shadow: 0 12px 32px -8px rgba(0,0,0,0.3);
-}
-.toast.show {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-}
+/* Toasts are now handled by RailToast — styles in /static/rail-toast.css */
 
 .cheat-overlay {
   position: fixed; inset: 0;
-  background: color-mix(in oklab, var(--text) 50%, transparent);
+  background: rgba(0,0,0,0.55);
   display: grid; place-items: center;
   z-index: 80;
   backdrop-filter: blur(4px);
@@ -2341,7 +3249,6 @@ kbd {
 /* ── Cleanup workspace (#/cleanup) ───────────────────────────────────────── */
 .cln {
   width: 100%;
-  max-width: 1500px;
   margin: 0 auto;
   padding: 18px 28px 14px;
   box-sizing: border-box;
@@ -2360,6 +3267,12 @@ kbd {
   flex-shrink: 0;
   animation: fade-up 260ms cubic-bezier(.25,.46,.45,.94) both;
 }
+.cln-head-titles {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
 .cln-head-titles h1 {
   font-size: 24px;
   font-weight: 700;
@@ -2369,7 +3282,6 @@ kbd {
 .cln-head-titles .sub {
   color: var(--muted);
   font-size: 13px;
-  margin-top: 2px;
 }
 
 /* Tabs row */
@@ -3210,20 +4122,6 @@ kbd {
 }
 
 /* Explainer redesign — distinct from a plain <p> */
-.cln-unsub-explainer {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  background: color-mix(in oklab, var(--accent) 8%, transparent);
-  border: 1px solid color-mix(in oklab, var(--accent) 22%, transparent);
-  border-radius: 10px;
-  padding: 12px 14px;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text);
-}
-.cln-unsub-explainer i { color: var(--accent); flex-shrink: 0; margin-top: 1px; }
-.cln-unsub-explainer strong { font-weight: 700; }
 
 /* KPI strip */
 .cln-unsub-kpis {
@@ -3541,7 +4439,39 @@ kbd {
   color: var(--text);
 }
 .unsub-modal-purge:hover { border-color: var(--accent); }
-.unsub-modal-purge input { accent-color: var(--accent); width: 15px; height: 15px; flex-shrink: 0; }
+.unsub-modal-purge input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  display: grid;
+  place-content: center;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+.unsub-modal-purge input[type="checkbox"]::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  transform: scale(0);
+  transition: transform 140ms ease;
+  background: var(--accent);
+}
+.unsub-modal-purge input[type="checkbox"]:checked {
+  border-color: color-mix(in oklab, var(--accent) 70%, var(--border));
+  background: color-mix(in oklab, var(--accent) 12%, var(--surface));
+}
+.unsub-modal-purge input[type="checkbox"]:checked::before {
+  transform: scale(1);
+}
+.unsub-modal-purge input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 35%, transparent);
+}
 .unsub-modal-purge strong { font-weight: 700; }
 
 .unsub-modal-footer {
@@ -3573,7 +4503,7 @@ kbd {
   border-radius: 8px;
   border: none;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-on);
   font-size: 13.5px;
   font-weight: 600;
   cursor: pointer;
@@ -4676,6 +5606,12 @@ kbd {
   transition: background .15s;
 }
 .dash-link:hover { background: var(--accent-soft); }
+.dash-link:disabled { opacity: .7; cursor: default; pointer-events: none; }
+
+@keyframes icon-spin {
+  to { transform: rotate(360deg); }
+}
+.icon-spin { animation: icon-spin .9s linear infinite; }
 
 /* Top senders list */
 .top-senders {

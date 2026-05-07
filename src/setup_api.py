@@ -49,6 +49,10 @@ PROVIDERS: List[Dict[str, Any]] = [
         "ssl": True,
         "starttls": False,
         "verify_ssl": True,
+        "smtp_host": "smtp.gmail.com",
+        "smtp_port": 587,
+        "smtp_ssl": False,
+        "smtp_starttls": True,
         "help_url": "https://support.google.com/accounts/answer/185833",
         # Direct deep-link to the app-password creation page so users can
         # generate the 16-char code in one click instead of digging through
@@ -66,6 +70,10 @@ PROVIDERS: List[Dict[str, Any]] = [
         "ssl": True,
         "starttls": False,
         "verify_ssl": True,
+        "smtp_host": "smtp.office365.com",
+        "smtp_port": 587,
+        "smtp_ssl": False,
+        "smtp_starttls": True,
         "help_url": "https://support.microsoft.com/account-billing/5896ed9b-4263-e681-128a-a6f2979a7944",
         "app_password_url": "https://account.live.com/proofs/AppPassword",
         "help": "Si vous avez la 2FA, créez un mot de passe d'application "
@@ -80,6 +88,11 @@ PROVIDERS: List[Dict[str, Any]] = [
         "ssl": False,
         "starttls": True,
         "verify_ssl": False,
+        # Bridge exposes SMTP on 127.0.0.1:1025 (STARTTLS, self-signed cert).
+        "smtp_host": "127.0.0.1",
+        "smtp_port": 1025,
+        "smtp_ssl": False,
+        "smtp_starttls": True,
         "help_url": "https://proton.me/mail/bridge",
         # Bridge is a desktop app, no direct URL — users grab the password
         # from the running Bridge UI itself. We leave this empty so the
@@ -97,6 +110,10 @@ PROVIDERS: List[Dict[str, Any]] = [
         "ssl": True,
         "starttls": False,
         "verify_ssl": True,
+        "smtp_host": "smtp.mail.yahoo.com",
+        "smtp_port": 587,
+        "smtp_ssl": False,
+        "smtp_starttls": True,
         "help_url": "https://help.yahoo.com/kb/SLN15241.html",
         "app_password_url": "https://login.yahoo.com/myaccount/security/app-passwords/list",
         "help": "Yahoo exige un \"Mot de passe d'application\" : Compte → "
@@ -111,6 +128,10 @@ PROVIDERS: List[Dict[str, Any]] = [
         "ssl": True,
         "starttls": False,
         "verify_ssl": True,
+        "smtp_host": "smtp.mail.me.com",
+        "smtp_port": 587,
+        "smtp_ssl": False,
+        "smtp_starttls": True,
         "help_url": "https://support.apple.com/102654",
         "app_password_url": "https://account.apple.com/account/manage/section/security",
         "help": "Créez un mot de passe pour app sur appleid.apple.com → "
@@ -125,6 +146,10 @@ PROVIDERS: List[Dict[str, Any]] = [
         "ssl": True,
         "starttls": False,
         "verify_ssl": True,
+        "smtp_host": "smtp.orange.fr",
+        "smtp_port": 465,
+        "smtp_ssl": True,
+        "smtp_starttls": False,
         "help_url": "https://assistance.orange.fr/ordinateurs-peripheriques/installer-et-utiliser/l-utilisation-du-mail/configurer-mon-mail-orange-sur-mon-ordinateur/configurer-l-application-mail-de-windows-10-pour-le-mail-orange_117893-744080",
         "app_password_url": "",
         "help": "Utilisez votre mot de passe Orange habituel. Si vous avez la "
@@ -139,6 +164,10 @@ PROVIDERS: List[Dict[str, Any]] = [
         "ssl": True,
         "starttls": False,
         "verify_ssl": True,
+        "smtp_host": "ssl0.ovh.net",
+        "smtp_port": 465,
+        "smtp_ssl": True,
+        "smtp_starttls": False,
         "help_url": "https://help.ovhcloud.com/csm/fr-mxplan-imap-pop-smtp",
         "app_password_url": "",
         "help": "Mot de passe défini lors de la création de la boîte (espace "
@@ -153,6 +182,10 @@ PROVIDERS: List[Dict[str, Any]] = [
         "ssl": True,
         "starttls": False,
         "verify_ssl": True,
+        "smtp_host": "smtp.free.fr",
+        "smtp_port": 465,
+        "smtp_ssl": True,
+        "smtp_starttls": False,
         "help_url": "https://assistance.free.fr/articles/utiliser-une-zimbra-1290",
         "app_password_url": "",
         "help": "Mot de passe de votre compte Free.",
@@ -166,12 +199,33 @@ PROVIDERS: List[Dict[str, Any]] = [
         "ssl": True,
         "starttls": False,
         "verify_ssl": True,
+        "smtp_host": "",
+        "smtp_port": 587,
+        "smtp_ssl": False,
+        "smtp_starttls": True,
         "help_url": "",
         "app_password_url": "",
         "help": "Renseignez manuellement le serveur IMAP fourni par votre "
                 "hébergeur mail.",
     },
 ]
+
+
+# Provider-id → SMTP defaults map. Lookup helper used at send-time when
+# an account in config.yaml stores `smtp_host=""` (the loader falls back
+# to the preset for the account's `type`). Keeping this synced with the
+# `PROVIDERS` list above means a future provider only needs editing one
+# place. The map is rebuilt at module-import time from PROVIDERS.
+SMTP_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    p["type"]: {
+        "smtp_host": p.get("smtp_host", ""),
+        "smtp_port": p.get("smtp_port", 587),
+        "smtp_ssl": bool(p.get("smtp_ssl", False)),
+        "smtp_starttls": bool(p.get("smtp_starttls", True)),
+    }
+    for p in PROVIDERS
+    if p.get("type")
+}
 
 
 # ── Models ───────────────────────────────────────────────────────────────────
@@ -209,6 +263,14 @@ class AccountPayload(BaseModel):
     starttls: bool = False
     verify_ssl: bool = True
     enabled: bool = True
+    # SMTP overrides — optional. Empty `smtp_host` (or `smtp_port == 0`)
+    # means "fall back to the provider preset for `type`". The Settings
+    # UI exposes these via an "Avancé" toggle for users on a custom
+    # server or whose provider rotated SMTP endpoints.
+    smtp_host: str = ""
+    smtp_port: int = 0
+    smtp_ssl: bool = False
+    smtp_starttls: bool = True
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

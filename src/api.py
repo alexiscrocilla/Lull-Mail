@@ -7,9 +7,9 @@ import time
 import uuid
 from pathlib import Path
 from threading import Lock
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from src import config as cfg
 from src import database as db
 from src import attachment_security as att_sec
+from src import paths as _paths
 from src.safe_link import router as _safe_link_router
 
 logger = logging.getLogger(__name__)
@@ -86,8 +87,15 @@ FRONTEND = _frontend_dir()
 # ── Models ────────────────────────────────────────────────────────────────────
 
 _VALID_CATEGORIES = {"important", "newsletter", "transactional", "spam", "other", "pending"}
-# 'favourite' is no longer a folder — it became a separate boolean flag.
-_VALID_FOLDERS = {"inbox", "deleted"}
+# Built-in folder names. Custom folders (Phase 4) are stored in the
+# `folders` table and joined into the validation set at request time
+# via `_valid_folders()` below.
+_BUILTIN_FOLDERS = {"inbox", "deleted", "sent", "draft"}
+
+
+def _valid_folders() -> set:
+    """Built-ins + every custom folder defined in the DB."""
+    return _BUILTIN_FOLDERS | db.custom_folder_names()
 
 
 class EmailPatch(BaseModel):
@@ -95,6 +103,10 @@ class EmailPatch(BaseModel):
     category: Optional[str] = None
     folder: Optional[str] = None
     is_favourite: Optional[bool] = None
+    # Lets the frontend persist edits the user makes to an AI-generated
+    # draft (Modifier → composer → close). When provided, replaces the
+    # stored body verbatim. None = unchanged.
+    draft_response: Optional[str] = None
 
 
 class CleanupSenderReq(BaseModel):
@@ -139,6 +151,87 @@ class UnsubscribeBulkReq(BaseModel):
     purge: bool = False
 
 
+class FolderCreate(BaseModel):
+    name: str
+
+
+class FolderPatch(BaseModel):
+    name: Optional[str] = None
+    position: Optional[int] = None
+
+
+class LabelCreate(BaseModel):
+    name: str
+    color: str = "#94A3B8"
+
+
+class LabelPatch(BaseModel):
+    name: Optional[str] = None
+    color: Optional[str] = None
+    position: Optional[int] = None
+
+
+class EmailLabelsSet(BaseModel):
+    """Replace-all assignment for a single email. Empty list clears
+    every label currently assigned."""
+
+    label_ids: List[int] = []
+
+
+class DraftCreate(BaseModel):
+    """Compose-from-scratch draft. Every field is optional so the
+    frontend can call POST early (with just `from_account`) and PATCH
+    incrementally as the user types — same wire shape both ways."""
+
+    from_account: str
+    to: Optional[str] = ""
+    cc: Optional[str] = ""
+    bcc: Optional[str] = ""
+    subject: Optional[str] = ""
+    body_text: Optional[str] = ""
+    in_reply_to_int: Optional[int] = None
+
+
+class DraftPatch(BaseModel):
+    """Partial update — same fields as DraftCreate but each one
+    optional with `None` meaning "leave it alone". Empty strings ARE
+    a meaningful value (user cleared the field)."""
+
+    from_account: Optional[str] = None
+    to: Optional[str] = None
+    cc: Optional[str] = None
+    bcc: Optional[str] = None
+    subject: Optional[str] = None
+    body_text: Optional[str] = None
+    in_reply_to_int: Optional[int] = None
+
+
+class SendRequest(BaseModel):
+    """Outbound message payload. `to`/`cc`/`bcc` accept either a single
+    string ("a@b.com, c@d.com") or a list. `reply_to_int_id` is a
+    server-side shortcut: when set, the API loads the original
+    message-id + References from the `emails` table and threads the
+    reply automatically — the frontend doesn't have to know those
+    headers exist."""
+
+    from_account: str
+    to: List[str] = []
+    cc: List[str] = []
+    bcc: List[str] = []
+    subject: str = ""
+    body_text: str = ""
+    body_html: Optional[str] = None
+    reply_to_int_id: Optional[int] = None
+    in_reply_to: Optional[str] = None
+    references: Optional[str] = None
+    # Phase 4 — staged outbound files. Each id points at an upload
+    # previously created via POST /api/uploads. `attachments` lands
+    # as proper file attachments; `inline_images` are referenced via
+    # `cid:<id>` from `body_html` and stay tied to the HTML part.
+    attachments: List[str] = []
+    inline_images: List[str] = []
+
+
 # ── Email routes ──────────────────────────────────────────────────────────────
 
 @app.get("/api/emails")
@@ -149,6 +242,7 @@ def list_emails(
     needs_reply: Optional[bool] = None,
     folder: Optional[str] = None,
     sender: Optional[str] = None,
+    label: Optional[int] = None,
     limit: int = 100,
     offset: int = 0,
 ):
@@ -159,6 +253,7 @@ def list_emails(
         needs_reply=needs_reply,
         folder=folder,
         sender=sender,
+        label=label,
         limit=min(limit, 500),
         offset=offset,
     )
@@ -169,6 +264,11 @@ def list_emails(
         for r in rows:
             c = counts.get(r["message_id"])
             r["attachments"] = c or {"total": 0, "dangerous": 0, "suspicious": 0}
+        # Bulk-attach labels[] so the cards can render coloured chips
+        # without one extra GET per row.
+        labels_by_id = db.get_labels_for_emails([int(r["int_id"]) for r in rows])
+        for r in rows:
+            r["labels"] = labels_by_id.get(int(r["int_id"]), [])
     return rows
 
 
@@ -203,6 +303,12 @@ def get_email(int_id: int, bg: BackgroundTasks):
     em["sender_images_trusted"] = (
         db.is_sender_trusted_for_images(sender_domain) if sender_domain else False
     )
+    # Phase 3 — attach the user-defined labels assigned to this email
+    # so the read pane can render chips without an extra round-trip.
+    em["labels"] = [
+        {"id": l["id"], "name": l["name"], "color": l["color"], "position": l.get("position", 0)}
+        for l in db.get_labels_for_email(int_id)
+    ]
     return em
 
 
@@ -244,7 +350,7 @@ def patch_email(int_id: int, patch: EmailPatch, bg: BackgroundTasks):
             db.update_email_category(em["message_id"], patch.category)
 
     if patch.folder is not None:
-        if patch.folder not in _VALID_FOLDERS:
+        if patch.folder not in _valid_folders():
             raise HTTPException(400, f"Dossier invalide : {patch.folder}")
         if patch.folder != em.get("folder"):
             db.update_email_folder(em["message_id"], patch.folder)
@@ -254,6 +360,17 @@ def patch_email(int_id: int, patch: EmailPatch, bg: BackgroundTasks):
         if bool(em.get("is_favourite")) != patch.is_favourite:
             db.set_favourite(em["message_id"], patch.is_favourite)
             bg.add_task(_imap_set_favourite, em["account_email"], em["uid"], patch.is_favourite)
+
+    if patch.draft_response is not None:
+        # Allow clearing (empty string) or replacing the AI draft. The
+        # body is trusted as-is — the field is plain text rendered via
+        # escapeHtml on the way out.
+        if patch.draft_response != (em.get("draft_response") or ""):
+            db.set_draft_response(em["message_id"], patch.draft_response)
+            # Setting an empty draft means the user discarded it; flip
+            # needs_reply off so the list-card icon stops nagging.
+            if not patch.draft_response.strip():
+                db.set_needs_reply(em["message_id"], False)
 
     return {"ok": True}
 
@@ -310,13 +427,521 @@ def reanalyze_email(int_id: int):
     return db.get_email_by_id(int_id)
 
 
+@app.post("/api/emails/send")
+@limiter.limit("30/minute")
+def send_email(request: Request, payload: SendRequest):
+    """Deliver a message via the SMTP server tied to `from_account`.
+
+    The request body is intentionally lean: when `reply_to_int_id` is
+    set, this endpoint loads the original Message-ID/References from
+    `emails` so the new mail threads correctly without the frontend
+    having to fish those headers itself. Synchronous: the HTTP response
+    only returns once smtplib accepted the message (or raised).
+    """
+    from src import email_sender as sender
+
+    if not payload.from_account.strip():
+        raise HTTPException(400, "Compte expéditeur requis.")
+    if not payload.to:
+        raise HTTPException(400, "Au moins un destinataire est requis.")
+
+    in_reply_to = (payload.in_reply_to or "").strip() or None
+    references = (payload.references or "").strip() or None
+    if payload.reply_to_int_id is not None:
+        original = db.get_email_by_id(payload.reply_to_int_id)
+        if original:
+            orig_mid = (original.get("message_id") or "").strip()
+            if orig_mid:
+                if not in_reply_to:
+                    in_reply_to = orig_mid
+                if not references:
+                    # No `References` header is captured at ingest yet, so
+                    # we fall back to a single-element chain pointing at the
+                    # original — good enough for most clients to thread.
+                    references = orig_mid
+
+    outbox_id = db.insert_outbox_pending(
+        account_email=payload.from_account,
+        to_addr=", ".join(payload.to),
+        cc_addr=", ".join(payload.cc or []),
+        bcc_addr=", ".join(payload.bcc or []),
+        subject=payload.subject or "",
+        body_text=payload.body_text or "",
+        in_reply_to=in_reply_to,
+        refs=references,
+    )
+
+    try:
+        result = sender.send_message(
+            account_email=payload.from_account,
+            to=payload.to,
+            cc=payload.cc or [],
+            bcc=payload.bcc or [],
+            subject=payload.subject or "",
+            body_text=payload.body_text or "",
+            body_html=payload.body_html,
+            in_reply_to=in_reply_to,
+            references=references,
+            attachments=payload.attachments or [],
+            inline_images=payload.inline_images or [],
+        )
+    except sender.SendError as e:
+        db.mark_outbox_failed(outbox_id, e.stage, str(e))
+        # Authentication failures and missing config are user errors → 400.
+        # Everything else (connect/ssl/data/recipients) is upstream → 502.
+        status = 400 if e.stage in {
+            "auth", "smtp_unconfigured", "missing_password",
+            "account_disabled", "account_missing", "address_validation",
+            "empty_to", "upload_missing", "upload_invalid",
+        } else 502
+        raise HTTPException(
+            status_code=status,
+            detail={
+                "error": "send_failed",
+                "stage": e.stage,
+                "message": str(e),
+            },
+        )
+    except Exception as e:
+        logger.exception("send_email: unexpected exception")
+        db.mark_outbox_failed(outbox_id, "unknown", str(e))
+        raise HTTPException(500, f"Erreur d'envoi inattendue : {e}")
+
+    db.mark_outbox_sent(outbox_id, result["message_id"])
+    return {
+        "ok": True,
+        "message_id": result["message_id"],
+        "smtp_host": result["smtp_host"],
+    }
+
+
+# ── Drafts (Phase 2) ──────────────────────────────────────────────────────────
+
+
+def _draft_to_api(row: Dict) -> Dict:
+    """Shape a `drafts` row for the wire. Mirrors the keys the frontend
+    uses (camelCase free — keep snake_case to stay consistent with the
+    rest of the email payload)."""
+    return {
+        "id": row.get("id"),
+        "account_email": row.get("account_email", ""),
+        "to": row.get("to_addr", "") or "",
+        "cc": row.get("cc_addr", "") or "",
+        "bcc": row.get("bcc_addr", "") or "",
+        "subject": row.get("subject", "") or "",
+        "body_text": row.get("body_text", "") or "",
+        "in_reply_to_int": row.get("in_reply_to_int"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+@app.get("/api/drafts")
+def list_drafts(
+    account: Optional[str] = None,
+    in_reply_to_int: Optional[int] = None,
+):
+    rows = db.list_drafts(account=account, in_reply_to_int=in_reply_to_int)
+    return [_draft_to_api(r) for r in rows]
+
+
+@app.post("/api/drafts")
+def create_draft(payload: DraftCreate):
+    if not payload.from_account.strip():
+        raise HTTPException(400, "Compte expéditeur requis pour créer un brouillon.")
+    draft_id = db.insert_draft(
+        account_email=payload.from_account.strip(),
+        to_addr=payload.to or "",
+        cc_addr=payload.cc or "",
+        bcc_addr=payload.bcc or "",
+        subject=payload.subject or "",
+        body_text=payload.body_text or "",
+        in_reply_to_int=payload.in_reply_to_int,
+    )
+    row = db.get_draft(draft_id)
+    if not row:
+        raise HTTPException(500, "Échec de l'insertion du brouillon.")
+    return _draft_to_api(row)
+
+
+@app.patch("/api/drafts/{draft_id}")
+def patch_draft(draft_id: int, payload: DraftPatch):
+    existing = db.get_draft(draft_id)
+    if not existing:
+        raise HTTPException(404, "Brouillon introuvable")
+    db.update_draft(
+        draft_id,
+        account_email=(payload.from_account.strip() if payload.from_account is not None else None),
+        to_addr=payload.to,
+        cc_addr=payload.cc,
+        bcc_addr=payload.bcc,
+        subject=payload.subject,
+        body_text=payload.body_text,
+        in_reply_to_int=payload.in_reply_to_int,
+    )
+    row = db.get_draft(draft_id)
+    return _draft_to_api(row) if row else {"ok": True}
+
+
+@app.delete("/api/drafts/{draft_id}")
+def remove_draft(draft_id: int):
+    existing = db.get_draft(draft_id)
+    if not existing:
+        raise HTTPException(404, "Brouillon introuvable")
+    db.delete_draft(draft_id)
+    return {"ok": True}
+
+
+# ── Labels (Phase 3) ──────────────────────────────────────────────────────────
+
+
+import sqlite3 as _sqlite3  # local alias for IntegrityError
+
+
+def _label_to_api(row: Dict) -> Dict:
+    return {
+        "id": row.get("id"),
+        "name": row.get("name", ""),
+        "color": row.get("color") or "#94A3B8",
+        "position": row.get("position", 0),
+    }
+
+
+@app.get("/api/labels")
+def list_labels():
+    return [_label_to_api(r) for r in db.list_labels()]
+
+
+@app.post("/api/labels")
+def create_label(payload: LabelCreate):
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(400, "Nom d'étiquette requis.")
+    if len(name) > 60:
+        raise HTTPException(400, "Nom d'étiquette trop long (max 60 caractères).")
+    try:
+        new_id = db.create_label(name, payload.color or "#94A3B8")
+    except _sqlite3.IntegrityError:
+        raise HTTPException(409, f"Une étiquette nommée « {name} » existe déjà.")
+    row = db.get_label(new_id)
+    return _label_to_api(row) if row else {"id": new_id}
+
+
+@app.patch("/api/labels/{label_id}")
+def patch_label(label_id: int, payload: LabelPatch):
+    existing = db.get_label(label_id)
+    if not existing:
+        raise HTTPException(404, "Étiquette introuvable")
+    if payload.name is not None and len(payload.name.strip()) > 60:
+        raise HTTPException(400, "Nom d'étiquette trop long (max 60 caractères).")
+    try:
+        db.update_label(
+            label_id,
+            name=payload.name,
+            color=payload.color,
+            position=payload.position,
+        )
+    except _sqlite3.IntegrityError:
+        raise HTTPException(409, "Une étiquette portant ce nom existe déjà.")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    row = db.get_label(label_id)
+    return _label_to_api(row) if row else {"ok": True}
+
+
+@app.delete("/api/labels/{label_id}")
+def remove_label(label_id: int):
+    existing = db.get_label(label_id)
+    if not existing:
+        raise HTTPException(404, "Étiquette introuvable")
+    db.delete_label(label_id)
+    return {"ok": True}
+
+
+@app.put("/api/emails/{int_id}/labels")
+def set_email_labels(int_id: int, payload: EmailLabelsSet):
+    em = db.get_email_by_id(int_id)
+    if not em:
+        raise HTTPException(404, "Email introuvable")
+    # Validate every requested label exists — partial assignment with
+    # phantom ids would silently drop those. The frontend already
+    # restricts the picker to known labels, but keep this defensive.
+    if payload.label_ids:
+        for lid in payload.label_ids:
+            if not db.get_label(int(lid)):
+                raise HTTPException(400, f"Étiquette {lid} introuvable.")
+    db.set_email_labels(int_id, payload.label_ids or [])
+    labels = db.get_labels_for_email(int_id)
+    return {"ok": True, "labels": [_label_to_api(l) for l in labels]}
+
+
+# ── Custom folders (Phase 4) ─────────────────────────────────────────────────
+
+
+_FOLDER_NAME_RE = re.compile(r"^[\w\- ]{1,40}$", re.UNICODE)
+
+
+def _folder_to_api(row: Dict) -> Dict:
+    return {
+        "id": row.get("id"),
+        "name": row.get("name", ""),
+        "position": row.get("position", 0),
+    }
+
+
+def _validate_folder_name(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(400, "Nom de dossier requis.")
+    if name.lower() in _BUILTIN_FOLDERS:
+        raise HTTPException(409, f"« {name} » est un nom réservé.")
+    if not _FOLDER_NAME_RE.match(name):
+        raise HTTPException(
+            400,
+            "Caractères interdits dans le nom (lettres, chiffres, espaces, "
+            "tiret et underscore uniquement, max 40).",
+        )
+    return name
+
+
+@app.get("/api/folders")
+def list_folders():
+    return [_folder_to_api(r) for r in db.list_folders()]
+
+
+@app.post("/api/folders")
+def create_folder(payload: FolderCreate):
+    name = _validate_folder_name(payload.name)
+    if db.get_folder_by_name(name):
+        raise HTTPException(409, f"Un dossier nommé « {name} » existe déjà.")
+    try:
+        new_id = db.create_folder(name)
+    except _sqlite3.IntegrityError:
+        raise HTTPException(409, f"Un dossier nommé « {name} » existe déjà.")
+    row = db.get_folder(new_id)
+    return _folder_to_api(row) if row else {"id": new_id}
+
+
+@app.patch("/api/folders/{folder_id}")
+def patch_folder(folder_id: int, payload: FolderPatch):
+    existing = db.get_folder(folder_id)
+    if not existing:
+        raise HTTPException(404, "Dossier introuvable")
+    new_name: Optional[str] = None
+    if payload.name is not None:
+        new_name = _validate_folder_name(payload.name)
+        # Renaming: also update every email currently filed under the
+        # old name so they stay in the renamed folder.
+        if new_name != existing["name"]:
+            other = db.get_folder_by_name(new_name)
+            if other and other["id"] != folder_id:
+                raise HTTPException(409, f"Un dossier nommé « {new_name} » existe déjà.")
+            with db._conn() as con:
+                con.execute(
+                    "UPDATE emails SET folder = ? WHERE folder = ?",
+                    (new_name, existing["name"]),
+                )
+    try:
+        db.update_folder(folder_id, name=new_name, position=payload.position)
+    except _sqlite3.IntegrityError:
+        raise HTTPException(409, "Un dossier portant ce nom existe déjà.")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    row = db.get_folder(folder_id)
+    return _folder_to_api(row) if row else {"ok": True}
+
+
+@app.delete("/api/folders/{folder_id}")
+def remove_folder(folder_id: int):
+    existing = db.get_folder(folder_id)
+    if not existing:
+        raise HTTPException(404, "Dossier introuvable")
+    db.delete_folder(folder_id, fallback_name="inbox")
+    return {"ok": True}
+
+
+# ── Outbound attachment uploads (Phase 4) ────────────────────────────────────
+
+
+# Hardcoded ceiling for outbound attachment files. Sized to fit
+# inside the SMTP soft-limit of most providers (Gmail 25 MB, OVH
+# 50 MB) without doing per-account discovery. The frontend picker
+# enforces the same number so users get an immediate error rather
+# than waiting on the server to read the whole file.
+_OUTBOX_MAX_SIZE = 25 * 1024 * 1024  # 25 MB
+
+# Reject obvious executable types client-side AND server-side. The
+# user is sending FROM their machine (so they're trusted), but
+# bouncing a .exe or shell script through their own SMTP server
+# would still get the message flagged as spam by most filters and
+# may run afoul of provider acceptable-use policies.
+_OUTBOX_BLOCKED_EXTS = {
+    ".exe", ".com", ".bat", ".cmd", ".scr", ".msi", ".dll",
+    ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh",
+    ".ps1", ".ps2", ".psc1", ".psc2",
+    ".jar", ".app", ".lnk", ".reg",
+}
+
+# Filename safety — collapse to a safe ASCII subset so a malicious
+# filename can't craft a path-traversal in the upload directory.
+_SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._\- ]")
+
+
+def _safe_upload_filename(name: str) -> str:
+    name = (name or "").strip()
+    # Strip any directory components — UploadFile.filename normally
+    # carries the basename already, but defence-in-depth.
+    name = os.path.basename(name)
+    if not name or name in (".", ".."):
+        name = "fichier"
+    name = _SAFE_FILENAME_RE.sub("_", name)
+    # Cap length so an absurdly long filename can't trip path-length
+    # limits on Windows (260 chars by default).
+    if len(name) > 120:
+        stem, dot, ext = name.rpartition(".")
+        if dot:
+            stem = stem[: 120 - len(ext) - 1]
+            name = f"{stem}.{ext}"
+        else:
+            name = name[:120]
+    return name
+
+
+def _outbox_upload_path(upload_id: str) -> Optional[Path]:
+    """Resolve the storage directory for an upload id, with traversal
+    protection. Returns the directory path if it sits inside the
+    configured outbox dir; None otherwise."""
+    base = _paths.OUTBOX_ATTACHMENTS_DIR.resolve()
+    candidate = (base / upload_id).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        return None
+    return candidate
+
+
+def _read_upload_metadata(upload_id: str) -> Optional[Dict[str, Any]]:
+    folder = _outbox_upload_path(upload_id)
+    if not folder or not folder.is_dir():
+        return None
+    files = [p for p in folder.iterdir() if p.is_file()]
+    if not files:
+        return None
+    f = files[0]
+    return {
+        "upload_id": upload_id,
+        "filename": f.name,
+        "size": f.stat().st_size,
+        "content_type": _guess_content_type(f.name),
+    }
+
+
+def _guess_content_type(filename: str) -> str:
+    import mimetypes
+    ct, _ = mimetypes.guess_type(filename)
+    return ct or "application/octet-stream"
+
+
+@app.post("/api/uploads")
+@limiter.limit("60/minute")
+async def upload_attachment(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """Stage a file for inclusion in an outbound message. Stores the
+    upload under `OUTBOX_ATTACHMENTS_DIR/<uuid>/<safe_filename>` and
+    returns its handle. The frontend posts this BEFORE the user hits
+    Send, then references the returned `upload_id` in the SendRequest
+    payload. Files that are never sent leak — call DELETE manually
+    or wait for a future cleanup pass."""
+    if not file.filename:
+        raise HTTPException(400, "Nom de fichier manquant.")
+
+    safe_name = _safe_upload_filename(file.filename)
+    ext = os.path.splitext(safe_name)[1].lower()
+    if ext in _OUTBOX_BLOCKED_EXTS:
+        raise HTTPException(
+            400,
+            f"Type de fichier interdit pour l'envoi : {ext}. "
+            "Compressez-le dans une archive avant d'attacher.",
+        )
+
+    # Read the file in chunks so a 25 MB upload doesn't blow up the
+    # event loop. Stop and 413 as soon as the running tally crosses
+    # the cap — we don't want to write 100 MB to disk before deciding
+    # to reject it.
+    upload_id = uuid.uuid4().hex
+    folder = _paths.OUTBOX_ATTACHMENTS_DIR / upload_id
+    _paths.ensure_dirs()
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / safe_name
+    total = 0
+    chunk_size = 64 * 1024
+    try:
+        with open(target, "wb") as out:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _OUTBOX_MAX_SIZE:
+                    out.close()
+                    target.unlink(missing_ok=True)
+                    folder.rmdir()
+                    raise HTTPException(
+                        413,
+                        f"Fichier trop volumineux (max {_OUTBOX_MAX_SIZE // (1024 * 1024)} Mo).",
+                    )
+                out.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Clean up partial state so the staging dir doesn't accumulate
+        # zombie folders on disk-full / permission errors.
+        try:
+            if target.exists():
+                target.unlink()
+            if folder.exists():
+                folder.rmdir()
+        except Exception:
+            pass
+        raise HTTPException(500, f"Échec de l'upload : {e}")
+
+    return {
+        "upload_id": upload_id,
+        "filename": safe_name,
+        "size": total,
+        "content_type": _guess_content_type(safe_name),
+    }
+
+
+@app.get("/api/uploads/{upload_id}")
+def get_upload(upload_id: str):
+    meta = _read_upload_metadata(upload_id)
+    if not meta:
+        raise HTTPException(404, "Upload introuvable")
+    return meta
+
+
+@app.delete("/api/uploads/{upload_id}")
+def delete_upload(upload_id: str):
+    folder = _outbox_upload_path(upload_id)
+    if not folder or not folder.is_dir():
+        raise HTTPException(404, "Upload introuvable")
+    import shutil
+    try:
+        shutil.rmtree(folder)
+    except Exception as e:
+        raise HTTPException(500, f"Suppression impossible : {e}")
+    return {"ok": True}
+
+
 # ── Attachments ───────────────────────────────────────────────────────────────
 
 # Resolve once: the absolute path of the attachment store. Every download
 # must remain inside this root after symlink resolution. Re-resolved per
 # request would be wasteful AND would let an attacker race a symlink swap
 # between resolution and read.
-from src import paths as _paths
 _ATTACHMENTS_ROOT_ABS = _paths.ATTACHMENTS_DIR.resolve()
 
 
@@ -1213,6 +1838,13 @@ _MODEL_PRICES: dict = {
 }
 
 
+@app.post("/api/queue/skip-all")
+def queue_skip_all():
+    """Drain the AI analysis queue by marking all pending emails as 'other'."""
+    count = db.skip_pending_emails()
+    return {"ok": True, "skipped": count}
+
+
 @app.get("/api/dashboard/status")
 def dashboard_status():
     from src.scheduler import get_last_sync, is_running
@@ -1234,6 +1866,8 @@ def dashboard_status():
             "unread": int(stat.get("unread") or 0),
             "needs_reply": int(stat.get("needs_reply") or 0),
             "pending": int(stat.get("pending") or 0),
+            "favourite": int(stat.get("favourite") or 0),
+            "draft": int(stat.get("draft") or 0),
             "total": int(stat.get("total") or 0),
         })
 

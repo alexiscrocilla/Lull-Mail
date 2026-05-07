@@ -69,12 +69,22 @@ async function api(method, url, body) {
 }
 
 // ── UI helpers ───────────────────────────────────────────────────────────────
+// Delegates to the shared RailToast component (loaded via /static/rail-toast.js).
+// Rendered in detached mode (centered bottom) since the onboarding wizard
+// has no rail to anchor to.
 function toast(message, type = 'ok') {
-  const el = document.getElementById('toast');
-  el.textContent = message;
-  el.className = `toast show ${type}`;
-  clearTimeout(toast._t);
-  toast._t = setTimeout(() => el.classList.remove('show'), 3500);
+  const variant = type === 'err' ? 'error' : 'success';
+  if (window.railToast && typeof window.railToast.show === 'function') {
+    return window.railToast.show({
+      variant,
+      message,
+      duration: variant === 'error' ? 4500 : 3500,
+      detached: true,
+    });
+  }
+  // RailToast not yet loaded — fall back to a console hint.
+  console.warn('[onboarding] RailToast not ready:', message);
+  return null;
 }
 
 function goToStep(n) {
@@ -231,16 +241,17 @@ async function testConnection() {
       const msg = r.mailbox_count
         ? window.t('ob.test.ok_count', { count: r.mailbox_count })
         : window.t('ob.test.ok') + '.';
-      document.getElementById('test-result').innerHTML = `<div class="test-ok">${escapeHtml(msg)}</div>`;
+      document.getElementById('test-result').innerHTML = `<div class="test-ok"><i data-lucide="check-circle-2" style="width:15px;height:15px;flex-shrink:0;margin-top:1px"></i><span>${escapeHtml(msg)}</span></div>`;
     } else {
       document.getElementById('test-result').innerHTML =
-        `<div class="test-err">${window.t('ob.test.err_prefix')} ${escapeHtml(r.error)}<div class="text-xs mt-1" style="color: var(--muted);">${escapeHtml(r.detail || '')}</div></div>`;
+        `<div class="test-err"><i data-lucide="x-circle" style="width:15px;height:15px;flex-shrink:0;margin-top:1px"></i><span>${window.t('ob.test.err_prefix')} ${escapeHtml(r.error)}${r.detail ? `<div class="text-xs mt-1">${escapeHtml(r.detail)}</div>` : ''}</span></div>`;
     }
   } catch (e) {
     document.getElementById('test-result').innerHTML =
-      `<div class="test-err">${window.t('ob.test.err_prefix')} ${escapeHtml(window.t('ob.toast.error', { error: e.message }))}</div>`;
+      `<div class="test-err"><i data-lucide="x-circle" style="width:15px;height:15px;flex-shrink:0;margin-top:1px"></i><span>${window.t('ob.test.err_prefix')} ${escapeHtml(window.t('ob.toast.error', { error: e.message }))}</span></div>`;
   } finally {
     setBusy('btn-test', false);
+    if (window.lucide) window.lucide.createIcons();
   }
 }
 

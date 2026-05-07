@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/static/rail-toast.css" />
 
 <script>
   (function () {
@@ -49,6 +50,7 @@
     --accent-ink:  #134E4A;
     --accent-on:   #FFFFFF;
     --danger:      #EF4444;
+    --warning:     #F59E0B;
     --success:     #10B981;
     --info:        #3B82F6;
     --shadow-md:   rgba(15, 23, 42, .12);
@@ -70,6 +72,7 @@
     --accent-ink:  #A7F3D9;
     --accent-on:   #042F2A;
     --danger:      #FB7185;
+    --warning:     #FCD34D;
     --success:     #4ADE80;
     --info:        #7DD3FC;
     --shadow-md:   rgba(0, 0, 0, .45);
@@ -421,24 +424,7 @@
   .help-banner a { color: var(--accent-ink); font-weight: 600; }
   [data-theme="dark"] .help-banner a { color: var(--accent); }
 
-  /* ── Toast ── */
-  .toast {
-    position: fixed; bottom: 24px; right: 24px;
-    padding: 14px 18px; border-radius: 12px;
-    background: var(--glass-bg);
-    -webkit-backdrop-filter: blur(20px) saturate(160%);
-    backdrop-filter: blur(20px) saturate(160%);
-    border: 1px solid var(--glass-stroke);
-    color: var(--text); font-weight: 500; font-size: 14px;
-    box-shadow: 0 18px 40px var(--shadow-lg);
-    transform: translateY(120%); opacity: 0;
-    transition: transform .3s cubic-bezier(.4,0,.2,1), opacity .3s;
-    z-index: 100;
-    max-width: 380px;
-  }
-  .toast.show { transform: translateY(0); opacity: 1; }
-  .toast.ok  { border-left: 3px solid var(--success); }
-  .toast.err { border-left: 3px solid var(--danger); }
+  /* Toasts handled by /static/rail-toast.js (mode detached) */
 
   /* ── Spinner ── */
   .spinner {
@@ -452,9 +438,30 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* ── Test result colors ── */
-  .test-ok  { color: var(--success); font-weight: 500; }
-  .test-err { color: var(--danger); font-weight: 500; }
+  /* ── Test result cards ── */
+  .test-ok,
+  .test-err {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 9px 12px;
+    border-radius: 9px;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.45;
+    margin-top: 6px;
+  }
+  .test-ok {
+    background: color-mix(in oklab, var(--success) 10%, transparent);
+    border: 1px solid color-mix(in oklab, var(--success) 28%, transparent);
+    color: var(--success);
+  }
+  .test-err {
+    background: color-mix(in oklab, var(--danger) 10%, transparent);
+    border: 1px solid color-mix(in oklab, var(--danger) 28%, transparent);
+    color: var(--danger);
+  }
+  .test-err .text-xs { color: color-mix(in oklab, var(--danger) 75%, var(--text)); font-weight: 400; }
 
   /* ── Logo theme switch ── */
   .lull-logo-dark  { display: none; }
@@ -795,10 +802,9 @@
   </div>
 </div>
 
-<div id="toast" class="toast"></div>
-
 <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
 <script src="/static/i18n.js"></script>
+<script type="module" src="/static/rail-toast.js"></script>
 <script src="/static/onboarding.js"></script>
 </body>
 </html>

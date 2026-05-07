@@ -1,0 +1,185 @@
+/* ─────────────────────────────────────────────────────────
+   Loader library
+   Three reusable spinners stored here for future use. They are
+   NOT loaded by default — opt in by linking this stylesheet from
+   index.html when needed, then attach the matching class to a
+   <span> / <div>:
+       <link rel="stylesheet" href="/static/loader-library.css">
+       <span class="lull-loader lull-loader--orb"></span>
+       <span class="lull-loader lull-loader--cube"></span>
+       <span class="lull-loader lull-loader--pulse"></span>
+
+   Suggested pairings (informational, not enforced):
+   • lull-loader--orb   : long-running async work where presence is
+                          more important than progress (AI batch
+                          classifying a queue, ingest pass).
+   • lull-loader--cube  : finite multi-step pipelines (4 corners read
+                          as 4 stages — backfill + indexer + ai +
+                          notify, or similar).
+   • lull-loader--pulse : transient "busy" pulse (settings save, sync
+                          one-shot) — short cycles, no spatial story.
+
+   All loaders inherit `currentColor` so the host element's `color`
+   determines their hue. Brand teal (#5EEAD4) is the recommended
+   default; use a darker shade in light theme via `data-theme="light"`
+   if extra contrast is needed.
+   ───────────────────────────────────────────────────────── */
+
+.lull-loader {
+  display: inline-block;
+  position: relative;
+  /* Default inherited; size variants override. */
+  color: currentColor;
+}
+
+/* ── 1. Orb — glowing sphere with rotating bottom highlight ──
+   Fills the box with a metallic-style radial sphere; the ring of
+   light around the bottom rotates 360°. Reads as "AI thinking"
+   because the highlight is heavy and atmospheric. */
+
+.lull-loader--orb {
+  width: 100px;
+  height: 100px;
+  background: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, 1) 0%,
+    rgb(220, 220, 220) 40%,
+    rgb(170, 170, 170) 98%,
+    rgb(10, 10, 10) 100%
+  );
+  border-radius: 50%;
+}
+.lull-loader--orb::before {
+  position: absolute;
+  content: '';
+  width: 100%;
+  height: 100%;
+  border-radius: 100%;
+  border-bottom: 0 solid #ffffff05;
+  box-shadow:
+    0 -10px 20px 20px #ffffff40 inset,
+    0  -5px 15px 10px #ffffff50 inset,
+    0  -2px  5px      #ffffff80 inset,
+    0  -3px  2px      #ffffffbb inset,
+    0   2px  0px      #ffffff,
+    0   2px  3px      #ffffff,
+    0   5px  5px      #ffffff90,
+    0  10px 15px      #ffffff60,
+    0  10px 20px 20px #ffffff40;
+  filter: blur(3px);
+  animation: lull-loader-orb-rotate 2s linear infinite;
+}
+@keyframes lull-loader-orb-rotate {
+  100% { transform: rotate(360deg); }
+}
+
+/* ── 2. Cube — 4-corner traveling square ──
+   Two cells: one (::before) draws a fading shadow at each corner,
+   one (::after) is a small white square that visits the same four
+   corners while flipping on its X/Y axes. Together they look like
+   a cube unfolding around the viewport.
+
+   Sized for a 48px box at the default colour-on-dark contrast. On
+   light backgrounds, lighten the host's `color` to keep the card
+   readable; the inner squares ARE the host's color. */
+
+.lull-loader--cube {
+  width: 48px;
+  height: 48px;
+  transform: rotate(45deg);
+}
+.lull-loader--cube::before {
+  content: '';
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  position: absolute;
+  left: 0;
+  top: -24px;
+  animation: lull-loader-cube-trail 4s ease infinite;
+}
+.lull-loader--cube::after {
+  content: '';
+  box-sizing: border-box;
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 24px;
+  height: 24px;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.15);
+  animation: lull-loader-cube-travel 2s ease infinite;
+}
+@keyframes lull-loader-cube-trail {
+  0%   { box-shadow:   0px 24px rgba(255,255,255,0),  24px 24px rgba(255,255,255,0),  24px 48px rgba(255,255,255,0),   0px 48px rgba(255,255,255,0); }
+  12%  { box-shadow:   0px 24px white,                24px 24px rgba(255,255,255,0),  24px 48px rgba(255,255,255,0),   0px 48px rgba(255,255,255,0); }
+  25%  { box-shadow:   0px 24px white,                24px 24px white,                24px 48px rgba(255,255,255,0),   0px 48px rgba(255,255,255,0); }
+  37%  { box-shadow:   0px 24px white,                24px 24px white,                24px 48px white,                 0px 48px rgba(255,255,255,0); }
+  50%  { box-shadow:   0px 24px white,                24px 24px white,                24px 48px white,                 0px 48px white; }
+  62%  { box-shadow:   0px 24px rgba(255,255,255,0),  24px 24px white,                24px 48px white,                 0px 48px white; }
+  75%  { box-shadow:   0px 24px rgba(255,255,255,0),  24px 24px rgba(255,255,255,0),  24px 48px white,                 0px 48px white; }
+  87%  { box-shadow:   0px 24px rgba(255,255,255,0),  24px 24px rgba(255,255,255,0),  24px 48px rgba(255,255,255,0),   0px 48px white; }
+  100% { box-shadow:   0px 24px rgba(255,255,255,0),  24px 24px rgba(255,255,255,0),  24px 48px rgba(255,255,255,0),   0px 48px rgba(255,255,255,0); }
+}
+@keyframes lull-loader-cube-travel {
+  0%   { transform: translate(0, 0)         rotateX(0)      rotateY(0); }
+  25%  { transform: translate(100%, 0)      rotateX(0)      rotateY(180deg); }
+  50%  { transform: translate(100%, 100%)   rotateX(-180deg) rotateY(180deg); }
+  75%  { transform: translate(0, 100%)      rotateX(-180deg) rotateY(360deg); }
+  100% { transform: translate(0, 0)         rotateX(0)      rotateY(360deg); }
+}
+
+/* ── 3. Pulse — concentric ring expand/contract ──
+   Two pseudo-elements pulse outward and inward in opposing phases.
+   Reads as a heartbeat — short, calm, repeats forever. Best for
+   transient "saving" / "syncing" hints under buttons, not for
+   long-running work (the cycle gets hypnotic).
+
+   Box auto-sizes from `width`; default is responsive to 6rem cap. */
+
+.lull-loader--pulse {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  max-width: 6rem;
+  margin: 3rem 0;
+}
+.lull-loader--pulse::before,
+.lull-loader--pulse::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  animation: lull-loader-pulse-out 1.8s ease-in-out infinite;
+  filter: drop-shadow(0 0 1rem rgba(255, 255, 255, 0.75));
+}
+.lull-loader--pulse::before {
+  width: 100%;
+  padding-bottom: 100%;
+  box-shadow: inset 0 0 0 1rem #fff;
+  animation-name: lull-loader-pulse-in;
+}
+.lull-loader--pulse::after {
+  width: calc(100% - 2rem);
+  padding-bottom: calc(100% - 2rem);
+  box-shadow: 0 0 0 0 #fff;
+}
+@keyframes lull-loader-pulse-in {
+  0%        { box-shadow: inset 0 0 0 1rem #fff; opacity: 1; }
+  50%, 100% { box-shadow: inset 0 0 0 0    #fff; opacity: 0; }
+}
+@keyframes lull-loader-pulse-out {
+  0%, 50% { box-shadow: 0 0 0 0    #fff; opacity: 0; }
+  100%    { box-shadow: 0 0 0 1rem #fff; opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lull-loader--orb::before,
+  .lull-loader--cube::before,
+  .lull-loader--cube::after,
+  .lull-loader--pulse::before,
+  .lull-loader--pulse::after {
+    animation: none !important;
+  }
+}

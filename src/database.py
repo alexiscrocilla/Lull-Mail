@@ -16,6 +16,10 @@ def _conn() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
+    # Enable FK enforcement so ON DELETE CASCADE on email_labels.label_id
+    # actually triggers when a label is removed. SQLite ships with FK
+    # checks OFF by default for backwards compatibility.
+    con.execute("PRAGMA foreign_keys=ON")
     return con
 
 
@@ -121,6 +125,8 @@ def init_db():
         # See src/auth_results.py for the parsing logic.
         if "auth_results" not in cols:
             con.execute("ALTER TABLE emails ADD COLUMN auth_results TEXT")
+        if "ai_attempts" not in cols:
+            con.execute("ALTER TABLE emails ADD COLUMN ai_attempts INTEGER DEFAULT 0")
         con.execute("CREATE INDEX IF NOT EXISTS idx_emails_folder ON emails(folder)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_emails_favourite ON emails(is_favourite)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_emails_unsub ON emails(unsubscribe_url, unsubscribe_mailto)")
@@ -194,6 +200,104 @@ def init_db():
         con.execute("CREATE INDEX IF NOT EXISTS idx_attachments_sha    ON attachments(sha256)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_attachments_threat ON attachments(threat_level)")
 
+        # Outbound message log. Every send attempt — successful or not —
+        # leaves a row here. The UI never reads `outbox` directly; the
+        # table exists for diagnostics (why did this send fail?) and so a
+        # future retry job can re-pick up `status='failed'` rows. Sent
+        # messages also get a copy in the `emails` table at Phase 2 so
+        # they show up in the Sent virtual folder.
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS outbox (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_email TEXT    NOT NULL,
+                message_id    TEXT,
+                to_addr       TEXT    NOT NULL DEFAULT '',
+                cc_addr       TEXT    DEFAULT '',
+                bcc_addr      TEXT    DEFAULT '',
+                subject       TEXT    DEFAULT '',
+                body_text     TEXT    DEFAULT '',
+                in_reply_to   TEXT,
+                refs          TEXT,
+                status        TEXT    NOT NULL DEFAULT 'pending',
+                stage         TEXT,
+                error         TEXT,
+                created_at    TEXT    DEFAULT (datetime('now')),
+                sent_at       TEXT
+            )
+        """)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_outbox_status  ON outbox(status)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_outbox_account ON outbox(account_email)")
+
+        # User-typed drafts (composer auto-save + the Brouillons folder).
+        # Distinct from `emails.draft_response` which holds AI-generated
+        # reply suggestions tied to an inbound message — those stay
+        # where they are. This table only tracks compose-from-scratch
+        # work so it can survive across app restarts and show up under
+        # folder='draft' in the sidebar.
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS drafts (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_email   TEXT    NOT NULL,
+                to_addr         TEXT    DEFAULT '',
+                cc_addr         TEXT    DEFAULT '',
+                bcc_addr        TEXT    DEFAULT '',
+                subject         TEXT    DEFAULT '',
+                body_text       TEXT    DEFAULT '',
+                in_reply_to_int INTEGER,
+                created_at      TEXT    DEFAULT (datetime('now')),
+                updated_at      TEXT    DEFAULT (datetime('now'))
+            )
+        """)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_drafts_account ON drafts(account_email)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_drafts_updated ON drafts(updated_at DESC)")
+
+        # Phase 3 — user-defined labels. Each row is a colour + name
+        # the user creates in the sidebar; emails can carry multiple
+        # labels via the join table below. Distinct from `category`
+        # (a fixed enum from AI classification): labels are personal,
+        # multi-valued, and never modified by the AI loop.
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS labels (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT    NOT NULL UNIQUE,
+                color      TEXT    NOT NULL DEFAULT '#94A3B8',
+                position   INTEGER DEFAULT 0,
+                created_at TEXT    DEFAULT (datetime('now'))
+            )
+        """)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_labels_position ON labels(position)")
+
+        # Join table. Composite PK prevents duplicates; ON DELETE
+        # CASCADE on label_id keeps the join clean when a label is
+        # removed. We rely on PRAGMA foreign_keys=ON at connection
+        # time (see _conn) for cascades to actually fire.
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS email_labels (
+                email_int_id INTEGER NOT NULL,
+                label_id     INTEGER NOT NULL,
+                created_at   TEXT    DEFAULT (datetime('now')),
+                PRIMARY KEY (email_int_id, label_id),
+                FOREIGN KEY (label_id) REFERENCES labels(id) ON DELETE CASCADE
+            )
+        """)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_email_labels_label ON email_labels(label_id)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_email_labels_email ON email_labels(email_int_id)")
+
+        # Phase 4 — user-defined folders. Distinct from the four
+        # built-ins (inbox / deleted / sent / draft) which stay
+        # hardcoded in api._VALID_FOLDERS. Custom folders are
+        # app-only (never pushed to IMAP) — moving an email
+        # `folder = 'Factures'` just sets the column value; nothing
+        # else has to know about it.
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS folders (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                name          TEXT    NOT NULL UNIQUE,
+                position      INTEGER DEFAULT 0,
+                created_at    TEXT    DEFAULT (datetime('now'))
+            )
+        """)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_folders_position ON folders(position)")
 
 
 def email_exists(message_id: str) -> bool:
@@ -224,7 +328,11 @@ def insert_email(data: Dict[str, Any]) -> bool:
                 data.get("date_str", ""),
                 data.get("body_text", ""),
                 data.get("body_html", ""),
-                data.get("list_unsubscribe"),
+                # Empty-string sentinel = "inspected at ingest, no header found"
+                # — keeps the row out of find_uids_missing_headers (which keys
+                # off NULL = "never inspected") so missN doesn't bloat as
+                # headerless mails arrive via the regular sync.
+                data.get("list_unsubscribe") or "",
                 data.get("list_unsubscribe_post"),
                 data.get("unsubscribe_url"),
                 data.get("unsubscribe_mailto"),
@@ -294,6 +402,41 @@ def skip_old_email(message_id: str):
         )
 
 
+def increment_ai_attempts(message_id: str) -> int:
+    """Increment the AI processing attempt counter and return the new value."""
+    with _conn() as con:
+        con.execute(
+            "UPDATE emails SET ai_attempts = ai_attempts + 1 WHERE message_id = ?",
+            (message_id,),
+        )
+        row = con.execute(
+            "SELECT ai_attempts FROM emails WHERE message_id = ?", (message_id,)
+        ).fetchone()
+        return row[0] if row else 0
+
+
+def mark_ai_failed(message_id: str):
+    """Mark an email as unclassifiable after repeated AI failures."""
+    with _conn() as con:
+        con.execute(
+            "UPDATE emails SET category = 'other', importance_score = 1, "
+            "importance_reason = 'Classification IA impossible après 3 tentatives', "
+            "processed_at = datetime('now') WHERE message_id = ?",
+            (message_id,),
+        )
+
+
+def skip_pending_emails() -> int:
+    """Mark every pending email as other (manual drain). Returns count skipped."""
+    with _conn() as con:
+        cur = con.execute(
+            "UPDATE emails SET category = 'other', importance_score = 1, "
+            "importance_reason = 'File vidée manuellement', "
+            "processed_at = datetime('now') WHERE category = 'pending'"
+        )
+        return cur.rowcount
+
+
 def mark_read(message_id: str):
     with _conn() as con:
         con.execute("UPDATE emails SET is_read = 1 WHERE message_id = ?", (message_id,))
@@ -334,11 +477,24 @@ def get_emails(
     needs_reply: Optional[bool] = None,
     folder: Optional[str] = None,
     sender: Optional[str] = None,
+    label: Optional[int] = None,
     limit: int = 100,
     offset: int = 0,
 ) -> List[Dict]:
-    q = "SELECT * FROM emails WHERE 1=1"
-    params: list = []
+    # `label` joins on email_labels so a sidebar click on a personal
+    # label filters the inbox to just that subset. Joined as INNER so
+    # rows without an assignment are excluded — matches user intent
+    # ("show me what I tagged Travail").
+    if label is not None:
+        q = (
+            "SELECT e.* FROM emails e "
+            "JOIN email_labels el ON el.email_int_id = e.int_id "
+            "WHERE el.label_id = ?"
+        )
+        params: list = [int(label)]
+    else:
+        q = "SELECT * FROM emails WHERE 1=1"
+        params = []
 
     if account:
         q += " AND account_email = ?"
@@ -502,11 +658,36 @@ def per_account_stats() -> List[Dict]:
                 SUM(CASE WHEN is_read = 0 AND folder = 'inbox' THEN 1 ELSE 0 END) AS unread,
                 SUM(CASE WHEN needs_reply = 1 AND is_read = 0 AND folder = 'inbox' THEN 1 ELSE 0 END) AS needs_reply,
                 SUM(CASE WHEN category = 'pending' AND folder = 'inbox' THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN is_favourite = 1 AND folder != 'deleted' THEN 1 ELSE 0 END) AS favourite,
                 COUNT(*) AS total
             FROM emails
             GROUP BY account_email
         """).fetchall()
-        return [dict(r) for r in rows]
+        result: Dict[str, Dict] = {}
+        for r in rows:
+            d = dict(r)
+            d.setdefault("draft", 0)
+            result[d["account_email"]] = d
+        # Drafts live in a separate table.
+        draft_rows = con.execute("""
+            SELECT account_email, COUNT(*) AS draft_count
+            FROM drafts
+            GROUP BY account_email
+        """).fetchall()
+        for dr in draft_rows:
+            d = dict(dr)
+            email = d["account_email"]
+            entry = result.get(email)
+            if entry is None:
+                result[email] = {
+                    "account_email": email,
+                    "unread": 0, "needs_reply": 0, "pending": 0,
+                    "favourite": 0, "total": 0,
+                    "draft": int(d["draft_count"]),
+                }
+            else:
+                entry["draft"] = int(d["draft_count"])
+        return list(result.values())
 
 
 def score_histogram() -> List[int]:
@@ -1428,3 +1609,398 @@ def attachment_counts_for_messages(message_ids: List[str]) -> Dict[str, Dict[str
         }
         for r in rows
     }
+
+
+# ── Outbox (Phase 1) ─────────────────────────────────────────────────────────
+
+
+def insert_outbox_pending(
+    *,
+    account_email: str,
+    to_addr: str,
+    cc_addr: str,
+    bcc_addr: str,
+    subject: str,
+    body_text: str,
+    in_reply_to: Optional[str],
+    refs: Optional[str],
+) -> int:
+    """Open a pending outbox row before attempting SMTP delivery. The
+    returned id is updated by `mark_outbox_sent`/`mark_outbox_failed`
+    once the smtplib call returns."""
+    with _conn() as con:
+        cur = con.execute(
+            """
+            INSERT INTO outbox
+                (account_email, to_addr, cc_addr, bcc_addr, subject,
+                 body_text, in_reply_to, refs, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+            """,
+            (account_email, to_addr, cc_addr, bcc_addr, subject,
+             body_text, in_reply_to, refs),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def mark_outbox_sent(outbox_id: int, message_id: str) -> None:
+    with _conn() as con:
+        con.execute(
+            """
+            UPDATE outbox
+               SET status = 'sent',
+                   message_id = ?,
+                   sent_at = datetime('now'),
+                   error = NULL,
+                   stage = NULL
+             WHERE id = ?
+            """,
+            (message_id, outbox_id),
+        )
+
+
+def mark_outbox_failed(outbox_id: int, stage: str, error: str) -> None:
+    with _conn() as con:
+        con.execute(
+            """
+            UPDATE outbox
+               SET status = 'failed',
+                   stage = ?,
+                   error = ?
+             WHERE id = ?
+            """,
+            (stage, str(error)[:1000], outbox_id),
+        )
+
+
+# ── Drafts (Phase 2) ─────────────────────────────────────────────────────────
+
+
+def list_drafts(
+    account: Optional[str] = None,
+    in_reply_to_int: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Return drafts ordered by most-recently-edited first. Filterable
+    by account (Brouillons folder) and by `in_reply_to_int` (the reply
+    composer's lookup of "do I have a saved draft for this email?")."""
+    q = "SELECT * FROM drafts WHERE 1=1"
+    params: list = []
+    if account:
+        q += " AND account_email = ?"
+        params.append(account)
+    if in_reply_to_int is not None:
+        q += " AND in_reply_to_int = ?"
+        params.append(int(in_reply_to_int))
+    q += " ORDER BY updated_at DESC, id DESC"
+    with _conn() as con:
+        return [dict(r) for r in con.execute(q, params).fetchall()]
+
+
+def get_draft(draft_id: int) -> Optional[Dict[str, Any]]:
+    with _conn() as con:
+        row = con.execute("SELECT * FROM drafts WHERE id = ?", (draft_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def insert_draft(
+    *,
+    account_email: str,
+    to_addr: str = "",
+    cc_addr: str = "",
+    bcc_addr: str = "",
+    subject: str = "",
+    body_text: str = "",
+    in_reply_to_int: Optional[int] = None,
+) -> int:
+    with _conn() as con:
+        cur = con.execute(
+            """
+            INSERT INTO drafts
+                (account_email, to_addr, cc_addr, bcc_addr, subject,
+                 body_text, in_reply_to_int)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (account_email, to_addr, cc_addr, bcc_addr, subject,
+             body_text, in_reply_to_int),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def update_draft(
+    draft_id: int,
+    *,
+    account_email: Optional[str] = None,
+    to_addr: Optional[str] = None,
+    cc_addr: Optional[str] = None,
+    bcc_addr: Optional[str] = None,
+    subject: Optional[str] = None,
+    body_text: Optional[str] = None,
+    in_reply_to_int: Optional[int] = None,
+) -> bool:
+    """Partial update — only the columns the caller passes are touched.
+    Returns True iff a row was updated."""
+    sets: List[str] = []
+    params: list = []
+    for col, val in (
+        ("account_email", account_email),
+        ("to_addr", to_addr),
+        ("cc_addr", cc_addr),
+        ("bcc_addr", bcc_addr),
+        ("subject", subject),
+        ("body_text", body_text),
+        ("in_reply_to_int", in_reply_to_int),
+    ):
+        if val is not None:
+            sets.append(f"{col} = ?")
+            params.append(val)
+    if not sets:
+        return False
+    sets.append("updated_at = datetime('now')")
+    params.append(draft_id)
+    with _conn() as con:
+        cur = con.execute(
+            f"UPDATE drafts SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
+        return cur.rowcount > 0
+
+
+def delete_draft(draft_id: int) -> bool:
+    with _conn() as con:
+        cur = con.execute("DELETE FROM drafts WHERE id = ?", (draft_id,))
+        return cur.rowcount > 0
+
+
+# ── Labels (Phase 3) ─────────────────────────────────────────────────────────
+
+
+def list_labels() -> List[Dict[str, Any]]:
+    """Return all user-defined labels ordered by position then id.
+    Position is editable so the sidebar can show a deliberate order;
+    new labels land at the end (max position + 1)."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM labels ORDER BY position ASC, id ASC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_label(label_id: int) -> Optional[Dict[str, Any]]:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM labels WHERE id = ?", (label_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def create_label(name: str, color: str) -> int:
+    """Insert a new label at the end of the list. Raises sqlite3
+    IntegrityError on duplicate name (caught by the API layer)."""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("nom d'étiquette vide")
+    with _conn() as con:
+        max_pos = con.execute(
+            "SELECT COALESCE(MAX(position), 0) AS p FROM labels"
+        ).fetchone()["p"]
+        cur = con.execute(
+            "INSERT INTO labels (name, color, position) VALUES (?, ?, ?)",
+            (name, color or "#94A3B8", int(max_pos) + 1),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def update_label(
+    label_id: int,
+    *,
+    name: Optional[str] = None,
+    color: Optional[str] = None,
+    position: Optional[int] = None,
+) -> bool:
+    sets: List[str] = []
+    params: list = []
+    if name is not None:
+        n = name.strip()
+        if not n:
+            raise ValueError("nom d'étiquette vide")
+        sets.append("name = ?")
+        params.append(n)
+    if color is not None:
+        sets.append("color = ?")
+        params.append(color)
+    if position is not None:
+        sets.append("position = ?")
+        params.append(int(position))
+    if not sets:
+        return False
+    params.append(label_id)
+    with _conn() as con:
+        cur = con.execute(
+            f"UPDATE labels SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
+        return cur.rowcount > 0
+
+
+def delete_label(label_id: int) -> bool:
+    """Drop a label. ON DELETE CASCADE on `email_labels.label_id`
+    cleans up every assignment in the same transaction."""
+    with _conn() as con:
+        cur = con.execute("DELETE FROM labels WHERE id = ?", (label_id,))
+        return cur.rowcount > 0
+
+
+def get_labels_for_email(email_int_id: int) -> List[Dict[str, Any]]:
+    """All labels currently assigned to one email."""
+    with _conn() as con:
+        rows = con.execute(
+            """
+            SELECT l.* FROM labels l
+            JOIN email_labels el ON el.label_id = l.id
+            WHERE el.email_int_id = ?
+            ORDER BY l.position ASC, l.id ASC
+            """,
+            (email_int_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_labels_for_emails(email_int_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
+    """Bulk lookup for the list view: returns {email_int_id: [labels]}.
+    Empty input returns {}. Used to attach a labels[] field to every
+    row of the inbox /api/emails response without N+1."""
+    if not email_int_ids:
+        return {}
+    placeholders = ",".join("?" for _ in email_int_ids)
+    out: Dict[int, List[Dict[str, Any]]] = {i: [] for i in email_int_ids}
+    with _conn() as con:
+        rows = con.execute(
+            f"""
+            SELECT el.email_int_id, l.id, l.name, l.color, l.position
+              FROM email_labels el
+              JOIN labels l ON l.id = el.label_id
+             WHERE el.email_int_id IN ({placeholders})
+             ORDER BY l.position ASC, l.id ASC
+            """,
+            email_int_ids,
+        ).fetchall()
+    for r in rows:
+        out.setdefault(r["email_int_id"], []).append({
+            "id": r["id"],
+            "name": r["name"],
+            "color": r["color"],
+            "position": r["position"],
+        })
+    return out
+
+
+def set_email_labels(email_int_id: int, label_ids: List[int]) -> None:
+    """Replace the full set of labels on an email. Empty list = clear
+    every assignment for this email. Single-transaction so the row's
+    state is consistent at every point."""
+    unique = list({int(i) for i in label_ids}) if label_ids else []
+    with _conn() as con:
+        con.execute(
+            "DELETE FROM email_labels WHERE email_int_id = ?",
+            (email_int_id,),
+        )
+        if unique:
+            con.executemany(
+                "INSERT OR IGNORE INTO email_labels (email_int_id, label_id) VALUES (?, ?)",
+                [(email_int_id, lid) for lid in unique],
+            )
+
+
+# ── Folders (Phase 4) ────────────────────────────────────────────────────────
+
+
+def list_folders() -> List[Dict[str, Any]]:
+    """All custom folders ordered by position then id. Built-ins
+    (inbox/sent/draft/deleted) are NOT in this table — the API layer
+    exposes them separately."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM folders ORDER BY position ASC, id ASC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_folder(folder_id: int) -> Optional[Dict[str, Any]]:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM folders WHERE id = ?", (folder_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_folder_by_name(name: str) -> Optional[Dict[str, Any]]:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM folders WHERE name = ?", (name,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def create_folder(name: str) -> int:
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("nom de dossier vide")
+    with _conn() as con:
+        max_pos = con.execute(
+            "SELECT COALESCE(MAX(position), 0) AS p FROM folders"
+        ).fetchone()["p"]
+        cur = con.execute(
+            "INSERT INTO folders (name, position) VALUES (?, ?)",
+            (name, int(max_pos) + 1),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def update_folder(
+    folder_id: int,
+    *,
+    name: Optional[str] = None,
+    position: Optional[int] = None,
+) -> bool:
+    sets: List[str] = []
+    params: list = []
+    if name is not None:
+        n = name.strip()
+        if not n:
+            raise ValueError("nom de dossier vide")
+        sets.append("name = ?")
+        params.append(n)
+    if position is not None:
+        sets.append("position = ?")
+        params.append(int(position))
+    if not sets:
+        return False
+    params.append(folder_id)
+    with _conn() as con:
+        cur = con.execute(
+            f"UPDATE folders SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
+        return cur.rowcount > 0
+
+
+def delete_folder(folder_id: int, fallback_name: str = "inbox") -> bool:
+    """Drop a custom folder. Any emails currently sitting in it are
+    moved back to `fallback_name` (default: inbox) so they don't
+    disappear from every view."""
+    folder = get_folder(folder_id)
+    if not folder:
+        return False
+    name = folder["name"]
+    with _conn() as con:
+        con.execute(
+            "UPDATE emails SET folder = ? WHERE folder = ?",
+            (fallback_name, name),
+        )
+        con.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+    return True
+
+
+def custom_folder_names() -> set:
+    """Convenience: just the names. Used by api._VALID_FOLDERS to
+    accept custom folders when patching emails."""
+    return {row["name"] for row in list_folders()}

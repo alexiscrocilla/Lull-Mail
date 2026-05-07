@@ -182,6 +182,13 @@ def run_sync():
                     domain = extract_domain(em.get("sender", "") or "")
                     if domain and result.get("category") not in ("important", "other", None):
                         db.set_sender_category(domain, result["category"])
+                else:
+                    # AI call failed — track attempts; after 3 give up to unblock the queue.
+                    attempts = db.increment_ai_attempts(em["message_id"])
+                    if attempts >= 3:
+                        db.mark_ai_failed(em["message_id"])
+                        skipped += 1
+                    continue
 
             # Niveau 4 (brouillon IA) supprimé : généré à la demande via /api/emails/{id}/draft
 

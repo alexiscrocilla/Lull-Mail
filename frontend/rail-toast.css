@@ -1,0 +1,568 @@
+/* ─────────────────────────────────────────────────────────
+   RailToast — circular notification hosted in #rail-toast-host
+   (which lives inside .rail-bottom and replaces the legacy
+   rail-avatar). A placeholder cercle stays visible when no toast
+   is active. Detached mode (onboarding) reuses the same component
+   as a centered-bottom floating pill.
+   Single-slot: only one toast visible at a time.
+   ───────────────────────────────────────────────────────── */
+/* Host slot — replaces the legacy #rail-avatar. Lives inside .rail-bottom
+   so it shares the same flow position. A 36×36 placeholder keeps the
+   visual presence of an avatar; an active toast is positioned absolutely
+   on top and extends to the right of the rail. */
+#rail-toast-host {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  z-index: 110;
+}
+.rt-placeholder {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(94, 234, 212, 1) 0%, rgba(94, 234, 212, 1) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  transition: opacity 200ms ease, transform 200ms ease;
+  perspective: 100px;
+  perspective-origin: center center;
+}
+/* Coin-flip disc — flex-centered so inline-block baseline / margins can't shift it. */
+.rt-placeholder .loader {
+  display: block;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #fff;
+  transform: translateZ(1px);
+  transform-style: preserve-3d;
+  transform-origin: center center;
+  /* Default: no movement until the host enables it. */
+  animation: rt-coin-flip 3.4s cubic-bezier(0, 0.2, 0.8, 1) infinite;
+  animation-play-state: paused;
+  will-change: transform;
+}
+/* Subtle highlight/shadow to read as a \"coin\" while rotating. The
+   gradient stops are pulled from the app's design tokens — they
+   automatically swap between a polished-pearl light coin (white →
+   silver palette) and a graphite dark coin (slate → ink palette) when
+   the user toggles theme. The inset highlights stay as raw rgba
+   because they're physical specular cues, not brand colours. */
+.rt-placeholder .loader {
+  background: radial-gradient(
+    circle at 30% 30%,
+    var(--surface)   0%,
+    var(--surface-2) 58%,
+    var(--border)    100%
+  );
+  box-shadow:
+    0 10px 18px rgba(0,0,0,0.22),
+    inset 0 1px 0 rgba(255,255,255,0.75),
+    inset 0 -1px 0 rgba(0,0,0,0.10);
+}
+[data-theme="dark"] .rt-placeholder .loader {
+  /* Flat dark surface — same #141925 as the app's --surface so the
+     coin reads as a "hole" punched into the brand-teal placeholder
+     rather than a polished disc. Keeps the inset specular cues so the
+     edge still has shape. */
+  background: var(--surface);
+  box-shadow:
+    0 10px 18px rgba(0,0,0,0.55),
+    inset 0 1px 0 rgba(255,255,255,0.10),
+    inset 0 -1px 0 rgba(0,0,0,0.45);
+}
+
+/* Idle coin-flip runs when JS sets this class. */
+#rail-toast-host.rt-idle-running .rt-placeholder .loader {
+  animation-play-state: running;
+}
+@keyframes rt-coin-flip {
+  0% {
+    transform: translateZ(1px) rotateX(14deg) rotateY(0deg) translateY(-0.5px);
+  }
+  55% {
+    transform: translateZ(1px) rotateX(18deg) rotateY(1800deg) translateY(-1.5px);
+    animation-timing-function: cubic-bezier(0, 0.5, 0.5, 1);
+  }
+  /* Finish the flip, then hold still to create a pause between loops. */
+  70% {
+    transform: translateZ(1px) rotateX(14deg) rotateY(3600deg) translateY(-0.5px);
+  }
+  100% {
+    transform: translateZ(1px) rotateX(14deg) rotateY(3600deg) translateY(-0.5px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rt-placeholder .loader {
+    animation: none !important;
+    opacity: 0.92;
+  }
+}
+/* Hide the placeholder while a toast is active. The class is toggled
+   from JS to stay compatible with older browsers without :has(). */
+#rail-toast-host.rt-host-active .rt-placeholder {
+  opacity: 0;
+  transform: scale(0.85);
+}
+
+/* Detached mode (onboarding) — host floats centered at the bottom and
+   the placeholder is hidden entirely. */
+#rail-toast-host.rt-host-detached {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: auto;
+  height: auto;
+}
+#rail-toast-host.rt-host-detached .rt-placeholder { display: none; }
+.rt {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  max-width: 280px;
+  /* Left padding = icon slot (36px) + gap (10px) so the text doesn't
+     visually kiss the icon. Right padding kept at 14px for symmetry
+     with the rounded edge. */
+  padding: 0 14px 0 46px;
+  border-radius: 999px;
+  background: var(--surface);
+  /* Border drawn as inset box-shadow instead of a real `border`: a
+     1px border on a position:absolute parent shifts every absolutely-
+     positioned child (.rt-icon, .rt-ring) by 1px, breaking the
+     alignment with the 36x36 placeholder. Inset shadows are purely
+     visual and don't push the padding box. The drop shadow is the
+     second layer of the same `box-shadow` declaration. */
+  --rt-border-color: var(--border);
+  --rt-drop-shadow: 0 8px 24px -8px rgba(0,0,0,0.18);
+  border: 0;
+  box-shadow:
+    inset 0 0 0 1px var(--rt-border-color),
+    var(--rt-drop-shadow);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  pointer-events: auto;
+  cursor: default;
+  overflow: hidden;
+  white-space: nowrap;
+  transform-origin: 18px center;
+  /* Morph-from-placeholder entry. The toast mounts with .rt-emerging
+     (same 36x36 circle as the placeholder, no padding, hidden text);
+     JS removes that class on the next frame and the transitions below
+     grow it into the pill, so the visual reads as the placeholder
+     extruding rightward into the toast instead of a separate element
+     fading in from below. Detached mode keeps a simple fade-up below. */
+  transition:
+    max-width 280ms cubic-bezier(.25,.46,.45,.94),
+    padding 280ms cubic-bezier(.25,.46,.45,.94),
+    background 200ms ease,
+    box-shadow 200ms ease,
+    opacity 180ms ease;
+}
+.rt.rt-emerging {
+  max-width: 36px;
+  padding: 0;
+  --rt-border-color: transparent;
+  --rt-drop-shadow: 0 0 0 0 rgba(0,0,0,0);
+}
+.rt.rt-emerging .rt-text { opacity: 0; }
+/* Detached toast (onboarding) — flow within the host so it isn't pinned
+   to the host's top-left corner. */
+.rt.rt-detached {
+  position: relative;
+  top: auto;
+  left: auto;
+}
+[data-theme="dark"] .rt {
+  --rt-drop-shadow: 0 10px 28px -8px rgba(0,0,0,0.5);
+}
+.rt-icon {
+  position: absolute;
+  left: 0; top: 0;
+  width: 36px; height: 36px;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  color: var(--text);
+  /* Clip the Pac-Man food dots so they only appear inside the disc.
+     The dots animate from `left: 35` (well past the icon's right
+     edge) to `left: -3`; without overflow:hidden the right-side
+     start position would render outside the rim of the disc as a
+     floating speck. Combined with `border-radius: 50%` this clips
+     to the circular shape. */
+  overflow: hidden;
+  transition: color 200ms ease, background 200ms ease;
+}
+.rt-icon svg {
+  width: 18px;
+  height: 18px;
+  /* Lucide icons render at stroke-width=2 by default. The toast disc
+     is small (36px) and saturated, so a thicker stroke (2.4) gives
+     the icon enough visual weight without looking cartoonish. */
+  stroke-width: 2.4;
+}
+.rt-detached .rt-icon svg { width: 22px; height: 22px; }
+.rt-text {
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+  opacity: 1;
+  transition: opacity 180ms ease;
+}
+/* Conic ring rendered as a pseudo-element on the icon slot */
+.rt-ring {
+  position: absolute;
+  left: 0; top: 0;
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+/* ── Variant theming — unified token system ──
+   Every variant exposes the same three contracts:
+     --rt-rim   : drives the pill-body wash + inset border. Stays in
+                  the variant's signature hue across themes so the
+                  outer rim always says "this is a <kind>".
+     --rt-disc  : solid colour of the icon disc.
+     --rt-fg    : stroke colour for the icon / spinner on top of the
+                  disc. Light theme = dark stroke on bright disc;
+                  dark theme = white stroke on deep disc — same
+                  pattern that `loading` introduced, applied to every
+                  variant for visual consistency.
+   The dark-theme overrides darken the disc into Tailwind 700-series
+   shades so the white stroke clears WCAG-AA non-text contrast (≥3:1)
+   without abandoning the variant's hue family. */
+
+/* Rim is hardcoded in the variant's signature shade (Tailwind 500
+   series) instead of `var(--success)` etc — the app variables flip
+   between light/dark variants (e.g. `--info` is #3B82F6 light but
+   #7DD3FC dark) which would put the rim wash in a different hue
+   family than the disc. Pinning the rim to a stable hue keeps the
+   pill body, border and disc visually unified across themes. */
+
+.rt[data-variant="success"] {
+  --rt-rim:  #10B981;        /* emerald-500 — rim wash + border */
+  --rt-disc: #10B981;
+  --rt-fg:   #022C22;        /* near-black green — ≈11:1 on emerald-500 */
+}
+[data-theme="dark"] .rt[data-variant="success"] {
+  --rt-disc: #047857;        /* emerald-700 */
+  --rt-fg:   #FFFFFF;
+}
+
+.rt[data-variant="error"] {
+  --rt-rim:  #EF4444;        /* red-500 */
+  --rt-disc: #EF4444;
+  --rt-fg:   #FFFFFF;        /* white = 4.0:1 on red-500 */
+}
+[data-theme="dark"] .rt[data-variant="error"] {
+  --rt-disc: #B91C1C;        /* red-700 — white = 5.5:1 */
+  --rt-fg:   #FFFFFF;
+}
+
+.rt[data-variant="warning"] {
+  --rt-rim:  #F59E0B;        /* amber-500 */
+  --rt-disc: #F59E0B;
+  --rt-fg:   #422006;        /* near-black amber — ≈9:1 on amber-500 */
+}
+[data-theme="dark"] .rt[data-variant="warning"] {
+  --rt-disc: #B45309;        /* amber-700 — white = 4.7:1 */
+  --rt-fg:   #FFFFFF;
+}
+
+.rt[data-variant="info"] {
+  --rt-rim:  #3B82F6;        /* blue-500 */
+  --rt-disc: #3B82F6;
+  --rt-fg:   #FFFFFF;        /* white = 4.1:1 on blue-500 */
+}
+[data-theme="dark"] .rt[data-variant="info"] {
+  --rt-disc: #1D4ED8;        /* blue-700 — white = 6.5:1 */
+  --rt-fg:   #FFFFFF;
+}
+
+.rt[data-variant="loading"] {
+  /* Loading is the brand state: rim and light-theme disc both pin to
+     `#5EEAD4`; dark theme deepens just the disc to keep the white
+     spinner readable. */
+  --rt-rim:  #5EEAD4;
+  --rt-disc: #5EEAD4;
+  --rt-fg:   #042F2A;
+  /* Backwards-compat aliases for any external code that may still
+     reference the older `--rt-loading-*` names. */
+  --rt-loading-bg:   var(--rt-rim);
+  --rt-loading-disc: var(--rt-disc);
+  --rt-loading-fg:   var(--rt-fg);
+}
+[data-theme="dark"] .rt[data-variant="loading"] {
+  --rt-disc: #0F766E;        /* teal-700 — white = ≈5:1 */
+  --rt-fg:   #FFFFFF;
+}
+
+/* Apply the tokens. Pill body wash + border come from --rt-rim so the
+   outer pill keeps the variant identity. Icon disc + stroke come from
+   --rt-disc / --rt-fg so contrast is guaranteed in both themes. */
+.rt[data-variant="success"],
+.rt[data-variant="error"],
+.rt[data-variant="warning"],
+.rt[data-variant="info"],
+.rt[data-variant="loading"] {
+  --rt-border-color: color-mix(in oklab, var(--rt-rim) 55%, var(--border));
+  background: color-mix(in oklab, var(--rt-rim) 14%, var(--surface));
+}
+.rt[data-variant] .rt-icon {
+  color: var(--rt-fg);
+  background: var(--rt-disc);
+}
+
+/* During the morph entry the pill has no padding/text yet — keep the
+   surface plain so the variant wash doesn't bleed into the placeholder
+   shape. Variants re-apply on the next frame when .rt-emerging is
+   removed and the toast expands to its full pill. */
+.rt.rt-emerging { background: var(--surface); }
+
+/* Loading — indeterminate: segmented white border spinner (scaled to 36px slot). */
+.rt[data-variant="loading"]:not(.rt-determinate) .rt-ring {
+  opacity: 0;
+  animation: none;
+}
+.rt[data-variant="loading"]:not(.rt-determinate) .rt-icon {
+  /* Indeterminate spinner — disc colour is theme-aware via
+     --rt-loading-disc (bright brand teal in light, deep teal in
+     dark) so the comet trail segments stay readable in both modes.
+     Declared explicitly so this rule wins over the base .rt-icon
+     cascade when the determinate ring is absent. */
+  background: var(--rt-loading-disc);
+}
+.rt[data-variant="loading"] .rt-icon::before {
+  /* Comet-trail spinner — always full size (border 11px → 22px disc).
+     The disc is 36px and the conic progress ring's inner-mask cutoff
+     is at 70% (≈25px diameter), so the 22px spinner sits inside
+     without clipping. Hidden when `.rt-determinate` is on — the
+     download Pac-Man takes its place. */
+  content: '';
+  display: inline-block;
+  box-sizing: border-box;
+  width: 0;
+  height: 0;
+  border: 11px solid;
+  border-color:
+    color-mix(in srgb, var(--rt-loading-fg) 18%, transparent)
+    color-mix(in srgb, var(--rt-loading-fg) 32%, transparent)
+    color-mix(in srgb, var(--rt-loading-fg) 50%, transparent)
+    color-mix(in srgb, var(--rt-loading-fg) 85%, transparent);
+  border-radius: 50%;
+  animation: rt-animloader 1s linear infinite;
+}
+/* Larger slot in detached mode (onboarding) — 44px disc instead of
+   36px, so bump the border-width proportionally. */
+.rt.rt-detached[data-variant="loading"] .rt-icon::before {
+  border-width: 14px;
+}
+
+/* ── Determinate loading — Pac-Man eating dots ──────────────
+   Replaces the comet trail when a `progress` value is set on a
+   loading toast. Reads as "downloading" — appropriate for any
+   determinate work (file download, queue processing, …). The
+   conic ring on the disc rim still shows the % visually; the
+   Pac-Man inside says "still chewing". Coloured via
+   `--rt-loading-fg` so it inherits the theme-aware palette
+   (dark-teal on the bright disc in light mode, white on the
+   deep-teal disc in dark mode). */
+/* Pac-Man — port of the user-supplied CSS. The trick: with `width: 0;
+   height: 0; border: Npx solid` the four borders meet at the centre
+   so the visible shape is a SOLID disc made entirely of border
+   colour, not an empty ring. When `border-right-color` flips to
+   transparent the right quarter of the disc disappears → mouth open.
+   Border is scaled to 11px (vs. 24px in the original) so the 22×22
+   outer fits inside our 36×36 disc with the conic progress ring
+   on the rim. Travel distances on the dots are scaled by the same
+   factor (22/48 ≈ 0.46). */
+.rt-pacman {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  margin: 0;
+  border: 11px solid var(--rt-loading-fg);
+  border-radius: 50%;
+  box-sizing: border-box;
+  transform: translate(-50%, -50%);
+  display: none;
+  pointer-events: none;
+  animation: rt-pacman-eat 1s linear infinite;
+}
+.rt-pacman::before,
+.rt-pacman::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 23px;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--rt-loading-fg);
+  box-sizing: border-box;
+  opacity: 0;
+  animation: rt-pacman-move 2s linear infinite;
+}
+.rt-pacman::before { animation-delay: 1s; }
+
+/* Determinate gating: show Pac-Man, hide comet trail. */
+.rt[data-variant="loading"].rt-determinate .rt-pacman {
+  display: block;
+}
+.rt[data-variant="loading"].rt-determinate .rt-icon::before {
+  display: none;
+}
+
+/* Detached mode (44px disc) bumps the Pac-Man up a notch. */
+.rt.rt-detached[data-variant="loading"] .rt-pacman {
+  border-width: 14px;
+}
+.rt.rt-detached[data-variant="loading"] .rt-pacman::before,
+.rt.rt-detached[data-variant="loading"] .rt-pacman::after {
+  left: 30px;
+  width: 8px;
+  height: 8px;
+}
+
+@keyframes rt-pacman-eat {
+  0%,   49%  { border-right-color: var(--rt-loading-fg); }
+  50%, 100%  { border-right-color: transparent; }
+}
+@keyframes rt-pacman-move {
+  0%   { left: 35px; opacity: 1; }
+  50%  { left: 0;    opacity: 1; }
+  52%, 100% { left: -3px; opacity: 0; }
+}
+
+@keyframes rt-animloader {
+  0% {
+    border-color:
+      color-mix(in srgb, var(--rt-loading-fg) 18%, transparent)
+      color-mix(in srgb, var(--rt-loading-fg) 32%, transparent)
+      color-mix(in srgb, var(--rt-loading-fg) 50%, transparent)
+      color-mix(in srgb, var(--rt-loading-fg) 90%, transparent);
+  }
+  33% {
+    border-color:
+      color-mix(in srgb, var(--rt-loading-fg) 90%, transparent)
+      color-mix(in srgb, var(--rt-loading-fg) 18%, transparent)
+      color-mix(in srgb, var(--rt-loading-fg) 32%, transparent)
+      color-mix(in srgb, var(--rt-loading-fg) 50%, transparent);
+  }
+  66% {
+    border-color:
+      color-mix(in srgb, var(--rt-loading-fg) 50%, transparent)
+      color-mix(in srgb, var(--rt-loading-fg) 90%, transparent)
+      color-mix(in srgb, var(--rt-loading-fg) 18%, transparent)
+      color-mix(in srgb, var(--rt-loading-fg) 32%, transparent);
+  }
+  100% {
+    border-color:
+      color-mix(in srgb, var(--rt-loading-fg) 32%, transparent)
+      color-mix(in srgb, var(--rt-loading-fg) 50%, transparent)
+      color-mix(in srgb, var(--rt-loading-fg) 90%, transparent)
+      color-mix(in srgb, var(--rt-loading-fg) 18%, transparent);
+  }
+}
+
+/* Loading: determinate — keep conic progress ring */
+.rt.rt-determinate .rt-ring {
+  opacity: 1;
+  animation: none;
+  background: conic-gradient(
+    var(--accent) calc(var(--rt-progress, 0) * 1%),
+    color-mix(in oklab, var(--accent) 18%, transparent) 0
+  );
+  -webkit-mask: radial-gradient(closest-side, transparent 70%, #000 72%);
+          mask: radial-gradient(closest-side, transparent 70%, #000 72%);
+  transition: background 220ms ease;
+}
+
+/* Collapsed state — pill morphs to a 36px circle, hides the text */
+.rt.rt-collapsed {
+  max-width: 36px;
+  padding: 0;
+}
+.rt.rt-collapsed .rt-text { opacity: 0; }
+
+/* Leave animation */
+.rt.rt-leaving {
+  animation: rt-leave 220ms cubic-bezier(.55,0,1,.45) both;
+  pointer-events: none;
+}
+
+/* Detached mode (onboarding) — centered bottom, no morphing.
+   The host gains .rt-host-detached which repositions it; the toast itself
+   gets larger spacing and an unconstrained text. */
+.rt-detached {
+  max-width: 380px;
+  height: auto;
+  min-height: 44px;
+  /* Detached icon slot is 44px; add a 10px gap so the text doesn't
+     kiss the disc edge (mirrors the rail-mode 36+10 padding). */
+  padding: 10px 16px 10px 54px;
+  font-size: 14px;
+}
+.rt-detached .rt-icon,
+.rt-detached .rt-ring {
+  width: 44px; height: 44px;
+}
+.rt-detached .rt-text {
+  max-width: 320px;
+  white-space: normal;
+}
+/* Detached toast has no placeholder to morph from, so reuse the
+   classic fade-up animation. The .rt-emerging starting state still
+   applies to it (max-width: 36px), which would clip the text — undo
+   the morph constraints in detached mode. */
+.rt.rt-detached.rt-emerging {
+  max-width: 380px;
+  padding: 10px 16px 10px 54px;
+  --rt-border-color: var(--border);
+  --rt-drop-shadow: 0 8px 24px -8px rgba(0,0,0,0.18);
+}
+.rt.rt-detached {
+  animation: rt-emerge 280ms cubic-bezier(.25,.46,.45,.94) both;
+}
+
+@keyframes rt-emerge {
+  0%   { opacity: 0; transform: translateY(8px) scale(0.85); }
+  100% { opacity: 1; transform: translateY(0)   scale(1); }
+}
+@keyframes rt-leave {
+  0%   { opacity: 1; transform: translateY(0)   scale(1); }
+  100% { opacity: 0; transform: translateY(4px) scale(0.92); }
+}
+@keyframes rt-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rt,
+  .rt.rt-leaving,
+  .rt[data-variant="loading"] .rt-ring {
+    animation: none;
+    transition: opacity 120ms ease;
+  }
+  .rt.rt-determinate .rt-ring { transition: none; }
+  .rt[data-variant="loading"] .rt-icon::before,
+  .rt-pacman,
+  .rt-pacman::before,
+  .rt-pacman::after {
+    animation: none;
+  }
+}

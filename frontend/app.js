@@ -86,13 +86,28 @@ themeBtn.addEventListener('click', () => {
 });
 
 // ── Toast ──────────────────────────────────────────────────
-const toastEl = document.getElementById('toast');
-let toastTimer = null;
-window.toast = function toast(msg, ms = 1800) {
-  toastEl.textContent = msg;
-  toastEl.classList.add('show');
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toastEl.classList.remove('show'), ms);
+// Backwards-compatible facade over window.railToast. A string call still works
+// as window.toast("msg", ms) — the message is auto-classified by keywords so
+// existing call-sites get the right variant for free. New call-sites can
+// pass a config object with { variant, message, progress, duration, ... }.
+window.toast = function toast(arg, ms) {
+  const rt = window.railToast;
+  if (!rt) return null;
+  if (arg && typeof arg === 'object' && !Array.isArray(arg)) {
+    return rt.show(arg);
+  }
+  const message = String(arg ?? '');
+  const variant = rt.classifyMessage(message);
+  // Heuristic durations per variant. The caller's explicit `ms` always wins
+  // — including 0 for "persistent until explicit dismiss" (rare for string
+  // calls; new code wanting a persistent loading should pass the object form).
+  let duration;
+  if (typeof ms === 'number') duration = ms;
+  else if (variant === 'error')   duration = 4000;
+  else if (variant === 'warning') duration = 2400;
+  else if (variant === 'loading') duration = 2400;
+  else                            duration = 1800;
+  return rt.show({ variant, message, duration });
 };
 
 document.querySelectorAll('[data-toast]').forEach((el) => {
@@ -108,11 +123,9 @@ function openCheat() { cheat.classList.remove('hidden'); refreshIcons(); }
 function closeCheat() { cheat.classList.add('hidden'); }
 cheat.addEventListener('click', (e) => { if (e.target === cheat) closeCheat(); });
 cheat.querySelector('.cheat-close').addEventListener('click', closeCheat);
+document.getElementById('cheat-toggle').addEventListener('click', openCheat);
 
 // ── Global keyboard shortcuts ──────────────────────────────
-let gPending = false;
-let gTimer = null;
-
 function isTypingTarget(t) {
   if (!t) return false;
   const tag = t.tagName;
@@ -130,11 +143,15 @@ document.addEventListener('keydown', (e) => {
 
   if (isTypingTarget(e.target)) return;
 
+  // Global shortcuts (toutes pages)
   if (e.key === '?' || (e.shiftKey && e.key === '/')) {
     e.preventDefault();
     openCheat();
     return;
   }
+
+  // Raccourcis réservés à l'inbox
+  if (currentRoute() !== 'inbox') return;
 
   if (e.key === '/') {
     const search = document.querySelector('[data-role="search"]');
@@ -143,27 +160,6 @@ document.addEventListener('keydown', (e) => {
       search.focus();
       search.select();
     }
-    return;
-  }
-
-  if (e.key === 'g' && !gPending) {
-    gPending = true;
-    if (gTimer) clearTimeout(gTimer);
-    gTimer = setTimeout(() => { gPending = false; }, 800);
-    return;
-  }
-  if (gPending) {
-    gPending = false;
-    if (gTimer) clearTimeout(gTimer);
-    if (e.key === 'i') { e.preventDefault(); navigate('#/inbox'); return; }
-    if (e.key === 'd') { e.preventDefault(); navigate('#/dashboard'); return; }
-    if (e.key === 'c') { e.preventDefault(); navigate('#/cleanup'); return; }
-    if (e.key === 's') { e.preventDefault(); navigate('#/settings'); return; }
-  }
-
-  if (e.key === 'c') {
-    e.preventDefault();
-    window.toast('Composer : bientôt');
     return;
   }
 

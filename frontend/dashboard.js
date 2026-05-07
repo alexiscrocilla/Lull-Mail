@@ -13,9 +13,6 @@ export async function mountDashboard(host, opts) {
           <h1>Tableau de bord</h1>
         </div>
         <div style="display:flex;gap:10px;align-items:center">
-          <button class="mb-cta" style="margin:0;padding:8px 14px;font-size:13px" id="btn-sync-now">
-            <i data-lucide="refresh-cw" class="w-4 h-4"></i><span>Synchroniser</span>
-          </button>
         </div>
       </div>
 
@@ -72,7 +69,10 @@ export async function mountDashboard(host, opts) {
             <span style="display:flex;align-items:center;gap:8px">
               <i data-lucide="cpu" class="w-4 h-4"></i>File d'analyse IA
             </span>
-            <span class="sub" id="ai-rate">—</span>
+            <button class="dash-link" id="btn-run-queue" title="Lancer l'analyse IA">
+              <i data-lucide="cpu" class="w-3.5 h-3.5" id="btn-run-queue-icon"></i>
+              <span id="btn-run-queue-label">Analyser</span>
+            </button>
           </h3>
           <div style="display:flex;gap:16px;margin-bottom:10px;flex-wrap:wrap">
             <div class="kpi" style="flex:1;min-width:120px">
@@ -194,6 +194,23 @@ export async function mountDashboard(host, opts) {
   // ── Queue + throughput ────────────────────────────────────
   function renderQueue(s) {
     $('#kpi-pending').textContent = s.queue_pending;
+
+    // Running indicator on the queue button
+    const btn   = $('#btn-run-queue');
+    const icon  = $('#btn-run-queue-icon');
+    const label = $('#btn-run-queue-label');
+    if (s.running) {
+      btn.disabled = true;
+      icon.setAttribute('data-lucide', 'loader-2');
+      icon.classList.add('icon-spin');
+      label.textContent = 'En cours…';
+    } else {
+      btn.disabled = false;
+      icon.setAttribute('data-lucide', 'cpu');
+      icon.classList.remove('icon-spin');
+      label.textContent = 'Analyser';
+    }
+    window.lucide?.createIcons({ nodes: [btn] });
 
     // Daily 30-day buckets (primary view)
     const daily    = s.throughput_30d || [];
@@ -594,12 +611,12 @@ export async function mountDashboard(host, opts) {
   }
 
   // ── Toolbar ───────────────────────────────────────────────
-  $('#btn-sync-now').addEventListener('click', async () => {
+  $('#btn-run-queue').addEventListener('click', async () => {
     try {
       const r = await api.triggerSync();
-      window.toast(r.message || 'Synchronisation lancée');
+      window.toast(r.message || 'Analyse lancée');
     } catch (err) {
-      window.toast('Erreur sync: ' + err.message);
+      window.toast('Erreur : ' + err.message);
     }
   });
 

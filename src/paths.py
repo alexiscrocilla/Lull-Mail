@@ -112,6 +112,12 @@ CONFIG_PATH: Path = APP_DATA_DIR / "config.yaml"
 DB_PATH: Path = DATA_DIR / "mail.db"
 LOG_PATH: Path = DATA_DIR / "lull_mail.log"
 ATTACHMENTS_DIR: Path = DATA_DIR / "attachments"
+# Phase 4 — staging area for files the user attaches to outbound mail
+# BEFORE the SMTP send actually fires. Distinct from ATTACHMENTS_DIR
+# (which holds inbound IMAP attachments) so the two never share path
+# resolution / threat-scan logic. Files here are short-lived: created
+# on POST /api/uploads, consumed by send_message, then removed.
+OUTBOX_ATTACHMENTS_DIR: Path = DATA_DIR / "outbox-attachments"
 
 
 def ensure_dirs() -> None:
@@ -119,6 +125,7 @@ def ensure_dirs() -> None:
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    OUTBOX_ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _candidate_legacy_dirs() -> list[Path]:

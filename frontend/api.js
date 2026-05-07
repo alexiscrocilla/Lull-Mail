@@ -2,7 +2,30 @@
 
 async function j(url, opts) {
   const r = await fetch(url, opts);
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText} on ${url}`);
+  if (!r.ok) {
+    // The backend speaks French in its `detail` field for FastAPI
+    // HTTPException, in `body.detail` for the rate-limit handler, and
+    // sometimes nests `{error, message, stage}` under `detail` (the
+    // /api/emails/send endpoint). Walk those shapes so callers get a
+    // human-readable message instead of "429 Too Many Requests on …".
+    let body = null;
+    try {
+      const ct = r.headers.get('content-type') || '';
+      if (ct.includes('application/json')) body = await r.json();
+    } catch (_) { /* ignore parse errors */ }
+    const d = body && body.detail !== undefined ? body.detail : body;
+    let msg;
+    if (typeof d === 'string')              msg = d;
+    else if (d && typeof d.message === 'string') msg = d.message;
+    else if (d && typeof d.error   === 'string') msg = d.error;
+    else if (body && typeof body.message === 'string') msg = body.message;
+    else msg = `${r.status} ${r.statusText}`;
+    const err = new Error(msg);
+    err.status = r.status;
+    err.detail = d;
+    err.retryAfter = parseInt(r.headers.get('Retry-After') || '0', 10) || 0;
+    throw err;
+  }
   return r.json();
 }
 
@@ -35,6 +58,144 @@ export const api = {
 
   generateDraft(intId) {
     return j(`/api/emails/${intId}/draft`, { method: 'POST' });
+  },
+
+  // ── Labels (Phase 3) ─────────────────────────────────────
+  // Personal multi-label assignment, separate from the AI category
+  // enum. The /api/emails responses now include a labels[] array on
+  // every row; setEmailLabels does a replace-all PUT.
+  getLabels() {
+    return j('/api/labels');
+  },
+  createLabel(payload) {
+    return j('/api/labels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateLabel(id, patch) {
+    return j(`/api/labels/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+  },
+  deleteLabel(id) {
+    return j(`/api/labels/${id}`, { method: 'DELETE' });
+  },
+  setEmailLabels(intId, labelIds) {
+    return j(`/api/emails/${intId}/labels`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label_ids: labelIds }),
+    });
+  },
+
+  // ── Custom folders (Phase 4) ──────────────────────────────
+  // App-only sidebar folders. Built-ins (inbox/sent/draft/deleted)
+  // stay hardcoded in mailbox.js's FOLDERS const; these are merged
+  // into the sidebar list at runtime.
+  getFolders() {
+    return j('/api/folders');
+  },
+  createFolder(name) {
+    return j('/api/folders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+  },
+  updateFolder(id, patch) {
+    return j(`/api/folders/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+  },
+  deleteFolder(id) {
+    return j(`/api/folders/${id}`, { method: 'DELETE' });
+  },
+
+  // ── Outbound uploads (Phase 4) ────────────────────────────
+  // Stage a file in `OUTBOX_ATTACHMENTS_DIR/<uuid>/<file>` so it can
+  // later be referenced from a SendRequest's `attachments` /
+  // `inline_images` array. Returns `{upload_id, filename, size,
+  // content_type}`. The send call deletes the staged file on
+  // success; cancelled drafts can be cleaned via deleteUpload.
+  async uploadAttachment(file) {
+    const fd = new FormData();
+    fd.append('file', file, file.name);
+    const r = await fetch('/api/uploads', { method: 'POST', body: fd });
+    let body = null;
+    try { body = await r.json(); } catch (_) {}
+    if (!r.ok) {
+      const detail = (body && body.detail) || body || {};
+      const msg = (typeof detail === 'string' ? detail : detail.message || detail.error)
+        || `${r.status} ${r.statusText}`;
+      const err = new Error(msg);
+      err.status = r.status;
+      err.detail = detail;
+      throw err;
+    }
+    return body;
+  },
+  deleteUpload(uploadId) {
+    return j(`/api/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' });
+  },
+
+  // ── Drafts (Phase 2) ─────────────────────────────────────
+  // User-typed compose drafts persisted server-side. Distinct from
+  // generateDraft() above which produces an AI suggestion tied to an
+  // inbound email's int_id (stored in emails.draft_response).
+  getDrafts(account, opts = {}) {
+    const q = new URLSearchParams();
+    if (account) q.set('account', account);
+    if (opts.inReplyToInt != null) q.set('in_reply_to_int', String(opts.inReplyToInt));
+    const qs = q.toString();
+    return j(`/api/drafts${qs ? '?' + qs : ''}`);
+  },
+  createDraft(payload) {
+    return j('/api/drafts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  },
+  updateDraft(id, patch) {
+    return j(`/api/drafts/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+  },
+  deleteDraft(id) {
+    return j(`/api/drafts/${id}`, { method: 'DELETE' });
+  },
+
+  // Outbound send. Synchronous — resolves once the SMTP server accepted
+  // (or rejected) the message. The backend persists an outbox row before
+  // attempting delivery, so a network failure mid-call still leaves a
+  // diagnostic trace in the DB. On error we throw an Error whose
+  // `message` carries the French sentence built server-side, suitable
+  // for direct display via window.toast.
+  async sendEmail(payload) {
+    const r = await fetch('/api/emails/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    let body = null;
+    try { body = await r.json(); } catch (_) { /* non-JSON body */ }
+    if (!r.ok) {
+      const detail = (body && body.detail) || body || {};
+      const msg = detail.message || detail.error || `${r.status} ${r.statusText}`;
+      const err = new Error(msg);
+      err.stage = detail.stage || '';
+      err.status = r.status;
+      throw err;
+    }
+    return body || { ok: true };
   },
 
   getAttachments(intId) {
@@ -167,6 +328,7 @@ export const api = {
   getSyncStatus()   { return j('/api/sync/status'); },
 
   getDashboard()    { return j('/api/dashboard/status'); },
+  skipQueue()       { return j('/api/queue/skip-all', { method: 'POST' }); },
   getLogsTail(since, lines = 50) {
     const q = new URLSearchParams();
     if (since) q.set('since', since);

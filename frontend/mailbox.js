@@ -41,7 +41,13 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
       + '<path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>'
       + '</svg>'
     );
-  const INJECT = `<style>
+  // <base target="_blank"> forces every <a> to request a popup. Combined
+  // with the iframe's `allow-popups allow-popups-to-escape-sandbox` and
+  // pywebview's default `OPEN_EXTERNAL_LINKS_IN_BROWSER=True`, this routes
+  // every link click straight to the OS default browser instead of trying
+  // to navigate the sandboxed iframe (which would either get blocked by
+  // X-Frame-Options/CSP on most sites or trap the user inside the iframe).
+  const INJECT = `<base target="_blank"><style>
     html,body{margin:0;padding:8px;overflow-x:hidden!important;box-sizing:border-box;word-break:break-word;}
     img,video{max-width:100%!important;height:auto!important;}
     table{max-width:100%!important;table-layout:fixed!important;}
@@ -194,7 +200,7 @@ function authBadgeHtml(authJson) {
     kind = 'unknown';
     icon = 'help-circle';
     label = 'non vérifié';
-    tooltip = 'Aucun en-tête Authentication-Results trouvé sur ce mail.';
+    tooltip = "L'origine de ce mail n'a pas pu être vérifiée par ton fournisseur.";
   } else {
     const allPass = verdicts.every(([_, v]) => v === 'pass');
     const anyBad = verdicts.some(([_, v]) => v === 'fail' || v === 'softfail' || v === 'policy');
@@ -202,20 +208,23 @@ function authBadgeHtml(authJson) {
       kind = 'fail';
       icon = 'shield-x';
       label = 'authentification échouée';
+      tooltip = "Ce mail pourrait être falsifié — vérifie l'expéditeur avant d'agir.";
     } else if (allPass) {
       kind = 'pass';
       icon = 'shield-check';
       label = 'authentifié';
+      // No tooltip — the label already says it. Adding "DKIM: pass" etc.
+      // is jargon that doesn't help a non-technical reader.
+      tooltip = '';
     } else {
       kind = 'warn';
       icon = 'shield-alert';
       label = 'authentification partielle';
+      tooltip = "Une partie des contrôles d'origine n'a pas abouti.";
     }
-    tooltip = verdicts
-      .map(([m, v]) => `${m.toUpperCase()}: ${v}`)
-      .join(' · ');
   }
-  return `<span class="mb-auth-badge mb-auth-${kind}" title="${escapeHtml(tooltip)}">
+  const titleAttr = tooltip ? ` title="${escapeHtml(tooltip)}"` : '';
+  return `<span class="mb-auth-badge mb-auth-${kind}"${titleAttr}>
     <i data-lucide="${icon}" class="w-3 h-3"></i>
     <span>${escapeHtml(label)}</span>
   </span>`;
@@ -280,6 +289,155 @@ const FOLDERS = [
   { id: 'deleted',   label: 'Supprimés', icon: 'trash-2' },
 ];
 
+// Returns a setter that flips the send button between three visual
+// states. The label swaps to "Envoi en cours…" / "Envoyé" so users get
+// real feedback during the synchronous SMTP roundtrip — without it,
+// clicking Envoyer looks like nothing happened until the pane closes.
+//   idle    : original label restored, button enabled
+//   loading : spinner via .loading + "Envoi en cours…", disabled
+//   sent    : green pulse via .is-sent + "Envoyé", disabled
+function sendButtonStateFactory(btn, idleLabel = 'Envoyer') {
+  if (!btn) return () => {};
+  // Cache the original label markup once so we can restore it cleanly
+  // (the inner <i>+text gets replaced when we change state).
+  const originalHtml = btn.innerHTML;
+  return (state) => {
+    btn.classList.remove('loading', 'is-sent');
+    btn.disabled = state !== 'idle';
+    if (state === 'loading') {
+      btn.classList.add('loading');
+      btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4"></i>Envoi…';
+    } else if (state === 'sent') {
+      btn.classList.add('is-sent');
+      btn.innerHTML = '<i data-lucide="check" class="w-4 h-4"></i>Envoyé';
+    } else {
+      btn.innerHTML = originalHtml;
+    }
+    window.lucide?.createIcons();
+  };
+}
+
+// Composer meta strip — From / To / Subject. Always rendered above the
+// textarea regardless of mode; opts.mode controls only what's pre-filled.
+//   - 'reply'   : pre-fills To (sender of the original) + "Re: <subject>"
+//   - 'compose' : empty fields, focus lands on To
+//
+// The "De" picker is a custom dropdown (not a native <select>) so the
+// menu shares the look of the inbox's sort-select. A hidden input
+// `#mbc-from` exposes the selected email to existing form-reading code.
+function buildComposerMetaHtml({ mode, accounts, defaultAccount, to = '', subject = '' }) {
+  const chevron = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
+  const accs = Array.isArray(accounts) ? accounts.filter((a) => a && a.email) : [];
+  const fallback = (defaultAccount || (accs[0] && accs[0].email) || '').toLowerCase();
+
+  // One row of the picker — both the closed-state button content and
+  // each open-state option share the same shape: a colored avatar
+  // bubble + the friendly name + the email muted next to it. No "<>"
+  // wrapping, no HTML escaping for nested template parts (we escape
+  // each interpolated value individually).
+  const renderRow = (a) => {
+    const col = avatarColor(a.email || '');
+    const ini = initials(a.name || a.email || '?');
+    const name = a.name && a.name.trim() ? a.name : '';
+    return `
+      <span class="acc-select-av" style="background:${col}">${escapeHtml(ini)}</span>
+      <span class="acc-select-text">
+        ${name ? `<span class="acc-select-name">${escapeHtml(name)}</span>` : ''}
+        <span class="acc-select-email">${escapeHtml(a.email || '')}</span>
+      </span>
+    `;
+  };
+
+  const selectedAcc = accs.find((a) => (a.email || '').toLowerCase() === fallback) || accs[0];
+  const selectedValue = selectedAcc ? selectedAcc.email : (defaultAccount || '');
+  const selectedRow = selectedAcc
+    ? renderRow(selectedAcc)
+    : `<span class="acc-select-text"><span class="acc-select-email">${escapeHtml(defaultAccount || '(aucun compte)')}</span></span>`;
+
+  const opts = accs.length
+    ? accs.map((a) => {
+        const isActive = (a.email || '').toLowerCase() === fallback;
+        return `<div class="acc-select-opt ${isActive ? 'active' : ''}" data-val="${escapeHtml(a.email)}" data-name="${escapeHtml(a.name || '')}" role="option" aria-selected="${isActive}">${renderRow(a)}</div>`;
+      }).join('')
+    : `<div class="acc-select-opt active" data-val="${escapeHtml(defaultAccount || '')}">${selectedRow}</div>`;
+
+  return `
+    <div class="mb-composer-meta" data-mode="${escapeHtml(mode || 'reply')}">
+      <div class="mbc-row mbc-row-from">
+        <span class="mbc-key">De</span>
+        <div class="mbc-select">
+          <button class="mbc-select-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
+            <span class="mbc-select-label">${selectedRow}</span>
+            ${chevron}
+          </button>
+          <div class="mbc-select-drop" role="listbox" aria-label="Compte expéditeur">
+            ${opts}
+          </div>
+          <input type="hidden" id="mbc-from" value="${escapeHtml(selectedValue)}">
+        </div>
+      </div>
+      <label class="mbc-row">
+        <span class="mbc-key">À</span>
+        <input id="mbc-to" class="mbc-input" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(to)}" placeholder="destinataire@exemple.com">
+      </label>
+      <label class="mbc-row">
+        <span class="mbc-key">Objet</span>
+        <input id="mbc-subject" class="mbc-input" type="text" value="${escapeHtml(subject)}" placeholder="(sans objet)">
+      </label>
+    </div>
+  `;
+}
+
+// Wire up clicks on the custom From-account dropdown (toggle, select,
+// outside-click close). The outside-click listener self-cleans when the
+// wrap is detached from the DOM, which happens when renderEmpty() wipes
+// the read pane after a send.
+function bindComposerFromDropdown(scope) {
+  const wrap = scope.querySelector('.mbc-select');
+  if (!wrap) return;
+  const btn         = wrap.querySelector('.mbc-select-btn');
+  const drop        = wrap.querySelector('.mbc-select-drop');
+  const hiddenInput = wrap.querySelector('input[type="hidden"]');
+  const labelEl     = wrap.querySelector('.mbc-select-label');
+
+  btn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = !wrap.classList.contains('open');
+    wrap.classList.toggle('open', open);
+    btn.setAttribute('aria-expanded', String(open));
+  });
+
+  drop?.querySelectorAll('.acc-select-opt').forEach((opt) => {
+    opt.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hiddenInput.value = opt.dataset.val || '';
+      // Mirror the option's avatar+name+email block into the closed-
+      // state button so the visual is identical to what the user just
+      // picked. Using innerHTML (not textContent) preserves the avatar
+      // bubble + the muted-email row.
+      if (labelEl) labelEl.innerHTML = opt.innerHTML;
+      drop.querySelectorAll('.acc-select-opt').forEach((o) => {
+        o.classList.toggle('active', o === opt);
+        o.setAttribute('aria-selected', String(o === opt));
+      });
+      wrap.classList.remove('open');
+      btn?.setAttribute('aria-expanded', 'false');
+    });
+  });
+
+  const onOutside = (e) => {
+    if (!document.body.contains(wrap)) {
+      document.removeEventListener('click', onOutside);
+      return;
+    }
+    if (!wrap.contains(e.target)) {
+      wrap.classList.remove('open');
+      btn?.setAttribute('aria-expanded', 'false');
+    }
+  };
+  document.addEventListener('click', onOutside);
+}
+
 const LABELS = [
   { id: 'important',     label: 'Important',      color: '#FCA5A5', icon: 'star' },
   { id: 'transactional', label: 'Transactionnel', color: '#86EFAC', icon: 'receipt' },
@@ -318,7 +476,12 @@ export async function mountMailbox(host, _opts) {
 
         <div class="mb-section-title" id="title-folders">
           <span>Dossiers</span>
-          <svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          <div style="display:flex;align-items:center;gap:4px">
+            <button class="icon-btn" id="btn-add-folder" style="width:24px;height:24px" aria-label="Créer un dossier" onclick="event.stopPropagation()">
+              <i data-lucide="plus" class="w-4 h-4"></i>
+            </button>
+            <svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
         </div>
         <div class="mb-collapsible" id="wrap-folders">
           <div class="mb-collapsible-inner">
@@ -327,17 +490,27 @@ export async function mountMailbox(host, _opts) {
         </div>
 
         <div class="mb-section-title" id="title-labels">
+          <span>Catégories</span>
+          <svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="mb-collapsible" id="wrap-labels">
+          <div class="mb-collapsible-inner">
+            <div class="mb-section" id="mb-labels"></div>
+          </div>
+        </div>
+
+        <div class="mb-section-title" id="title-userlabels">
           <span>Étiquettes</span>
           <div style="display:flex;align-items:center;gap:4px">
-            <button class="icon-btn" style="width:24px;height:24px" data-toast="Étiquettes personnelles : bientôt" aria-label="Ajouter une étiquette" onclick="event.stopPropagation()">
+            <button class="icon-btn" id="btn-add-label" style="width:24px;height:24px" aria-label="Ajouter une étiquette" onclick="event.stopPropagation()">
               <i data-lucide="plus" class="w-4 h-4"></i>
             </button>
             <svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
           </div>
         </div>
-        <div class="mb-collapsible" id="wrap-labels">
+        <div class="mb-collapsible" id="wrap-userlabels">
           <div class="mb-collapsible-inner">
-            <div class="mb-section" id="mb-labels"></div>
+            <div class="mb-section" id="mb-userlabels"></div>
           </div>
         </div>
 
@@ -413,6 +586,9 @@ export async function mountMailbox(host, _opts) {
     selectedId: null,
     selectedIds: new Set(),  // ids currently checked (avatar-click)
     filteredIds: [],  // current visible ids in order
+    userLabels: [],   // Phase 3 — personal labels list
+    labelFilter: null, // Phase 3 — null = no filter, otherwise label id
+    customFolders: [], // Phase 4 — user-defined sidebar folders
   };
 
   const $ = (sel) => host.querySelector(sel);
@@ -433,24 +609,149 @@ export async function mountMailbox(host, _opts) {
     });
   }
 
+  // ── Sidebar drag-and-drop reordering ──────────────────────
+  // Wrap the four logical sections (Dossiers / Catégories / Étiquettes
+  // / Comptes) in `.mb-side-section` containers, then wire HTML5 drag
+  // events on each title so users can rearrange them. Order persists
+  // in localStorage. Dragging the title itself (not the content) is
+  // the affordance — the cursor changes to grab on hover.
+  const _SIDEBAR_SECTIONS = [
+    { id: 'folders',    members: ['#title-folders',    '#wrap-folders']    },
+    { id: 'labels',     members: ['#title-labels',     '#wrap-labels']     },
+    { id: 'userlabels', members: ['#title-userlabels', '#wrap-userlabels'] },
+    { id: 'accounts',   members: ['#mb-accounts-wrap']                     },
+  ];
+  const _SIDEBAR_ORDER_KEY = 'sb-section-order-v1';
+
+  function setupSidebarReorder() {
+    const scroll = host.querySelector('.mb-side-scroll');
+    if (!scroll || scroll.dataset.reorderReady === '1') return;
+
+    // Wrap each section's members under a single draggable container.
+    for (const sec of _SIDEBAR_SECTIONS) {
+      const els = sec.members.map((sel) => host.querySelector(sel)).filter(Boolean);
+      if (!els.length) continue;
+      const wrap = document.createElement('div');
+      wrap.className = 'mb-side-section';
+      wrap.dataset.section = sec.id;
+      els[0].parentNode.insertBefore(wrap, els[0]);
+      els.forEach((el) => wrap.appendChild(el));
+      wireSectionDrag(wrap);
+    }
+
+    // Restore saved order — append in order, last entries first wins
+    // because appendChild moves to the end.
+    let saved = [];
+    try { saved = JSON.parse(localStorage.getItem(_SIDEBAR_ORDER_KEY) || '[]'); } catch (_) {}
+    if (Array.isArray(saved) && saved.length) {
+      for (const id of saved) {
+        const w = host.querySelector(`.mb-side-section[data-section="${id}"]`);
+        if (w) scroll.appendChild(w);
+      }
+      // Any unsaved (newer) section stays at its declared position
+      // relative to the others — already correct.
+    }
+
+    scroll.dataset.reorderReady = '1';
+  }
+
+  function wireSectionDrag(section) {
+    const title = section.querySelector('.mb-section-title');
+    if (!title) return;
+    // Only the title is the drag handle. Content stays interactive.
+    title.draggable = true;
+    title.classList.add('mb-side-drag-handle');
+
+    title.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/section-id', section.dataset.section);
+      e.dataTransfer.effectAllowed = 'move';
+      // Slight delay so the browser captures the drag image before
+      // the source class kicks in (some browsers snapshot late).
+      setTimeout(() => section.classList.add('is-dragging'), 0);
+    });
+    title.addEventListener('dragend', () => {
+      section.classList.remove('is-dragging');
+      host.querySelectorAll('.mb-side-section').forEach((s) => {
+        s.classList.remove('drop-above', 'drop-below');
+      });
+    });
+
+    section.addEventListener('dragover', (e) => {
+      // Filter out non-section drags — copy/paste, file drops, etc.
+      if (!Array.from(e.dataTransfer.types).includes('text/section-id')) return;
+      // Don't decorate the source section itself — dropping on self
+      // is a no-op and the line would just look stuck.
+      if (section.classList.contains('is-dragging')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const rect = section.getBoundingClientRect();
+      const above = e.clientY < rect.top + rect.height / 2;
+      section.classList.toggle('drop-above', above);
+      section.classList.toggle('drop-below', !above);
+    });
+    section.addEventListener('dragleave', (e) => {
+      // Only clear when the cursor leaves the section box; nested
+      // children fire dragleave too which would flicker the indicator.
+      if (e.currentTarget.contains(e.relatedTarget)) return;
+      section.classList.remove('drop-above', 'drop-below');
+    });
+    section.addEventListener('drop', (e) => {
+      const draggedId = e.dataTransfer.getData('text/section-id');
+      section.classList.remove('drop-above', 'drop-below');
+      if (!draggedId || draggedId === section.dataset.section) return;
+      const dragged = host.querySelector(`.mb-side-section[data-section="${draggedId}"]`);
+      if (!dragged) return;
+      e.preventDefault();
+      const rect = section.getBoundingClientRect();
+      const above = e.clientY < rect.top + rect.height / 2;
+      if (above) section.parentNode.insertBefore(dragged, section);
+      else section.parentNode.insertBefore(dragged, section.nextSibling);
+      saveSidebarOrder();
+    });
+  }
+
+  function saveSidebarOrder() {
+    const order = [...host.querySelectorAll('.mb-side-section')]
+      .map((s) => s.dataset.section)
+      .filter(Boolean);
+    try { localStorage.setItem(_SIDEBAR_ORDER_KEY, JSON.stringify(order)); } catch (_) {}
+  }
+
   // ── Render: folders + labels ──────────────────────────────
   function renderFolders() {
     const cont = $('#mb-folders');
-    cont.innerHTML = FOLDERS.map((f) => `
+    const builtins = FOLDERS.map((f) => {
+      const badgeId = f.id === 'inbox' ? 'badge-inbox'
+                    : f.id === 'favourite' ? 'badge-favourite'
+                    : f.id === 'draft' ? 'badge-draft'
+                    : null;
+      const badgeHtml = badgeId
+        ? `<span class="badge" id="${badgeId}" hidden>0</span>`
+        : '';
+      return `
       <button class="mb-folder ${state.folder === f.id ? 'active' : ''}" data-folder="${f.id}">
         <i data-lucide="${f.icon}" class="w-4 h-4"></i>
         <span class="lab">${f.label}</span>
-        ${f.id === 'inbox' ? `<span class="badge" id="badge-inbox">…</span>` : ''}
+        ${badgeHtml}
+      </button>`;
+    }).join('');
+    // Phase 4 — append the user's custom folders. Each row carries
+    // an "edit" pencil (visible on hover) for rename/delete.
+    const customs = (state.customFolders || []).map((f) => `
+      <button class="mb-folder ${state.folder === f.name ? 'active' : ''}" data-folder="${escapeHtml(f.name)}" data-folder-id="${f.id}">
+        <i data-lucide="folder" class="w-4 h-4"></i>
+        <span class="lab">${escapeHtml(f.name)}</span>
+        <button class="mb-folder-edit" data-edit-folder="${f.id}" title="Renommer / supprimer" aria-label="Modifier">
+          <i data-lucide="more-horizontal" class="w-3 h-3"></i>
+        </button>
       </button>
     `).join('');
+    cont.innerHTML = builtins + customs;
     cont.querySelectorAll('.mb-folder').forEach((b) => {
-      b.addEventListener('click', () => {
+      b.addEventListener('click', (e) => {
+        // Ignore clicks on the inline edit chevron — handled below.
+        if (e.target.closest('.mb-folder-edit')) return;
         const folder = b.dataset.folder;
-        // Sent/Draft require an outgoing-mail flow that doesn't exist yet.
-        if (folder === 'sent' || folder === 'draft') {
-          window.toast('Dossier : bientôt');
-          return;
-        }
         if (folder === state.folder) return;
         state.folder = folder;
         renderEmpty();
@@ -459,6 +760,24 @@ export async function mountMailbox(host, _opts) {
         loadEmails();
       });
     });
+    cont.querySelectorAll('[data-edit-folder]').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const id = parseInt(b.dataset.editFolder, 10);
+        const folder = (state.customFolders || []).find((f) => f.id === id);
+        if (folder) openFolderModal(folder);
+      });
+    });
+  }
+
+  async function loadCustomFolders() {
+    try {
+      state.customFolders = await api.getFolders();
+    } catch (_) {
+      state.customFolders = [];
+    }
+    renderFolders();
   }
 
   function renderLabels() {
@@ -481,6 +800,319 @@ export async function mountMailbox(host, _opts) {
         renderLabels();
         loadEmails();
       });
+    });
+  }
+
+  // Phase 3 — render the personal-labels block. Click a label to scope
+  // the inbox to it; click "Toutes" / a second click on the active row
+  // clears the filter. Right-click opens a quick rename/recolour/delete
+  // popover (handled separately).
+  function renderUserLabels() {
+    const cont = $('#mb-userlabels');
+    if (!cont) return;
+    if (!state.userLabels.length) {
+      cont.innerHTML = `<div class="mb-userlabel-empty">Aucune étiquette</div>`;
+      return;
+    }
+    const allRow = `
+      <button class="mb-label ${state.labelFilter == null ? 'active' : ''}" data-label-id="">
+        <i data-lucide="tags" class="cat-icon" style="color:var(--muted-2)"></i>
+        <span class="lab">Toutes</span>
+      </button>
+    `;
+    cont.innerHTML = allRow + state.userLabels.map((l) => `
+      <button class="mb-label ${state.labelFilter === l.id ? 'active' : ''}" data-label-id="${l.id}" title="${escapeHtml(l.name)}">
+        <span class="mb-userlabel-dot" style="background:${escapeHtml(l.color)}"></span>
+        <span class="lab">${escapeHtml(l.name)}</span>
+        <button class="mb-userlabel-edit" data-edit-label="${l.id}" title="Modifier" aria-label="Modifier">
+          <i data-lucide="more-horizontal" class="w-3 h-3"></i>
+        </button>
+      </button>
+    `).join('');
+    window.lucide?.createIcons({ el: cont });
+    cont.querySelectorAll('.mb-label').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        // Edit chevron handled separately so a click there doesn't
+        // also flip the filter.
+        if (e.target.closest('.mb-userlabel-edit')) return;
+        const raw = b.dataset.labelId;
+        const id = raw === '' || raw == null ? null : parseInt(raw, 10);
+        // Toggle: clicking the active row clears the filter.
+        state.labelFilter = state.labelFilter === id ? null : id;
+        renderUserLabels();
+        loadEmails();
+      });
+    });
+    cont.querySelectorAll('[data-edit-label]').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const id = parseInt(b.dataset.editLabel, 10);
+        const label = state.userLabels.find((l) => l.id === id);
+        if (label) openLabelModal(label);
+      });
+    });
+  }
+
+  async function loadUserLabels() {
+    try {
+      state.userLabels = await api.getLabels();
+    } catch (_) {
+      state.userLabels = [];
+    }
+    renderUserLabels();
+  }
+
+  // Curated palette so users don't have to invent colours; click a
+  // swatch to assign. The order keeps the hottest hues first so the
+  // most common picks (Important / Travail / Famille) feel obvious.
+  const LABEL_PALETTE = [
+    '#FCA5A5', '#FBBF24', '#FACC15', '#86EFAC', '#67E8F9',
+    '#93C5FD', '#A5B4FC', '#C4B5FD', '#F0ABFC', '#F472B6',
+    '#94A3B8', '#475569',
+  ];
+
+  // Modal for creating, renaming and recolouring (+ deleting) a
+  // personal label. `existing` is null for create, a label row for
+  // edit. The DOM is built per-call and torn down on close — there
+  // are at most two label modals' worth of state in the page so
+  // this stays cheap.
+  function openLabelModal(existing) {
+    // Tear down any previous instance (defensive — protects against
+    // double clicks on the "+" button while one is animating in).
+    document.querySelectorAll('.mb-label-modal-backdrop').forEach((el) => el.remove());
+
+    const isEdit = !!existing;
+    const startName  = existing?.name  || '';
+    const startColor = existing?.color || LABEL_PALETTE[0];
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'mb-label-modal-backdrop';
+    backdrop.setAttribute('role', 'dialog');
+    backdrop.setAttribute('aria-modal', 'true');
+    backdrop.innerHTML = `
+      <div class="mb-label-modal-card">
+        <div class="mb-label-modal-head">
+          <h3>${isEdit ? 'Modifier l\'étiquette' : 'Nouvelle étiquette'}</h3>
+          <button class="icon-btn mb-label-modal-close" aria-label="Fermer"><i data-lucide="x" class="w-4 h-4"></i></button>
+        </div>
+        <div class="mb-label-modal-body">
+          <label class="mb-label-modal-field">
+            <span>Nom</span>
+            <input type="text" id="mb-label-name" maxlength="60" value="${escapeHtml(startName)}" placeholder="Travail, Famille, Urgent…" autocomplete="off">
+          </label>
+          <div class="mb-label-modal-field">
+            <span>Couleur</span>
+            <div class="mb-label-palette">
+              ${LABEL_PALETTE.map((c) => `<button type="button" class="mb-label-swatch ${c.toLowerCase() === startColor.toLowerCase() ? 'is-active' : ''}" style="background:${c}" data-color="${c}" aria-label="${c}"></button>`).join('')}
+            </div>
+          </div>
+          <div class="mb-label-modal-preview">
+            <span>Aperçu</span>
+            <span class="mb-label-chip" id="mb-label-preview-chip" style="background:${startColor}33;color:${startColor}">
+              <span class="mb-label-chip-dot" style="background:${startColor}"></span>
+              <span id="mb-label-preview-text">${escapeHtml(startName || 'Étiquette')}</span>
+            </span>
+          </div>
+        </div>
+        <div class="mb-label-modal-footer">
+          ${isEdit ? '<button class="mb-label-modal-delete" id="mb-label-modal-delete" type="button">Supprimer</button>' : ''}
+          <span style="flex:1"></span>
+          <button class="mb-label-modal-cancel" type="button">Annuler</button>
+          <button class="mb-label-modal-save" type="button" id="mb-label-modal-save">${isEdit ? 'Enregistrer' : 'Créer'}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(backdrop);
+    window.lucide?.createIcons({ el: backdrop });
+
+    const nameEl    = backdrop.querySelector('#mb-label-name');
+    const swatches  = backdrop.querySelectorAll('.mb-label-swatch');
+    const chipEl    = backdrop.querySelector('#mb-label-preview-chip');
+    const chipDot   = chipEl.querySelector('.mb-label-chip-dot');
+    const chipText  = backdrop.querySelector('#mb-label-preview-text');
+    let currentColor = startColor;
+
+    const close = () => backdrop.remove();
+    backdrop.querySelector('.mb-label-modal-close').addEventListener('click', close);
+    backdrop.querySelector('.mb-label-modal-cancel').addEventListener('click', close);
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+
+    const repaintPreview = () => {
+      chipEl.style.background = `${currentColor}33`;
+      chipEl.style.color = currentColor;
+      chipDot.style.background = currentColor;
+      chipText.textContent = nameEl.value.trim() || 'Étiquette';
+    };
+
+    nameEl.addEventListener('input', repaintPreview);
+    swatches.forEach((s) => {
+      s.addEventListener('click', () => {
+        currentColor = s.dataset.color;
+        swatches.forEach((o) => o.classList.toggle('is-active', o === s));
+        repaintPreview();
+      });
+    });
+    setTimeout(() => { nameEl.focus(); nameEl.select(); }, 0);
+
+    backdrop.querySelector('#mb-label-modal-save').addEventListener('click', async () => {
+      const name = nameEl.value.trim();
+      if (!name) { window.toast('Nom requis.'); nameEl.focus(); return; }
+      try {
+        if (isEdit) {
+          await api.updateLabel(existing.id, { name, color: currentColor });
+          // Patch every cached `em.labels` entry that referenced this
+          // label so cards repaint with the new name/colour without
+          // waiting for a backend reload. Same for the read pane row.
+          for (const em of state.emails) {
+            if (!Array.isArray(em.labels)) continue;
+            for (const l of em.labels) {
+              if (l.id === existing.id) { l.name = name; l.color = currentColor; }
+            }
+          }
+          applyFilter();
+          // If the open email is showing chips for this label, refresh
+          // the read pane too so its header matches.
+          if (state.selectedId != null) {
+            const em = state.emails.find((e) => e.int_id === state.selectedId);
+            if (em && em.labels?.some((l) => l.id === existing.id)) {
+              try { renderEmail(em); } catch (_) {}
+            }
+          }
+          window.toast('Étiquette mise à jour');
+        } else {
+          await api.createLabel({ name, color: currentColor });
+          window.toast('Étiquette créée');
+        }
+        close();
+        await loadUserLabels();
+      } catch (err) {
+        window.toast(err?.message || 'Échec.');
+      }
+    });
+
+    if (isEdit) {
+      backdrop.querySelector('#mb-label-modal-delete').addEventListener('click', async () => {
+        if (!confirm(`Supprimer l'étiquette « ${existing.name} » ?\n(Elle disparaîtra de tous les mails associés.)`)) return;
+        try {
+          await api.deleteLabel(existing.id);
+          window.toast('Étiquette supprimée');
+          close();
+          // If the user was filtered on this label, drop the filter.
+          if (state.labelFilter === existing.id) state.labelFilter = null;
+          // Strip the deleted label from every cached row so chips
+          // disappear immediately without a network round-trip.
+          for (const em of state.emails) {
+            if (!Array.isArray(em.labels)) continue;
+            em.labels = em.labels.filter((l) => l.id !== existing.id);
+          }
+          applyFilter();
+          if (state.selectedId != null) {
+            const em = state.emails.find((e) => e.int_id === state.selectedId);
+            if (em) {
+              try { renderEmail(em); } catch (_) {}
+            }
+          }
+          await loadUserLabels();
+        } catch (err) {
+          window.toast(err?.message || 'Échec suppression.');
+        }
+      });
+    }
+
+    // Esc to close. Bound to the backdrop so it doesn't leak past
+    // teardown.
+    backdrop.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); close(); }
+    });
+  }
+
+  // Phase 4 — create / rename / delete a custom sidebar folder.
+  // Reuses the .mb-label-modal-* pattern for visual consistency.
+  function openFolderModal(existing) {
+    document.querySelectorAll('.mb-label-modal-backdrop').forEach((el) => el.remove());
+
+    const isEdit = !!existing;
+    const startName = existing?.name || '';
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'mb-label-modal-backdrop';
+    backdrop.setAttribute('role', 'dialog');
+    backdrop.setAttribute('aria-modal', 'true');
+    backdrop.innerHTML = `
+      <div class="mb-label-modal-card">
+        <div class="mb-label-modal-head">
+          <h3>${isEdit ? 'Renommer le dossier' : 'Nouveau dossier'}</h3>
+          <button class="icon-btn mb-label-modal-close" aria-label="Fermer"><i data-lucide="x" class="w-4 h-4"></i></button>
+        </div>
+        <div class="mb-label-modal-body">
+          <label class="mb-label-modal-field">
+            <span>Nom du dossier</span>
+            <input type="text" id="mb-folder-name" maxlength="40" value="${escapeHtml(startName)}" placeholder="Factures, Clients, Archive…" autocomplete="off">
+          </label>
+          <div class="mb-folder-modal-hint" style="font-size:11.5px;color:var(--muted);line-height:1.4">
+            Lettres, chiffres, espace, tiret et underscore. 40 caractères max.
+            Les noms réservés (inbox, sent, draft, deleted) sont interdits.
+          </div>
+        </div>
+        <div class="mb-label-modal-footer">
+          ${isEdit ? '<button class="mb-label-modal-delete" id="mb-folder-modal-delete" type="button">Supprimer</button>' : ''}
+          <span style="flex:1"></span>
+          <button class="mb-label-modal-cancel" type="button">Annuler</button>
+          <button class="mb-label-modal-save" type="button" id="mb-folder-modal-save">${isEdit ? 'Enregistrer' : 'Créer'}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(backdrop);
+    window.lucide?.createIcons({ el: backdrop });
+
+    const nameEl = backdrop.querySelector('#mb-folder-name');
+    const close = () => backdrop.remove();
+    backdrop.querySelector('.mb-label-modal-close').addEventListener('click', close);
+    backdrop.querySelector('.mb-label-modal-cancel').addEventListener('click', close);
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+    setTimeout(() => { nameEl.focus(); nameEl.select(); }, 0);
+
+    backdrop.querySelector('#mb-folder-modal-save').addEventListener('click', async () => {
+      const name = nameEl.value.trim();
+      if (!name) { window.toast('Nom requis.'); nameEl.focus(); return; }
+      try {
+        if (isEdit) {
+          await api.updateFolder(existing.id, { name });
+          // If the user was viewing this folder, follow the rename.
+          if (state.folder === existing.name) state.folder = name;
+          window.toast('Dossier renommé');
+        } else {
+          await api.createFolder(name);
+          window.toast('Dossier créé');
+        }
+        close();
+        await loadCustomFolders();
+        loadEmails();
+      } catch (err) {
+        window.toast(err?.message || 'Échec.');
+      }
+    });
+
+    if (isEdit) {
+      backdrop.querySelector('#mb-folder-modal-delete').addEventListener('click', async () => {
+        if (!confirm(`Supprimer le dossier « ${existing.name} » ?\n(Les mails seront déplacés dans la boîte de réception.)`)) return;
+        try {
+          await api.deleteFolder(existing.id);
+          window.toast('Dossier supprimé');
+          close();
+          // Drop the filter if the user was on the deleted folder.
+          if (state.folder === existing.name) state.folder = 'inbox';
+          await loadCustomFolders();
+          loadEmails();
+        } catch (err) {
+          window.toast(err?.message || 'Échec suppression.');
+        }
+      });
+    }
+
+    backdrop.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); close(); }
     });
   }
 
@@ -697,6 +1329,7 @@ export async function mountMailbox(host, _opts) {
         state.sortMode = opt.dataset.sort;
         wrap.classList.remove('open');
         renderSortBtn();
+        _filterDidChange = true;
         applyFilter();
       });
     });
@@ -737,6 +1370,7 @@ export async function mountMailbox(host, _opts) {
         if (k === 'all')    { state.onlyUnread = false; state.onlyReply = false; }
         if (k === 'unread') { state.onlyUnread = !state.onlyUnread; state.onlyReply = false; }
         if (k === 'reply')  { state.onlyReply  = !state.onlyReply;  state.onlyUnread = false; }
+        _filterDidChange = true;
         renderChips();
         loadEmails();
       });
@@ -779,17 +1413,37 @@ export async function mountMailbox(host, _opts) {
   }
 
   function updateBadge() {
-    const b = $('#badge-inbox');
-    if (!b) return;
-    // Sum unread from accountStats (database counts, inbox-filtered) across all accounts.
-    // Falls back to counting loaded emails if stats aren't available yet.
-    const total = Object.values(state.accountStats).reduce((acc, s) => acc + (s.unread || 0), 0);
-    b.textContent = total || state.emails.reduce((acc, em) => acc + (em.is_read ? 0 : 1), 0);
+    const stats = Object.values(state.accountStats);
+    const setBadge = (el, count) => {
+      if (!el) return;
+      if (count > 0) {
+        el.textContent = String(count);
+        el.hidden = false;
+      } else {
+        el.hidden = true;
+      }
+    };
+
+    const inboxEl = $('#badge-inbox');
+    if (inboxEl) {
+      // Sum unread from accountStats (database counts, inbox-filtered) across all accounts.
+      // Falls back to counting loaded emails if stats aren't available yet.
+      const unread = stats.reduce((acc, s) => acc + (s.unread || 0), 0)
+        || state.emails.reduce((acc, em) => acc + (em.is_read ? 0 : 1), 0);
+      setBadge(inboxEl, unread);
+    }
+
+    setBadge($('#badge-favourite'), stats.reduce((acc, s) => acc + (s.favourite || 0), 0));
+    setBadge($('#badge-draft'),     stats.reduce((acc, s) => acc + (s.draft || 0), 0));
   }
 
   // True only on the very first render after mounting (i.e. page navigation).
   // Set to false after first renderList so subsequent reloads don't re-animate.
   let _firstRender = true;
+  // Set to true when user changes a filter chip or sort mode (not background refresh).
+  let _filterDidChange = false;
+  // Last card explicitly checked (avatar-click, Ctrl+click, Shift+click anchor) for range-select.
+  let _lastCheckedId = null;
 
   // ── Infinite scroll (virtual list) ───────────────────────
   const PAGE_SIZE = 40;
@@ -806,10 +1460,27 @@ export async function mountMailbox(host, _opts) {
     for (let i = fromIdx; i < toIdx && i < cards.length; i++) {
       const el = cards[i];
       const id = parseInt(el.dataset.id, 10);
-      el.addEventListener('click', () => openEmail(id));
+      el.addEventListener('click', (e) => {
+        if (e.ctrlKey || e.metaKey) {
+          // Ctrl/Cmd+click — toggle this card without opening it
+          e.preventDefault();
+          toggleSelection(id);
+        } else if (e.shiftKey && _lastCheckedId != null) {
+          // Shift+click — range-select from last anchor to here
+          e.preventDefault();
+          rangeSelect(id);
+        } else {
+          openEmail(id);
+        }
+      });
       const avatar = el.querySelector('.mb-avatar');
       if (avatar) {
-        const onAvatar = (e) => { e.stopPropagation(); e.preventDefault(); toggleSelection(id); };
+        const onAvatar = (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (e.shiftKey && _lastCheckedId != null) rangeSelect(id);
+          else toggleSelection(id);
+        };
         avatar.addEventListener('click', onAvatar);
         avatar.addEventListener('keydown', (e) => {
           if (e.key === ' ' || e.key === 'Enter') onAvatar(e);
@@ -818,7 +1489,7 @@ export async function mountMailbox(host, _opts) {
     }
   }
 
-  function _appendBatch(list, animate) {
+  function _appendBatch(list, animate, newIds) {
     _teardownListObserver();
     const from = _listRendered;
     const to   = Math.min(from + PAGE_SIZE, _listAllItems.length);
@@ -827,8 +1498,9 @@ export async function mountMailbox(host, _opts) {
     // Remove stale sentinel before inserting new cards.
     list.querySelector('#list-sentinel')?.remove();
 
+    const isPage2Plus = from > 0;
     const html = _listAllItems.slice(from, to).map((em, relIdx) =>
-      cardHtml(em, animate && from === 0 ? from + relIdx : -1)
+      cardHtml(em, animate && from === 0 ? from + relIdx : -1, newIds?.has(em.int_id), isPage2Plus)
     ).join('');
     list.insertAdjacentHTML('beforeend', html);
     _attachCardHandlers(list, from, to);
@@ -841,7 +1513,7 @@ export async function mountMailbox(host, _opts) {
       sentinel.style.cssText = 'height:1px;pointer-events:none';
       list.appendChild(sentinel);
       _listObserver = new IntersectionObserver((entries) => {
-        if (entries[0].isIntersecting) _appendBatch(list, false);
+        if (entries[0].isIntersecting) _appendBatch(list, false, null);
       }, { rootMargin: '300px' });
       _listObserver.observe(sentinel);
     }
@@ -851,10 +1523,24 @@ export async function mountMailbox(host, _opts) {
     _teardownListObserver();
     const animate  = _firstRender;
     _firstRender   = false;
+
+    const filterSwap = _filterDidChange;
+    _filterDidChange = false;
+
+    // Detect IDs that weren't in the previous render (new arrivals)
+    const prevIds = new Set(_listAllItems.map((e) => e.int_id));
+    const newIds  = animate ? null : new Set(
+      items.filter((e) => !prevIds.has(e.int_id)).map((e) => e.int_id)
+    );
+
     _listAllItems  = items;
     _listRendered  = 0;
 
     const list = $('#email-list');
+    if (filterSwap && !animate) {
+      list.classList.add('mb-list--swap');
+      setTimeout(() => list.classList.remove('mb-list--swap'), 180);
+    }
     if (!items.length) {
       list.innerHTML = `
         <div style="padding:48px 24px;text-align:center;color:var(--muted)">
@@ -869,10 +1555,10 @@ export async function mountMailbox(host, _opts) {
     }
 
     list.innerHTML = '';
-    _appendBatch(list, animate);
+    _appendBatch(list, animate, newIds);
   }
 
-  function cardHtml(em, animIdx = -1) {
+  function cardHtml(em, animIdx = -1, isNew = false, isPage2Plus = false) {
     const sName = senderName(em.sender);
     const sEmail = senderEmail(em.sender);
     const ini = initials(sName || sEmail);
@@ -893,10 +1579,10 @@ export async function mountMailbox(host, _opts) {
       ? `<span class="mb-acc-av mb-card-acc-av" style="background:${accCol}" title="${escapeHtml(accEmail)}">${escapeHtml(accIni)}</span>`
       : '';
 
-    // Staggered entrance on first render: start at 320ms, +30ms per card, cap 600ms.
-    const animClass = animIdx >= 0 ? ' mb-card-enter' : '';
-    const animStyle = animIdx >= 0
-      ? ` style="animation-delay:${320 + Math.min(animIdx * 30, 480)}ms"`
+    // Staggered entrance on first render: start at 80ms, +20ms per card, cap 280ms.
+    const animClass = isNew ? ' mb-card-new' : animIdx >= 0 ? ' mb-card-enter' : isPage2Plus ? ' mb-card-page' : '';
+    const animStyle = animIdx >= 0 && !isNew
+      ? ` style="animation-delay:${80 + Math.min(animIdx * 20, 280)}ms"`
       : '';
 
     return `
@@ -910,9 +1596,15 @@ export async function mountMailbox(host, _opts) {
           <div class="mb-card-row">
             <div class="mb-row-left">
               <span class="mb-sender">${escapeHtml(sName || sEmail || 'Inconnu')}</span>
+              ${Array.isArray(em.labels) && em.labels.length ? `
+                <span class="mb-card-labels">
+                  ${em.labels.slice(0, 3).map((l) => `<span class="mb-label-chip mb-label-chip-sm" style="background:${escapeHtml(l.color)}33;color:${escapeHtml(l.color)}" title="${escapeHtml(l.name)}"><span class="mb-label-chip-dot" style="background:${escapeHtml(l.color)}"></span>${escapeHtml(l.name)}</span>`).join('')}
+                  ${em.labels.length > 3 ? `<span class="mb-label-chip mb-label-chip-sm mb-label-chip-more" title="${em.labels.length - 3} étiquette(s) de plus">+${em.labels.length - 3}</span>` : ''}
+                </span>
+              ` : ''}
               ${(() => {
                 // Inline indicators ordered:
-                //   sender → paperclip → reply (needs reply) → draft (draft ready)
+                //   sender → labels → paperclip → reply (needs reply) → draft (draft ready)
                 // The paperclip has three threat-tier variants so the user
                 // spots dangerous PJ at a glance.
                 const a = em.attachments || { total: 0, dangerous: 0, suspicious: 0 };
@@ -972,6 +1664,31 @@ export async function mountMailbox(host, _opts) {
       const av = card.querySelector('.mb-avatar');
       if (av) av.setAttribute('aria-checked', on ? 'true' : 'false');
     }
+    _lastCheckedId = id;
+    renderSelectionBar();
+  }
+
+  // Range-select from _lastCheckedId to `id` (inclusive) over the filtered list.
+  function rangeSelect(id) {
+    const ids = state.filteredIds;
+    const fromIdx = _lastCheckedId != null ? ids.indexOf(_lastCheckedId) : -1;
+    const toIdx = ids.indexOf(id);
+    if (fromIdx === -1 || toIdx === -1) {
+      toggleSelection(id);
+      return;
+    }
+    const [lo, hi] = fromIdx <= toIdx ? [fromIdx, toIdx] : [toIdx, fromIdx];
+    for (let i = lo; i <= hi; i++) {
+      const eid = ids[i];
+      state.selectedIds.add(eid);
+      const card = host.querySelector(`.mb-card[data-id="${eid}"]`);
+      if (card) {
+        card.classList.add('checked');
+        const av = card.querySelector('.mb-avatar');
+        if (av) av.setAttribute('aria-checked', 'true');
+      }
+    }
+    _lastCheckedId = id;
     renderSelectionBar();
   }
 
@@ -979,6 +1696,7 @@ export async function mountMailbox(host, _opts) {
     closePopover();
     if (!state.selectedIds.size) return;
     state.selectedIds.clear();
+    _lastCheckedId = null;
     host.querySelectorAll('.mb-card.checked').forEach((c) => {
       c.classList.remove('checked');
       const av = c.querySelector('.mb-avatar');
@@ -992,10 +1710,14 @@ export async function mountMailbox(host, _opts) {
     if (!bar) return;
     const n = state.selectedIds.size;
     if (n === 0) {
-      bar.hidden = true;
+      if (!bar.hidden) {
+        bar.classList.add('leaving');
+        setTimeout(() => { bar.hidden = true; bar.classList.remove('leaving'); }, 180);
+      }
       closePopover();
       return;
     }
+    bar.classList.remove('leaving');
     bar.hidden = false;
     const num = $('#sel-count-num');
     if (num) num.textContent = String(n);
@@ -1060,9 +1782,22 @@ export async function mountMailbox(host, _opts) {
     }
   }
 
+  // Animate a card out (slide-left + height collapse), then resolve after 280ms.
+  // intId can be a number or a list of numbers.
+  function animateCardLeave(intIds) {
+    const ids = Array.isArray(intIds) ? intIds : [intIds];
+    ids.forEach((id) => {
+      host.querySelectorAll(`.mb-card[data-id="${id}"]`).forEach((card) => {
+        card.classList.add('mb-card-leaving');
+      });
+    });
+    return new Promise((resolve) => setTimeout(resolve, 280));
+  }
+
   async function bulkSetCategory(category) {
     const ids = [...state.selectedIds];
     if (!ids.length) return;
+    await animateCardLeave(ids);
     await Promise.all(ids.map((id) => api.patchEmail(id, { category }).catch(() => {})));
     window.toast(`${ids.length} message(s) étiqueté(s)`);
     clearSelection();
@@ -1095,6 +1830,18 @@ export async function mountMailbox(host, _opts) {
       // Already in inbox — no-op (the popover hides this option in that case).
       return null;
     }
+    // Phase 4 — custom folder. Match against the user's folder list
+    // so a typo in the popover can't punch an arbitrary string into
+    // emails.folder. Verb is "déplacé(s) vers <name>" so the toast
+    // tells the user where it went.
+    const custom = (state.customFolders || []).find((f) => f.name === target);
+    if (custom) {
+      return {
+        patch: { folder: custom.name },
+        verb: `déplacé(s) vers « ${custom.name} »`,
+        leavesView: currentFolder !== custom.name,
+      };
+    }
     return null;
   }
 
@@ -1104,7 +1851,48 @@ export async function mountMailbox(host, _opts) {
     const cur = state.folder || 'inbox';
     const plan = _patchForTarget(target, cur);
     if (!plan) return;
-    await Promise.all(ids.map((id) => api.patchEmail(id, plan.patch).catch(() => {})));
+    if (plan.leavesView) await animateCardLeave(ids);
+
+    // Drafts in the Brouillons folder use synthetic negative ids and
+    // live in the `drafts` table. `api.patchEmail` would 404 silently
+    // on them and the rows reappear after loadEmails. Route each id
+    // to the right endpoint. Only `delete` makes sense for drafts;
+    // mark_read / foldering are no-ops on them.
+    const draftIds = [];
+    const realIds  = [];
+    for (const id of ids) {
+      if (id < 0) {
+        const row = state.emails.find((e) => e.int_id === id);
+        const realDraftId = row?._draft?.id;
+        if (realDraftId != null) draftIds.push(realDraftId);
+      } else {
+        realIds.push(id);
+      }
+    }
+
+    // Drop the deleted drafts from state.emails synchronously so the
+    // list updates instantly, before the network round-trip.
+    if (target === 'deleted' && draftIds.length) {
+      const removed = new Set(draftIds);
+      state.emails = state.emails.filter(
+        (e) => !(e._draft && removed.has(e._draft.id))
+      );
+    }
+
+    const tasks = [];
+    if (target === 'deleted' && draftIds.length) {
+      for (const did of draftIds) {
+        tasks.push(api.deleteDraft(did).catch((err) => {
+          // 404 = already gone, treat as success.
+          if (err && err.status !== 404) throw err;
+        }));
+      }
+    }
+    for (const id of realIds) {
+      tasks.push(api.patchEmail(id, plan.patch).catch(() => {}));
+    }
+    await Promise.all(tasks);
+
     window.toast(`${ids.length} message(s) ${plan.verb}`);
     // If the open email left the current view, close the read pane.
     if (state.selectedId != null && ids.includes(state.selectedId) && plan.leavesView) {
@@ -1120,7 +1908,12 @@ export async function mountMailbox(host, _opts) {
     const openId = state.selectedId;
     let done = 0, failed = 0;
     const total = ids.length;
-    window.toast(`Analyse IA 0/${total}…`, 60_000);
+    const t = window.toast({
+      variant: 'loading',
+      message: `Analyse IA 0/${total}`,
+      progress: 0,
+      duration: 0,
+    });
     for (const id of ids) {
       try {
         const updated = await api.reanalyzeEmail(id);
@@ -1130,7 +1923,11 @@ export async function mountMailbox(host, _opts) {
       } catch (_) {
         failed++;
       }
-      window.toast(`Analyse IA ${done + failed}/${total}…`, 60_000);
+      const completed = done + failed;
+      t?.update({
+        message: `Analyse IA ${completed}/${total}`,
+        progress: Math.round((completed / total) * 100),
+      });
     }
     clearSelection();
     await loadEmails();
@@ -1142,9 +1939,8 @@ export async function mountMailbox(host, _opts) {
         renderEmail(fresh);
       } catch (_) {}
     }
-    window.toast(failed
-      ? `Analyse IA terminée : ${done} ok, ${failed} échec(s)`
-      : `Analyse IA terminée (${done}/${total})`);
+    if (failed) t?.error(`Analyse IA terminée : ${done} ok, ${failed} échec(s)`);
+    else        t?.success(`Analyse IA terminée (${done}/${total})`);
   }
 
   // ── Popover (Move + Tag dropdowns) ────────────────────────
@@ -1186,8 +1982,12 @@ export async function mountMailbox(host, _opts) {
       const opt = e.target.closest('.sel-popover-opt');
       if (!opt) return;
       e.stopPropagation();
-      onPick(opt.dataset.value);
+      // Close THIS popover BEFORE running the picker callback. If we
+      // closed after, and onPick opened a fresh popover (the "tag"
+      // case opens openTagPopover synchronously), our closePopover()
+      // would tear down the new popover instead of this one.
       closePopover();
+      onPick(opt.dataset.value);
     };
     const onOutside = (e) => {
       if (pop.contains(e.target) || anchor.contains(e.target)) return;
@@ -1205,9 +2005,110 @@ export async function mountMailbox(host, _opts) {
     };
   }
 
-  function openTagPopover(anchor) {
-    const items = LABELS.map((l) => ({ value: l.id, label: l.label, color: l.color }));
-    openPopover(anchor, items, (cat) => bulkSetCategory(cat));
+  // Multi-select popover for assigning personal labels to the
+  // currently selected emails. Each row is a checkbox; the union of
+  // labels currently set on ALL selected emails is pre-checked, so
+  // "apply" replaces. Saving issues one PUT per email (idempotent
+  // replace-all) so partial intersections also resolve cleanly.
+  function openTagPopover(anchor, opts = {}) {
+    const ids = opts.ids ? [...opts.ids] : [...state.selectedIds];
+    if (!ids.length) return;
+    closePopover();
+
+    if (!state.userLabels.length) {
+      window.toast('Créez d\'abord une étiquette via la sidebar.');
+      return;
+    }
+
+    // Pre-tick labels that ALL targeted emails carry (intersection).
+    // Partially-applied labels start unchecked; saving will REMOVE
+    // them from rows that had them — that's the explicit user
+    // contract of a replace-all picker. `opts.labels` lets the read
+    // pane pass an already-loaded labels array for the single email
+    // case (it may not be in state.emails if opened via deep-link).
+    const idSet = new Set(ids);
+    const labelCount = new Map();
+    if (opts.labels) {
+      for (const l of opts.labels) labelCount.set(l.id, ids.length);
+    } else {
+      for (const em of state.emails) {
+        if (!idSet.has(em.int_id)) continue;
+        for (const l of (em.labels || [])) {
+          labelCount.set(l.id, (labelCount.get(l.id) || 0) + 1);
+        }
+      }
+    }
+    const initiallyChecked = new Set(
+      [...labelCount.entries()].filter(([, n]) => n === ids.length).map(([id]) => id)
+    );
+
+    const pop = document.createElement('div');
+    pop.className = 'sel-popover mb-tag-popover';
+    pop.setAttribute('role', 'menu');
+    pop.innerHTML = `
+      <div class="mb-tag-popover-head">${ids.length} mail(s)</div>
+      <div class="mb-tag-popover-list">
+        ${state.userLabels.map((l) => `
+          <label class="mb-tag-popover-opt">
+            <input type="checkbox" data-label-id="${l.id}" ${initiallyChecked.has(l.id) ? 'checked' : ''}>
+            <span class="mb-label-chip-dot" style="background:${escapeHtml(l.color)}"></span>
+            <span class="mb-tag-popover-name">${escapeHtml(l.name)}</span>
+          </label>
+        `).join('')}
+      </div>
+      <div class="mb-tag-popover-footer">
+        <button class="mb-tag-popover-cancel" type="button">Annuler</button>
+        <button class="mb-tag-popover-apply"  type="button">Appliquer</button>
+      </div>
+    `;
+    document.body.appendChild(pop);
+    window.lucide?.createIcons({ el: pop });
+
+    // Anchor positioning — same logic as openPopover.
+    const r = anchor.getBoundingClientRect();
+    pop.style.visibility = 'hidden';
+    pop.style.top = '0px';
+    pop.style.left = '0px';
+    const ph = pop.offsetHeight, pw = pop.offsetWidth;
+    let top = r.bottom + 6;
+    if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6);
+    let left = Math.min(Math.max(8, r.right - pw), window.innerWidth - pw - 8);
+    pop.style.top = top + 'px';
+    pop.style.left = left + 'px';
+    pop.style.visibility = '';
+
+    const onOutside = (e) => {
+      if (pop.contains(e.target) || anchor.contains(e.target)) return;
+      closePopover();
+    };
+    setTimeout(() => document.addEventListener('mousedown', onOutside), 0);
+    _popCleanup = () => {
+      document.removeEventListener('mousedown', onOutside);
+      pop.remove();
+    };
+
+    pop.querySelector('.mb-tag-popover-cancel').addEventListener('click', () => closePopover());
+    pop.querySelector('.mb-tag-popover-apply').addEventListener('click', async () => {
+      const checked = [...pop.querySelectorAll('input[type="checkbox"]:checked')]
+        .map((cb) => parseInt(cb.dataset.labelId, 10));
+      closePopover();
+      try {
+        await Promise.all(ids.map((eid) => api.setEmailLabels(eid, checked).catch(() => {})));
+        // Mirror locally so cards repaint without a full reload.
+        const labelById = new Map(state.userLabels.map((l) => [l.id, l]));
+        const labelsArr = checked.map((id) => labelById.get(id)).filter(Boolean);
+        for (const em of state.emails) {
+          if (idSet.has(em.int_id)) em.labels = labelsArr.slice();
+        }
+        applyFilter();
+        if (typeof opts.onUpdated === 'function') {
+          opts.onUpdated(labelsArr);
+        }
+        window.toast(`${ids.length} mail(s) étiqueté(s)`);
+      } catch (err) {
+        window.toast(err?.message || 'Échec étiquetage.');
+      }
+    });
   }
 
   function openMovePopover(anchor) {
@@ -1217,7 +2118,7 @@ export async function mountMailbox(host, _opts) {
     const labelInbox = cur === 'favourite' ? 'Retirer des favoris'
       : cur === 'deleted' ? 'Restaurer dans la boîte'
       : 'Boîte de réception';
-    const items = [
+    const builtins = [
       { value: 'inbox',     label: labelInbox, icon: 'inbox' },
       { value: 'favourite', label: 'Favoris',  icon: 'star' },
       { value: 'deleted',   label: 'Supprimés', icon: 'trash-2' },
@@ -1227,7 +2128,12 @@ export async function mountMailbox(host, _opts) {
       if (it.value === 'deleted' && cur === 'deleted') return false;     // already trashed
       return true;
     });
-    openPopover(anchor, items, (target) => bulkSetTarget(target));
+    // Phase 4 — append every custom folder, skipping the one the
+    // user is already viewing (would be a no-op move).
+    const customs = (state.customFolders || [])
+      .filter((f) => f.name !== cur)
+      .map((f) => ({ value: f.name, label: f.name, icon: 'folder' }));
+    openPopover(anchor, [...builtins, ...customs], (target) => bulkSetTarget(target));
   }
 
   function onSelBarClick(e) {
@@ -1458,9 +2364,9 @@ export async function mountMailbox(host, _opts) {
 
     const aiBox = em.summary ? `
       <div class="mb-ai-box">
-        <div class="ai-icon"><i data-lucide="sparkles" class="w-4 h-4"></i></div>
         <div class="ai-body">
           <div class="ai-title">
+            <div class="ai-icon"><i data-lucide="sparkles" class="w-4 h-4"></i></div>
             <span>Analyse IA</span>
             <span class="score-pill ${scoreClass(em.importance_score || 0)}">${em.importance_score || 0}</span>
           </div>
@@ -1470,21 +2376,32 @@ export async function mountMailbox(host, _opts) {
       </div>
     ` : '';
 
-    // Auto-open the draft panel when a brouillon already exists (the user
-    // generated it earlier or AI did during ingestion). Otherwise stays
-    // hidden and the toolbar button toggles it on demand.
-    const hasDraft = !!em.draft_response;
+    // The draft panel shows whatever is the most recent in-flight
+    // reply for this email. Two possible sources, picked in order:
+    //   • a user draft (drafts table, in_reply_to_int = em.int_id) —
+    //     freshly typed content the user wants to come back to
+    //   • the AI suggestion (emails.draft_response) generated by the
+    //     LLM during ingestion or via the AI button
+    // Initial render uses only `em.draft_response` because the user
+    // draft fetch is async (kicks off in renderEmail's reply-state
+    // initialisation below); the box re-renders via refreshDraftBox()
+    // once the lookup completes.
+    const initialAiBody = em.draft_response || '';
+    const hasInitialDraft = !!initialAiBody;
     const draftBox = `
-      <div class="mb-draft" id="mb-draft" style="display:${hasDraft ? '' : 'none'}" data-loaded="${hasDraft ? '1' : '0'}">
+      <div class="mb-draft" id="mb-draft" style="display:${hasInitialDraft ? '' : 'none'}" data-loaded="${hasInitialDraft ? '1' : '0'}" data-source="${hasInitialDraft ? 'ai' : 'none'}">
         <div class="dh">
-          <i data-lucide="sparkles" class="w-4 h-4"></i>
-          <span>Réponse suggérée par l'IA</span>
+          <div class="dh-label">
+            <i data-lucide="sparkles" class="w-4 h-4" id="mb-draft-icon"></i>
+            <span id="mb-draft-source-label">Réponse suggérée par l'IA</span>
+          </div>
+          <div class="da">
+            <button class="ghost" id="btn-draft-discard" title="Supprimer ce brouillon"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+            <button id="btn-draft-edit"><i data-lucide="pencil" class="w-4 h-4"></i>Modifier</button>
+            <button class="primary" id="btn-draft-send"><i data-lucide="send" class="w-4 h-4"></i>Envoyer</button>
+          </div>
         </div>
-        <div class="dt" id="mb-draft-text">${hasDraft ? escapeHtml(em.draft_response) : ''}</div>
-        <div class="da">
-          <button class="primary" data-toast="Envoi : bientôt"><i data-lucide="send" class="w-4 h-4" style="margin-right:6px;vertical-align:-2px"></i>Envoyer</button>
-          <button data-toast="Édition : bientôt">Modifier</button>
-        </div>
+        <div class="dt" id="mb-draft-text">${hasInitialDraft ? escapeHtml(initialAiBody) : ''}</div>
       </div>
     `;
 
@@ -1515,15 +2432,17 @@ export async function mountMailbox(host, _opts) {
         <span class="cat-chip" data-cat="${escapeHtml(cat)}">
           <i data-lucide="tag" class="w-3 h-3"></i>${escapeHtml(CATEGORY_LABEL[cat] || cat)}
         </span>
+        ${Array.isArray(em.labels) && em.labels.length ? em.labels.map((l) => `
+          <span class="mb-label-chip" style="background:${escapeHtml(l.color)}33;color:${escapeHtml(l.color)}" title="${escapeHtml(l.name)}">
+            <span class="mb-label-chip-dot" style="background:${escapeHtml(l.color)}"></span>${escapeHtml(l.name)}
+          </span>
+        `).join('') : ''}
         <div class="mb-read-actions">
           <button class="icon-btn ${em.is_favourite ? 'is-fav' : ''}" id="btn-fav-toggle" title="${em.is_favourite ? 'Retirer des favoris' : 'Marquer favori'}" aria-pressed="${em.is_favourite ? 'true' : 'false'}">
             <i data-lucide="star" class="w-4 h-4"></i>
           </button>
+          <button class="icon-btn" id="btn-tag" title="Étiqueter"><i data-lucide="tag" class="w-4 h-4"></i></button>
           <button class="icon-btn" id="btn-print" title="Imprimer"><i data-lucide="printer" class="w-4 h-4"></i></button>
-          <button class="icon-btn" id="btn-read-toggle" title="${em.is_read ? 'Marquer comme non lu' : 'Marquer comme lu'}">
-            <i data-lucide="${em.is_read ? 'mail' : 'mail-open'}" class="w-4 h-4"></i>
-          </button>
-          <button class="icon-btn danger" id="btn-trash" title="Supprimer"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
           <button class="icon-btn" id="btn-more" title="Plus d'actions"><i data-lucide="more-vertical" class="w-4 h-4"></i></button>
           <div class="mb-read-sep"></div>
           <button class="icon-btn" id="btn-close-read" title="Fermer"><i data-lucide="x" class="w-4 h-4"></i></button>
@@ -1547,9 +2466,18 @@ export async function mountMailbox(host, _opts) {
                 <i data-lucide="inbox" class="w-3 h-3 meta-icon"></i><span class="meta-addr meta-to">${escapeHtml(em.account_email || '')}</span>
               </div>
             </div>
-            <div style="display:flex;align-items:center;gap:8px;margin-left:auto">
+            <div class="mb-thread-actions">
               <div class="meta">${escapeHtml(shortDate(em.date_received))}</div>
-              <button class="read-action-btn read-action-btn-ai ${em.draft_response ? 'has-draft active' : ''}" id="btn-draft-toggle" title="Réponse suggérée par l'IA">
+              <!-- Group 1 — gestion : marquer lu / supprimer -->
+              <button class="read-action-btn read-action-btn-muted" id="btn-read-toggle" title="${em.is_read ? 'Marquer comme non lu' : 'Marquer comme lu'}">
+                <i data-lucide="${em.is_read ? 'mail' : 'mail-open'}" class="w-4 h-4"></i>
+              </button>
+              <button class="read-action-btn read-action-btn-danger" id="btn-trash" title="Supprimer">
+                <i data-lucide="trash-2" class="w-4 h-4"></i>
+              </button>
+              <span class="mb-thread-actions-sep" aria-hidden="true"></span>
+              <!-- Group 2 — engagement : analyser IA / répondre -->
+              <button class="read-action-btn read-action-btn-ai ${em.summary ? 'has-analysis' : ''}" id="btn-analyze" title="${em.summary ? 'Ré-analyser avec l\'IA' : 'Analyser avec l\'IA'}">
                 <i data-lucide="sparkles" class="w-4 h-4"></i>
               </button>
               <button class="read-action-btn" id="btn-reply-toggle" title="Répondre">
@@ -1567,17 +2495,45 @@ export async function mountMailbox(host, _opts) {
           ${renderAttachmentsBlock(em)}
 
           ${draftBox}
+        </div>
 
-          <div class="mb-composer" id="mb-composer" style="display:none">
-            <textarea placeholder="Écrire un message…" aria-label="Composer"></textarea>
-            <div class="mb-composer-bar">
-              <div style="display:flex;gap:4px;color:var(--muted)">
-                <button class="icon-btn" data-toast="Pièce jointe : bientôt"><i data-lucide="paperclip" class="w-4 h-4"></i></button>
-                <button class="icon-btn" data-toast="Image : bientôt"><i data-lucide="image" class="w-4 h-4"></i></button>
-              </div>
-              <button class="send" data-toast="Envoi : bientôt">
+        <!-- The composer is a sibling of .mb-read-content (NOT inside it)
+             so the email body and the composer split the available
+             vertical room. Growing the composer shrinks the body's
+             visible window without scrolling it out of view; the body
+             keeps its own internal scroll, so the user can still read
+             every line of the email while typing. -->
+        <div class="mb-composer" id="mb-composer" style="display:none">
+          <div class="mb-composer-handle" id="mb-composer-handle" role="separator" aria-orientation="horizontal" aria-label="Redimensionner la zone de saisie" title="Glisser pour redimensionner">
+            <span class="mb-composer-handle-grip"></span>
+          </div>
+          ${buildComposerMetaHtml({
+            mode: 'reply',
+            accounts: state.accounts,
+            defaultAccount: em.account_email || '',
+            to: senderEmail(em.sender),
+            subject: em.subject ? (em.subject.toLowerCase().startsWith('re:') ? em.subject : `Re: ${em.subject}`) : '',
+          })}
+          <textarea placeholder="Écrire un message…" aria-label="Composer"></textarea>
+          <div class="mb-attach-strip" id="mb-attach-strip" data-empty="1"></div>
+          <input type="file" id="mb-file-input" multiple style="display:none">
+          <input type="file" id="mb-image-input" accept="image/*" multiple style="display:none">
+          <div class="mb-composer-bar">
+            <div style="display:flex;gap:4px;color:var(--muted)">
+              <button class="icon-btn" id="btn-attach-file" title="Joindre un fichier" aria-label="Joindre un fichier"><i data-lucide="paperclip" class="w-4 h-4"></i></button>
+              <button class="icon-btn" id="btn-attach-image" title="Insérer une image" aria-label="Insérer une image"><i data-lucide="image" class="w-4 h-4"></i></button>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;margin-left:auto">
+              <button class="mb-ai-draft-btn" id="btn-ai-draft" title="Suggérer une réponse avec l'IA">
+                <i data-lucide="sparkles" class="w-4 h-4"></i>
+                Brouillon IA
+              </button>
+              <button class="send" id="btn-composer-send">
                 <i data-lucide="send" class="w-4 h-4"></i>
                 Envoyer
+              </button>
+              <button class="icon-btn mb-composer-close" id="btn-composer-close" title="Fermer" aria-label="Fermer le composer">
+                <i data-lucide="x" class="w-4 h-4"></i>
               </button>
             </div>
           </div>
@@ -1590,6 +2546,7 @@ export async function mountMailbox(host, _opts) {
       el.addEventListener('click', (e) => { e.preventDefault(); window.toast(el.dataset.toast); });
     });
 
+    bindComposerFromDropdown($('#read-pane'));
     bindAttachmentHandlers(em);
 
     $('#btn-close-read').addEventListener('click', () => {
@@ -1601,6 +2558,21 @@ export async function mountMailbox(host, _opts) {
     // banner buttons after the iframe has been mounted. No-op when the
     // sender is already trusted (no banner present).
     attachImageBlockerHandlers(em);
+
+    // Top-level "Étiqueter" — opens the multi-select label popover
+    // anchored on the button. Pre-fills with whatever labels the email
+    // currently carries; onUpdated repaints chips in the read pane.
+    $('#btn-tag')?.addEventListener('click', () => {
+      const anchor = $('#btn-tag');
+      openTagPopover(anchor, {
+        ids: [em.int_id],
+        labels: em.labels || [],
+        onUpdated: (newLabels) => {
+          em.labels = newLabels;
+          try { renderEmail(em); } catch (_) {}
+        },
+      });
+    });
 
     $('#btn-print').addEventListener('click', () => {
       // CSS `@media print` hides the rest of the chrome; we only need to
@@ -1658,6 +2630,7 @@ export async function mountMailbox(host, _opts) {
     });
 
     $('#btn-trash').addEventListener('click', async () => {
+      await animateCardLeave(em.int_id);
       try { await api.patchEmail(em.int_id, { folder: 'deleted' }); } catch (_) {}
       window.toast('Message supprimé');
       renderEmpty();
@@ -1669,32 +2642,23 @@ export async function mountMailbox(host, _opts) {
       const cur = state.folder || 'inbox';
       const moveLabel = cur === 'deleted' ? 'Restaurer dans la boîte' : 'Déplacer dans la corbeille';
       const items = [
-        { value: 'tag',    label: 'Étiqueter…',         icon: 'tag' },
         { value: 'ai',     label: 'Ré-analyser avec l’IA', icon: 'sparkles' },
         { value: 'move',   label: moveLabel,            icon: cur === 'deleted' ? 'inbox' : 'folder-input' },
       ];
       openPopover(anchor, items, async (action) => {
-        if (action === 'tag') {
-          // Re-anchor a tag picker on the More button.
-          const tagItems = LABELS.map((l) => ({ value: l.id, label: l.label, color: l.color }));
-          openPopover(anchor, tagItems, async (cat) => {
-            try { await api.patchEmail(em.int_id, { category: cat }); } catch (_) {}
-            window.toast('Étiquette appliquée');
-            await loadEmails();
-            try { renderEmail(await api.getEmail(em.int_id)); } catch (_) {}
-          });
-        } else if (action === 'ai') {
-          window.toast('Analyse IA en cours…', 30_000);
+        if (action === 'ai') {
+          const t = window.toast({ variant: 'loading', message: 'Analyse IA en cours', duration: 0 });
           try {
             const fresh = await api.reanalyzeEmail(em.int_id);
             renderEmail(fresh);
             await loadEmails();
-            window.toast('Analyse IA terminée');
+            t?.success('Analyse IA terminée');
           } catch (_) {
-            window.toast('Échec de l’analyse IA');
+            t?.error('Échec de l’analyse IA');
           }
         } else if (action === 'move') {
           const target = cur === 'deleted' ? 'inbox' : 'deleted';
+          await animateCardLeave(em.int_id);
           try { await api.patchEmail(em.int_id, { folder: target }); } catch (_) {}
           window.toast(target === 'deleted' ? 'Déplacé dans la corbeille' : 'Restauré dans la boîte');
           renderEmpty();
@@ -1703,61 +2667,699 @@ export async function mountMailbox(host, _opts) {
       });
     });
 
-    $('#btn-reply-toggle').addEventListener('click', () => {
+    function openComposer(prefill = null) {
       const composer = $('#mb-composer');
-      const open = composer.style.display === 'none';
-      composer.style.display = open ? '' : 'none';
-      $('#btn-reply-toggle').classList.toggle('active', open);
-      if (open) composer.querySelector('textarea')?.focus();
+      if (!composer) return;
+      const draft = $('#mb-draft');
+      // Cancel any in-flight close animation + clear its inline residue
+      // so the open transition starts from a known clean state.
+      if (composer.dataset.closing === '1') {
+        composer.getAnimations?.().forEach((a) => a.cancel());
+        delete composer.dataset.closing;
+      }
+      $('#btn-reply-toggle')?.classList.add('active');
+      if (draft) draft.style.display = 'none';
+
+      const wasHidden = composer.style.display === 'none' || composer.offsetParent === null;
+
+      composer.style.display = '';
+      composer.style.opacity = '';
+      composer.style.transform = '';
+
+      const ta = composer.querySelector('textarea');
+      if (ta && prefill !== null) ta.value = prefill;
+
+      if (!wasHidden) {
+        // Already on screen (e.g. user clicked Modifier on an open
+        // draft) — no animation, just refresh focus on the textarea.
+        composer.style.height = '';
+        composer.style.overflow = '';
+        ta?.focus();
+        return;
+      }
+
+      // Measure the natural height with the composer briefly visible
+      // but invisible-to-eye, so we know the target frame for the
+      // height transition. Snapshot margins too — they collapse to 0
+      // at the start of the open animation alongside height.
+      composer.style.height = 'auto';
+      const h = composer.offsetHeight;
+      const cs = getComputedStyle(composer);
+      const mt = cs.marginTop;
+      const mb = cs.marginBottom;
+      composer.style.height = '0px';
+      composer.style.overflow = 'hidden';
+
+      composer.dataset.opening = '1';
+      const anim = composer.animate(
+        [
+          { height: '0px',    opacity: 0, transform: 'translateY(14px)', marginTop: '0px', marginBottom: '0px' },
+          { height: h + 'px', opacity: 1, transform: 'translateY(0)',    marginTop: mt,    marginBottom: mb },
+        ],
+        { duration: 320, easing: 'cubic-bezier(.4, 0, .2, 1)' }
+      );
+      const cleanup = () => {
+        composer.style.height = '';
+        composer.style.overflow = '';
+        delete composer.dataset.opening;
+      };
+      anim.onfinish = cleanup;
+      anim.oncancel = cleanup;
+      // Focus the textarea right away so the user can type during the
+      // slide-in — feels snappier than waiting 320ms.
+      ta?.focus();
+    }
+
+    // Reply-composer autosave state. Persisted in the `drafts` table
+    // with `in_reply_to_int = em.int_id` so the draft survives across
+    // app restarts AND shows up in the Brouillons folder.
+    const replyDraft = {
+      id: null,
+      lastSnapshot: '',
+      timer: null,
+      // Promise of an in-flight save. New saves chain onto this so we
+      // never run two API calls in parallel — that's how a single
+      // typing burst used to create TWO rows when the second save
+      // fired before the first createDraft had returned an id.
+      inflight: null,
+      deleted: false,        // user/send killed it; ignore late saves
+    };
+
+    // Repaint the #mb-draft box from current state. Called after every
+    // autosave + delete + AI-generation event so the visible box stays
+    // truthful. Source priority: user draft (drafts table) > AI
+    // suggestion (em.draft_response). Hides itself when neither.
+    function refreshDraftBox() {
+      const box = $('#mb-draft');
+      if (!box) return;
+      const txtEl = $('#mb-draft-text');
+      const labEl = $('#mb-draft-source-label');
+      const iconEl = $('#mb-draft-icon');
+      const userBody = (em._user_reply_draft && em._user_reply_draft.body_text) || '';
+      const aiBody = em.draft_response || '';
+      let source, body;
+      if (userBody.trim()) {
+        source = 'user';
+        body = userBody;
+      } else if (aiBody.trim()) {
+        source = 'ai';
+        body = aiBody;
+      } else {
+        source = 'none';
+        body = '';
+      }
+      box.dataset.source = source;
+      if (source === 'none') {
+        box.dataset.loaded = '0';
+        box.style.display = 'none';
+        if (txtEl) txtEl.innerText = '';
+        return;
+      }
+      box.dataset.loaded = '1';
+      box.style.display = '';
+      if (txtEl) txtEl.innerText = body;
+      if (labEl) {
+        labEl.textContent = source === 'user'
+          ? 'Brouillon en cours'
+          : "Réponse suggérée par l'IA";
+      }
+      if (iconEl) {
+        // lucide icons are inlined as <svg> after createIcons(); swap
+        // the data-lucide attribute and force a redraw so the visual
+        // matches the source (pencil for user, sparkles for AI).
+        const wantedIcon = source === 'user' ? 'pencil' : 'sparkles';
+        if (iconEl.dataset?.lucide !== wantedIcon) {
+          iconEl.outerHTML = `<i data-lucide="${wantedIcon}" class="w-4 h-4" id="mb-draft-icon"></i>`;
+          window.lucide?.createIcons();
+        }
+      }
+    }
+
+    // Find any existing user draft saved against this email so the
+    // composer can pre-fill it on first open. We never block render on
+    // this — the lookup is async and the box updates via
+    // refreshDraftBox() once the row arrives.
+    (async () => {
+      try {
+        const rows = await api.getDrafts(em.account_email, { inReplyToInt: em.int_id });
+        if (rows && rows.length) {
+          replyDraft.id = rows[0].id;
+          replyDraft.lastSnapshot = JSON.stringify({
+            to:      rows[0].to || '',
+            subject: rows[0].subject || '',
+            body:    rows[0].body_text || '',
+          });
+          em._user_reply_draft = rows[0];
+          refreshDraftBox();
+        }
+      } catch (_) { /* best-effort; no draft just means a fresh slate */ }
+    })();
+
+    // Persist the current composer state into the drafts table. Empty
+    // forms don't materialise — saving "" everywhere would litter the
+    // Brouillons folder with phantom rows. Saves are SERIALISED via
+    // `replyDraft.inflight`: a second invocation while a first one is
+    // still running waits for its result before deciding whether to
+    // create or update. Without that gate, two scheduled saves with
+    // `replyDraft.id == null` both fire createDraft in parallel and
+    // produce duplicate rows.
+    async function saveReplyDraft() {
+      // Chain onto any in-flight save so they run sequentially.
+      const prior = replyDraft.inflight;
+      const run = (async () => {
+        if (prior) { try { await prior; } catch (_) {} }
+        if (replyDraft.deleted) return;
+        const ta = $('#mb-composer textarea');
+        const toEl = $('#mbc-to');
+        const subjEl = $('#mbc-subject');
+        const fromEl = $('#mbc-from');
+        if (!ta || !fromEl) return;
+        const body = ta.value;
+        const to = (toEl?.value || '').trim();
+        const subject = (subjEl?.value || '').trim();
+        const fromAcc = (fromEl.value || '').trim() || em.account_email;
+        const snap = JSON.stringify({ to, subject, body });
+        if (snap === replyDraft.lastSnapshot) return;
+        const isEmpty = !to && !subject && !body.trim();
+        if (isEmpty && replyDraft.id == null) return;
+        try {
+          let row = null;
+          if (replyDraft.id == null) {
+            row = await api.createDraft({
+              from_account: fromAcc,
+              to,
+              subject,
+              body_text: body,
+              in_reply_to_int: em.int_id,
+            });
+            replyDraft.id = row?.id ?? null;
+          } else {
+            row = await api.updateDraft(replyDraft.id, {
+              from_account: fromAcc,
+              to,
+              subject,
+              body_text: body,
+            });
+          }
+          replyDraft.lastSnapshot = snap;
+          em._user_reply_draft = row || {
+            id: replyDraft.id, account_email: fromAcc, to, subject, body_text: body,
+          };
+          refreshDraftBox();
+          // If the visible folder is Brouillons, refresh so the row
+          // updated_at hops back to the top.
+          if (state.folder === 'draft') loadEmails();
+        } catch (_) {
+          // Network/validation failure — keep going; next keystroke
+          // schedules another attempt.
+        }
+      })();
+      replyDraft.inflight = run;
+      try { await run; }
+      finally {
+        // Only clear if this is still the current promise — a fresh
+        // save that started after us would have replaced `inflight`,
+        // and we musn't wipe its reference.
+        if (replyDraft.inflight === run) replyDraft.inflight = null;
+      }
+    }
+
+    function scheduleReplyDraftSave() {
+      if (replyDraft.timer) clearTimeout(replyDraft.timer);
+      replyDraft.timer = setTimeout(() => {
+        replyDraft.timer = null;
+        saveReplyDraft();
+      }, 1500);
+    }
+
+    // Drop the linked draft. Called after a successful send (the reply
+    // is no longer "in progress") and from the trash button on the
+    // draft box. Resilient to the row not existing yet. Also clears
+    // `em.draft_response` when invoked from a "discard everything"
+    // affordance (opts.alsoClearAi=true) so a polluted AI slot from
+    // earlier code paths can be cleaned up via the same control.
+    async function deleteReplyDraft({ alsoClearAi = false } = {}) {
+      replyDraft.deleted = true;
+      if (replyDraft.timer) { clearTimeout(replyDraft.timer); replyDraft.timer = null; }
+      // Drain any save still running so it can't recreate the row
+      // AFTER the DELETE round-trip.
+      if (replyDraft.inflight) { try { await replyDraft.inflight; } catch (_) {} }
+      const id = replyDraft.id;
+      replyDraft.id = null;
+      em._user_reply_draft = null;
+      replyDraft.lastSnapshot = '';
+      if (id != null) {
+        try { await api.deleteDraft(id); } catch (_) {}
+      }
+      if (alsoClearAi && em.draft_response) {
+        em.draft_response = '';
+        const idx = state.emails.findIndex((e) => e.int_id === em.int_id);
+        if (idx >= 0) state.emails[idx].draft_response = '';
+        api.patchEmail(em.int_id, { draft_response: '' }).catch(() => {});
+        _patchCardDraftIcon(em.int_id, false);
+      }
+      // Allow saveReplyDraft to fire again after a discard if the user
+      // keeps typing — wiping `replyDraft.deleted` re-enables the
+      // autosave path so the next keystroke creates a fresh row.
+      replyDraft.deleted = false;
+      refreshDraftBox();
+      if (state.folder === 'draft') loadEmails();
+    }
+
+    function closeComposer({ skipDraftSync = false } = {}) {
+      const composer = $('#mb-composer');
+      if (!composer) return;
+      const draft = $('#mb-draft');
+      $('#btn-reply-toggle')?.classList.remove('active');
+      // Flush any pending autosave so the user doesn't lose the last
+      // <1.5s of typing. Skip on send paths — the draft is about to
+      // be deleted anyway and we'd race the DELETE.
+      if (!skipDraftSync) {
+        if (replyDraft.timer) { clearTimeout(replyDraft.timer); replyDraft.timer = null; }
+        saveReplyDraft();
+      }
+
+      const finalize = () => {
+        composer.style.display = 'none';
+        composer.style.height = '';
+        composer.style.overflow = '';
+        delete composer.dataset.closing;
+        if (draft && draft.dataset.loaded === '1') draft.style.display = '';
+      };
+
+      // Already hidden or mid-close — short-circuit to the final state
+      // so a double-click on the X / a race with sendCurrentMessage
+      // doesn't restart the animation.
+      if (composer.style.display === 'none' || composer.dataset.closing === '1') {
+        finalize();
+        return;
+      }
+      // Cancel a running open animation so we don't fight it. The
+      // post-cancel offsetHeight gives us the real "current" height
+      // wherever the open was at, which is the start frame we want.
+      if (composer.dataset.opening === '1') {
+        composer.getAnimations?.().forEach((a) => a.cancel());
+        delete composer.dataset.opening;
+      }
+      composer.dataset.closing = '1';
+
+      // Snapshot the current height: auto-height can't transition, so
+      // we lock pixels for the start frame, then animate to 0.
+      const h = composer.offsetHeight;
+      const cs = getComputedStyle(composer);
+      const mt = cs.marginTop;
+      const mb = cs.marginBottom;
+      composer.style.overflow = 'hidden';
+      composer.style.height = h + 'px';
+
+      // Slide-down + fade. Margins collapse to 0 alongside so the
+      // surrounding email body smoothly reclaims the gap. Web
+      // Animations API leaves no inline styles behind once it
+      // finishes, which keeps the next openComposer() clean.
+      const anim = composer.animate(
+        [
+          { height: h + 'px', opacity: 1, transform: 'translateY(0)',     marginTop: mt,    marginBottom: mb },
+          { height: '0px',    opacity: 0, transform: 'translateY(14px)',  marginTop: '0px', marginBottom: '0px' },
+        ],
+        { duration: 320, easing: 'cubic-bezier(.4, 0, .2, 1)' }
+      );
+      anim.onfinish = finalize;
+      // Some browsers fire `cancel` instead of `finish` if the
+      // composer is removed mid-anim (renderEmail rebuild). Treat both
+      // the same way so we don't leave the element in a half-closed
+      // state.
+      anim.oncancel = finalize;
+    }
+
+    // Collect From/To/Subject/body from the meta strip + textarea, post
+    // /api/emails/send and surface the result via toast. Used by both the
+    // composer's own send button and the AI draft box's "Envoyer" button.
+    // `replyToIntId` threads the message correctly when present.
+    // Phase 4 — staged attachments for the reply composer.
+    // Each entry: { upload_id, filename, size, content_type, kind }
+    // where `kind` is 'attachment' (paperclip) or 'inline' (image
+    // button — embedded as cid: in the HTML body). Re-rendered via
+    // renderAttachStrip on every mutation.
+    const stagedAttachments = [];
+
+    function renderAttachStrip() {
+      const strip = $('#mb-attach-strip');
+      if (!strip) return;
+      strip.dataset.empty = stagedAttachments.length ? '0' : '1';
+      strip.innerHTML = stagedAttachments.map((a, i) => `
+        <span class="mb-attach-pill" data-idx="${i}">
+          <i data-lucide="${a.kind === 'inline' ? 'image' : 'paperclip'}" class="w-3 h-3"></i>
+          <span class="mb-attach-name" title="${escapeHtml(a.filename)}">${escapeHtml(a.filename)}</span>
+          <span class="mb-attach-size">${fmtBytes(a.size)}</span>
+          <button type="button" class="mb-attach-remove" data-idx="${i}" title="Retirer" aria-label="Retirer">
+            <i data-lucide="x" class="w-3 h-3"></i>
+          </button>
+        </span>
+      `).join('');
+      window.lucide?.createIcons({ el: strip });
+      strip.querySelectorAll('.mb-attach-remove').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const idx = parseInt(btn.dataset.idx, 10);
+          const removed = stagedAttachments.splice(idx, 1)[0];
+          renderAttachStrip();
+          if (removed?.upload_id) {
+            try { await api.deleteUpload(removed.upload_id); } catch (_) {}
+          }
+        });
+      });
+    }
+
+    async function handleFilePick(files, kind) {
+      if (!files || !files.length) return;
+      for (const file of files) {
+        const tmp = { upload_id: null, filename: file.name, size: file.size, content_type: file.type, kind, uploading: true };
+        stagedAttachments.push(tmp);
+        renderAttachStrip();
+        try {
+          const meta = await api.uploadAttachment(file);
+          tmp.upload_id = meta.upload_id;
+          tmp.filename = meta.filename;
+          tmp.size = meta.size;
+          tmp.content_type = meta.content_type;
+          tmp.uploading = false;
+          renderAttachStrip();
+        } catch (err) {
+          // Remove the failed entry, surface the error.
+          const idx = stagedAttachments.indexOf(tmp);
+          if (idx >= 0) stagedAttachments.splice(idx, 1);
+          renderAttachStrip();
+          window.toast(err?.message || 'Échec de l\'upload', 5000);
+        }
+      }
+    }
+
+    $('#btn-attach-file')?.addEventListener('click', () => $('#mb-file-input')?.click());
+    $('#btn-attach-image')?.addEventListener('click', () => $('#mb-image-input')?.click());
+    $('#mb-file-input')?.addEventListener('change', (e) => {
+      const files = [...(e.target.files || [])];
+      e.target.value = '';
+      handleFilePick(files, 'attachment');
+    });
+    $('#mb-image-input')?.addEventListener('change', (e) => {
+      const files = [...(e.target.files || [])];
+      e.target.value = '';
+      handleFilePick(files, 'inline');
     });
 
-    $('#btn-draft-toggle')?.addEventListener('click', async () => {
-      const draft = $('#mb-draft');
-      const btn = $('#btn-draft-toggle');
-      if (!draft || !btn) return;
-      const alreadyOpen = draft.style.display !== 'none';
-      if (alreadyOpen) {
-        draft.style.display = 'none';
-        btn.classList.remove('active');
-        return;
+    async function sendCurrentMessage({ trigger, replyToIntId, bodyOverride } = {}) {
+      const fromSel = $('#mbc-from');
+      const toInp   = $('#mbc-to');
+      const subjInp = $('#mbc-subject');
+      const ta      = $('#mb-composer textarea');
+      const fromAcc = (fromSel?.value || '').trim();
+      const toRaw   = (toInp?.value || '').trim();
+      const subject = (subjInp?.value || '').trim();
+      const body    = (bodyOverride != null ? bodyOverride : (ta?.value || '')).trim();
+
+      if (!fromAcc) { window.toast('Compte expéditeur requis.'); return; }
+      if (!toRaw)   { window.toast('Destinataire requis.'); toInp?.focus(); return; }
+      if (!body)    { window.toast('Le message est vide.'); ta?.focus(); return; }
+      // Refuse sending while uploads are still in flight.
+      if (stagedAttachments.some((a) => a.uploading)) {
+        window.toast('Téléversement en cours, patientez…'); return;
       }
-      // If draft already loaded, just show it.
-      if (draft.dataset.loaded === '1') {
-        draft.style.display = '';
-        btn.classList.add('active');
-        return;
+
+      const toList = toRaw.split(',').map((s) => s.trim()).filter(Boolean);
+      const attachIds = stagedAttachments.filter((a) => a.kind === 'attachment' && a.upload_id).map((a) => a.upload_id);
+      const inlineIds = stagedAttachments.filter((a) => a.kind === 'inline'     && a.upload_id).map((a) => a.upload_id);
+      const btn = trigger || $('#btn-composer-send');
+      const setSending = sendButtonStateFactory(btn, 'Envoyer');
+      setSending('loading');
+      try {
+        await api.sendEmail({
+          from_account: fromAcc,
+          to: toList,
+          subject,
+          body_text: body,
+          reply_to_int_id: replyToIntId ?? null,
+          attachments: attachIds,
+          inline_images: inlineIds,
+        });
+        setSending('sent');
+        window.toast('Message envoyé');
+        // The user-typed draft (if any) is now stale — drop it so it
+        // doesn't reappear in Brouillons. The AI suggestion in
+        // emails.draft_response stays untouched: it's the LLM's
+        // contribution, not the user's, and a future "Modifier"
+        // workflow may still reference it.
+        deleteReplyDraft();
+        // Backend already cleaned the staged uploads on success; clear
+        // the local list so a re-open of the composer starts empty.
+        stagedAttachments.length = 0;
+        renderAttachStrip();
+        // Hold the green "Envoyé" pulse long enough for the user to
+        // register success — short enough that the pane still feels
+        // responsive. ~1500 ms reads as a deliberate confirmation beat.
+        await new Promise((r) => setTimeout(r, 1500));
+        closeComposer({ skipDraftSync: true });
+        if (ta) ta.value = '';
+        setSending('idle');
+      } catch (err) {
+        setSending('idle');
+        const msg = (err && err.message) || "Échec de l'envoi";
+        window.toast(msg, 6000);
       }
-      // Generate on demand.
+    }
+
+    $('#btn-reply-toggle').addEventListener('click', () => {
+      if ($('#btn-reply-toggle').classList.contains('active')) {
+        closeComposer();
+      } else {
+        // Prefer the user's saved draft (drafts table, in_reply_to_int)
+        // over the AI suggestion when both exist — the user already
+        // moved past the AI text. The composer-specific autosave keeps
+        // the draft fresh.
+        let prefill = null;
+        if (em._user_reply_draft && (em._user_reply_draft.body_text || '').length) {
+          prefill = em._user_reply_draft.body_text;
+        } else {
+          const draft = $('#mb-draft');
+          const hasDraft = draft && draft.dataset.loaded === '1';
+          prefill = hasDraft ? ($('#mb-draft-text')?.innerText ?? null) : null;
+        }
+        openComposer(prefill);
+        // Also restore To/Subject from a saved user draft (the AI
+        // suggestion only carries body text, the meta is fresh).
+        if (em._user_reply_draft) {
+          const d = em._user_reply_draft;
+          if (d.to)      { const el = $('#mbc-to');      if (el) el.value = d.to; }
+          if (d.subject) { const el = $('#mbc-subject'); if (el) el.value = d.subject; }
+        }
+        // Wire input listeners once the composer is open. Idempotent
+        // via dataset flag so re-opening doesn't stack listeners.
+        bindReplyAutosave();
+      }
+    });
+
+    $('#btn-composer-close')?.addEventListener('click', () => closeComposer());
+
+    $('#btn-draft-edit')?.addEventListener('click', () => {
+      const text = $('#mb-draft-text')?.innerText ?? '';
+      openComposer(text);
+      bindReplyAutosave();
+    });
+
+    // Trash icon on the draft box: discards both the user-typed draft
+    // (drafts table row) AND any AI suggestion (em.draft_response) so
+    // the box drops back to "no draft for this email".
+    $('#btn-draft-discard')?.addEventListener('click', async () => {
+      const sourceWasUser = $('#mb-draft')?.dataset?.source === 'user';
+      const confirmMsg = sourceWasUser
+        ? 'Supprimer ce brouillon ?'
+        : 'Supprimer la suggestion de réponse ?';
+      if (!confirm(confirmMsg)) return;
+      const ta = $('#mb-composer textarea');
+      if (ta) ta.value = '';
+      await deleteReplyDraft({ alsoClearAi: true });
+      const composer = $('#mb-composer');
+      if (composer && composer.style.display !== 'none') {
+        closeComposer({ skipDraftSync: true });
+      }
+      window.toast('Brouillon supprimé');
+    });
+
+    // Attach `input` listeners on the four composer fields exactly
+    // once. The flag lives on the composer DOM node so reopen ↔ close
+    // cycles don't re-register and the same handler keeps firing for
+    // the lifetime of the rendered email pane.
+    function bindReplyAutosave() {
+      const composer = $('#mb-composer');
+      if (!composer || composer.dataset.autosaveBound === '1') return;
+      composer.dataset.autosaveBound = '1';
+      ['#mbc-to', '#mbc-subject', '#mbc-from'].forEach((sel) => {
+        composer.querySelector(sel)?.addEventListener('input',  scheduleReplyDraftSave);
+        composer.querySelector(sel)?.addEventListener('change', scheduleReplyDraftSave);
+      });
+      composer.querySelector('textarea')?.addEventListener('input', scheduleReplyDraftSave);
+    }
+
+    // Composer's own Send button — uses whatever the user typed in the
+    // textarea + meta strip.
+    $('#btn-composer-send')?.addEventListener('click', (e) => {
+      sendCurrentMessage({
+        trigger: e.currentTarget,
+        replyToIntId: em.int_id,
+      });
+    });
+
+    // AI draft box's Send button — sends the AI-generated text as-is
+    // without needing the user to open the composer first. Pre-fills
+    // body from #mb-draft-text so the meta strip is read from the
+    // (still-rendered) composer DOM.
+    $('#btn-draft-send')?.addEventListener('click', (e) => {
+      const text = $('#mb-draft-text')?.innerText || '';
+      // Make sure the composer is open so the meta strip exists in the DOM.
+      openComposer(text);
+      sendCurrentMessage({
+        trigger: e.currentTarget,
+        replyToIntId: em.int_id,
+        bodyOverride: text,
+      });
+    });
+
+    // Composer drag-to-resize: dragging the top handle UP grows the
+    // textarea, dragging DOWN shrinks it. Pointer-events + capture so
+    // the drag stays glued to the cursor even when it leaves the
+    // handle's hit area.
+    $('#mb-composer-handle')?.addEventListener('pointerdown', (e) => {
+      const handle = e.currentTarget;
+      const composer = $('#mb-composer');
+      const ta = composer?.querySelector('textarea');
+      if (!composer || !ta) return;
+      e.preventDefault();
+      handle.setPointerCapture(e.pointerId);
+      handle.classList.add('is-dragging');
+
+      const startY = e.clientY;
+      const startH = ta.offsetHeight;
+      // .mb-read-content (email body) and .mb-composer are flex
+      // siblings of .mb-read-body. Composer grows = email body
+      // viewport shrinks. The cap must keep .mb-read-content tall
+      // enough that none of its inner content overflows — otherwise
+      // a scrollbar appears on .mb-read-content itself, which is what
+      // we want to avoid. Threshold = read-content's own paddings +
+      // sum of fixed (non-iframe) children + the iframe's min-height
+      // (the iframe absorbs all extra flex room, so its min-height
+      // is what sets the floor). Snapshotted at drag start so the
+      // cap doesn't drift mid-drag while the layout reflows.
+      const readBody    = host.querySelector('.mb-read-body');
+      const meta        = host.querySelector('.mb-read-meta');
+      const readContent = host.querySelector('.mb-read-content');
+      const iframe      = readContent?.querySelector('.mb-body-iframe');
+
+      let minContentH = 80; // safe default if measurement fails
+      if (readContent) {
+        const cs = getComputedStyle(readContent);
+        minContentH = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+        for (const child of readContent.children) {
+          if (child === iframe) continue;
+          if (getComputedStyle(child).display === 'none') continue;
+          minContentH += child.offsetHeight;
+        }
+        if (iframe) {
+          minContentH += parseFloat(getComputedStyle(iframe).minHeight) || 0;
+        }
+      }
+
+      const composerCs = getComputedStyle(composer);
+      const composerMargins = (parseFloat(composerCs.marginTop) || 0)
+                            + (parseFloat(composerCs.marginBottom) || 0);
+      const nonTaH = composer.offsetHeight - startH;       // handle + bar + paddings
+      const bodyH  = readBody?.clientHeight || window.innerHeight;
+      const metaH  = meta?.offsetHeight || 0;
+
+      // Two ceilings, take the smaller:
+      //   1. Layout cap: composer can't grow past what leaves room for
+      //      the email body's minimum (no scrollbar on .mb-read-content).
+      //   2. Hard cap (ABSOLUTE_MAX_COMPOSER): even when the window is
+      //      huge, a reply composer doesn't need to be a thousand pixels
+      //      tall. Caps the textarea around what comfortably fits a long
+      //      paragraph reply without dwarfing the email it replies to.
+      const ABSOLUTE_MAX_COMPOSER = 520;
+      const layoutCap   = Math.max(120, bodyH - metaH - minContentH - composerMargins);
+      const maxComposerH = Math.min(layoutCap, ABSOLUTE_MAX_COMPOSER);
+      const maxH = Math.max(60, maxComposerH - nonTaH);
+      const minH = 60;
+
+      const onMove = (ev) => {
+        const dy = startY - ev.clientY;                    // drag up → positive
+        const newH = Math.max(minH, Math.min(maxH, startH + dy));
+        ta.style.height = newH + 'px';
+      };
+      const onUp = () => {
+        handle.classList.remove('is-dragging');
+        try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+        handle.removeEventListener('pointermove', onMove);
+        handle.removeEventListener('pointerup', onUp);
+        handle.removeEventListener('pointercancel', onUp);
+      };
+      handle.addEventListener('pointermove', onMove);
+      handle.addEventListener('pointerup', onUp);
+      handle.addEventListener('pointercancel', onUp);
+    });
+
+    // Top-bar sparkles button — triggers AI analysis (summary + importance
+    // score). Repaints the read pane with the fresh em so the mb-ai-box
+    // appears.
+    $('#btn-analyze')?.addEventListener('click', async () => {
+      const btn = $('#btn-analyze');
+      if (!btn || btn.disabled) return;
+      btn.disabled = true;
+      btn.classList.add('loading');
+      const t = window.toast({ variant: 'loading', message: 'Analyse IA en cours', duration: 0 });
+      try {
+        const fresh = await api.reanalyzeEmail(em.int_id);
+        renderEmail(fresh);
+        await loadEmails();
+        t?.success('Analyse IA terminée');
+      } catch (_) {
+        t?.error("Échec de l'analyse IA");
+      } finally {
+        // renderEmail rebuilt the DOM, so the local btn ref is stale —
+        // safe to no-op if it was replaced.
+        const live = $('#btn-analyze');
+        if (live) {
+          live.disabled = false;
+          live.classList.remove('loading');
+        }
+      }
+    });
+
+    // Composer-bar sparkles — generates a draft reply and drops it into
+    // the textarea above. The user can then edit before sending.
+    $('#btn-ai-draft')?.addEventListener('click', async () => {
+      const btn = $('#btn-ai-draft');
+      const ta = $('#mb-composer textarea');
+      if (!btn || !ta || btn.disabled) return;
       btn.disabled = true;
       btn.classList.add('loading');
       try {
         const res = await api.generateDraft(em.int_id);
         const text = res.draft_response || '';
-        const dtEl = draft.querySelector('#mb-draft-text');
-        if (dtEl) dtEl.textContent = text;
-        draft.dataset.loaded = '1';
-        btn.classList.add('has-draft');
-        if (text) {
-          draft.style.display = '';
-          btn.classList.add('active');
-          // Persist locally + reflect in the list card. Backend has
-          // already flipped needs_reply=1 on the row; we mirror that
-          // into state so the next loadEmails() round and the local
-          // cache stay coherent. _patchCardReplyIcon mutates only the
-          // currently visible card to avoid a full list re-render.
-          em.draft_response = text;
-          em.needs_reply = 1;
-          const idx = state.emails.findIndex((e) => e.int_id === em.int_id);
-          if (idx >= 0) {
-            state.emails[idx].draft_response = text;
-            state.emails[idx].needs_reply = 1;
-          }
-          _patchCardReplyIcon(em.int_id, true);
-          _patchCardDraftIcon(em.int_id, true);
-        } else {
+        if (!text) {
           window.toast('Impossible de générer une réponse.');
+          return;
         }
-      } catch (e) {
+        ta.value = text;
+        ta.focus();
+        // Mirror the new state locally (backend already flipped
+        // needs_reply=1) so the list card icons stay coherent without a
+        // full re-fetch.
+        em.draft_response = text;
+        em.needs_reply = 1;
+        const idx = state.emails.findIndex((e) => e.int_id === em.int_id);
+        if (idx >= 0) {
+          state.emails[idx].draft_response = text;
+          state.emails[idx].needs_reply = 1;
+        }
+        _patchCardReplyIcon(em.int_id, true);
+        _patchCardDraftIcon(em.int_id, true);
+      } catch (_) {
         window.toast('Erreur lors de la génération du brouillon.');
       } finally {
         btn.disabled = false;
@@ -1769,6 +3371,21 @@ export async function mountMailbox(host, _opts) {
   }
 
   async function openEmail(intId) {
+    // Drafts use synthetic negative ids — re-route to the composer
+    // pre-filled with the saved body/recipient/subject instead of
+    // hitting /api/emails (which wouldn't find the row).
+    if (intId < 0) {
+      const row = state.emails.find((e) => e.int_id === intId);
+      if (row && row._draft) {
+        state.selectedId = intId;
+        setSelectionMode(true);
+        host.querySelectorAll('.mb-card').forEach((c) => {
+          c.classList.toggle('selected', parseInt(c.dataset.id, 10) === intId);
+        });
+        renderComposeNew({ draft: row._draft });
+        return;
+      }
+    }
     state.selectedId = intId;
     setSelectionMode(true);
     // Reflect selection in list
@@ -1979,6 +3596,8 @@ export async function mountMailbox(host, _opts) {
           state.accountStats[a.email] = {
             unread: a.unread || 0,
             needs_reply: a.needs_reply || 0,
+            favourite: a.favourite || 0,
+            draft: a.draft || 0,
             total: a.total || 0,
             sync_error: errMap[a.email] || a.sync_error || null,
           };
@@ -1989,7 +3608,7 @@ export async function mountMailbox(host, _opts) {
       for (const a of accs) {
         if (!state.accountStats[a.email]) {
           state.accountStats[a.email] = {
-            unread: 0, needs_reply: 0, total: 0,
+            unread: 0, needs_reply: 0, favourite: 0, draft: 0, total: 0,
             sync_error: a.sync_error || null,
           };
         } else {
@@ -2004,7 +3623,11 @@ export async function mountMailbox(host, _opts) {
     }
     renderChips();
     renderAccounts();
-    applyFilter();
+    // Only re-filter the list once the initial render has completed.
+    // On the very first load, loadEmails() owns the first renderList() call
+    // (with _firstRender=true) — calling applyFilter() here before that would
+    // either steal the animation token or wipe the animation mid-play.
+    if (!_firstRender) applyFilter();
     updateBadge();
   }
 
@@ -2012,6 +3635,46 @@ export async function mountMailbox(host, _opts) {
     try {
       // For a single selected account send the API filter; for 0 or 2+ filter client-side.
       const singleAcc = state.accountFilters.size === 1 ? [...state.accountFilters][0] : undefined;
+
+      // The Brouillons folder lives in its own table — re-shape draft
+      // rows so the rest of the list-rendering code (cardHtml, sort,
+      // filter…) works without per-folder branching. Drafts use a
+      // negative int_id so they never collide with real emails; the
+      // open path detects this and re-routes to renderDraftEditor.
+      if ((state.folder || 'inbox') === 'draft') {
+        const drafts = await api.getDrafts(singleAcc);
+        state.emails = drafts.map((d) => ({
+          int_id: -Math.abs(d.id),
+          message_id: `draft:${d.id}`,
+          account_email: d.account_email,
+          subject: d.subject || '(brouillon sans objet)',
+          sender: d.account_email || 'Brouillon',
+          recipient: d.to || '',
+          date_received: d.updated_at || d.created_at || '',
+          body_text: d.body_text || '',
+          body_html: '',
+          category: 'other',
+          folder: 'draft',
+          is_read: 1,
+          is_favourite: 0,
+          summary: '',
+          needs_reply: 0,
+          draft_response: null,
+          importance_score: 0,
+          attachments: { total: 0, dangerous: 0, suspicious: 0 },
+          _draft: d,
+        }));
+        if (state.selectedIds.size) {
+          const present = new Set(state.emails.map((e) => e.int_id));
+          for (const id of [...state.selectedIds]) {
+            if (!present.has(id)) state.selectedIds.delete(id);
+          }
+          renderSelectionBar();
+        }
+        applyFilter();
+        return;
+      }
+
       const params = {
         limit: 2000,
         account: singleAcc,
@@ -2019,6 +3682,7 @@ export async function mountMailbox(host, _opts) {
         is_read: state.onlyUnread ? false : undefined,
         needs_reply: state.onlyReply ? true : undefined,
         folder: state.folder || 'inbox',
+        label: state.labelFilter ?? undefined,
       };
       state.emails = await api.getEmails(params);
       // Drop selections that are no longer present in the loaded set.
@@ -2039,9 +3703,10 @@ export async function mountMailbox(host, _opts) {
       if (m) {
         const id = parseInt(m[1], 10);
         if (Number.isFinite(id)) openEmail(id);
-      } else if (!state.selectedId) {
-        renderEmpty();
       }
+      // NOTE: renderEmpty() is intentionally NOT called here for background
+      // refreshes — the initial mount already calls it, and periodic reloads
+      // must never close a mail the user is currently reading.
     } catch (err) {
       $('#email-list').innerHTML = `<div style="padding:24px;color:var(--danger)">Erreur: ${escapeHtml(err.message)}</div>`;
     }
@@ -2053,30 +3718,58 @@ export async function mountMailbox(host, _opts) {
   }
 
   async function triggerSync() {
+    const btn = $('#btn-sync');
+    if (btn?.disabled) return;
     try {
       const r = await api.triggerSync();
-      window.toast(r.message || (r.ok ? 'Synchronisation lancée' : 'Sync déjà en cours'));
+      window.toast({
+        variant: r.ok ? 'loading' : 'info',
+        message: r.message || (r.ok ? 'Synchronisation lancée' : 'Sync déjà en cours'),
+        duration: 2400,
+      });
+      _syncWasRunning = true;
       setSyncSpinner(true);
       pollSync();
     } catch (err) {
-      window.toast('Erreur sync: ' + err.message);
+      // Rate-limit: the backend already shipped a French message in
+      // err.message ("Trop de requêtes…"). Honour Retry-After by
+      // disabling the button so the user can't keep hammering it.
+      if (err.status === 429) {
+        const wait = Math.max(3, err.retryAfter || 10);
+        window.toast({
+          variant: 'warning',
+          message: err.message || `Patientez ${wait}s avant de relancer.`,
+          duration: wait * 1000,
+        });
+        if (btn) {
+          btn.disabled = true;
+          btn.classList.add('is-cooldown');
+          setTimeout(() => {
+            btn.disabled = false;
+            btn.classList.remove('is-cooldown');
+          }, wait * 1000);
+        }
+      } else {
+        window.toast({ variant: 'error', message: 'Erreur sync : ' + (err.message || '') });
+      }
     }
   }
 
   let syncTimer = null;
+  let _syncWasRunning = false; // module-level so triggerSync() can prime it
+
   async function pollSync() {
     if (syncTimer) return;
-    let wasRunning = false;
     const tick = async () => {
       try {
         const s = await api.getSyncStatus();
         if (s.running) {
-          wasRunning = true;
+          _syncWasRunning = true;
           setSyncSpinner(true);
         } else {
           setSyncSpinner(false);
-          if (wasRunning) {
-            wasRunning = false;
+          if (_syncWasRunning) {
+            _syncWasRunning = false;
             loadEmails();
             loadAccounts();
           }
@@ -2128,7 +3821,290 @@ export async function mountMailbox(host, _opts) {
 
   // `#/inbox?smart=<id>` deep-link is handled after smart folders load (see below).
 
-  $('#cta-compose').addEventListener('click', () => window.toast('Composer : bientôt'));
+  // Render a compose-from-scratch pane in #read-pane. Used by both the
+  // sidebar "Nouveau message" CTA and the 'c' keyboard shortcut. The
+  // pane has the same composer skeleton as renderEmail, minus the email
+  // body / thread metadata. Sending or closing returns to renderEmpty().
+  function renderComposeNew(opts = {}) {
+    const pane = host.querySelector('#read-pane');
+    if (!pane) return;
+    // Drop any per-email selection so the back-out path lands cleanly.
+    if (!opts.draft) state.selectedId = null;
+    setSelectionMode(true);
+    if (!opts.draft) {
+      host.querySelectorAll('.mb-card').forEach((c) => c.classList.remove('selected'));
+    }
+    const defaultAccount = (opts.draft?.account_email)
+      || state.accounts[0]?.email
+      || '';
+    const initialTo      = opts.draft?.to || '';
+    const initialSubject = opts.draft?.subject || '';
+    const initialBody    = opts.draft?.body_text || '';
+    // The draft id starts known when re-opening from /api/drafts; for
+    // a fresh compose we mint it on the first save (POST → returns
+    // id) and PATCH every subsequent autosave.
+    let draftId = opts.draft?.id ?? null;
+    let lastSnapshot = JSON.stringify({
+      from: defaultAccount, to: initialTo, subject: initialSubject, body: initialBody,
+    });
+
+    pane.innerHTML = `
+      <div class="mb-read-inner mb-read-inner-compose">
+        <div class="mb-read-head">
+          <h1 class="mb-compose-title">
+            <i data-lucide="mail-plus" class="w-5 h-5"></i>
+            <span>${opts.draft ? 'Brouillon' : 'Nouveau message'}</span>
+          </h1>
+          <div class="mb-read-actions">
+            ${opts.draft ? `<button class="icon-btn" id="btn-delete-draft" title="Supprimer ce brouillon"><i data-lucide="trash-2" class="w-4 h-4"></i></button>` : ''}
+            <button class="icon-btn" id="btn-close-compose" title="Fermer"><i data-lucide="x" class="w-4 h-4"></i></button>
+          </div>
+        </div>
+        <div class="mb-read-body">
+          <div class="mb-read-content"></div>
+          <div class="mb-composer mb-composer-standalone" id="mb-composer">
+            ${buildComposerMetaHtml({
+              mode: 'compose',
+              accounts: state.accounts,
+              defaultAccount,
+              to: initialTo,
+              subject: initialSubject,
+            })}
+            <textarea placeholder="Écrire un message…" aria-label="Composer">${escapeHtml(initialBody)}</textarea>
+            <div class="mb-attach-strip" id="mb-attach-strip-new" data-empty="1"></div>
+            <input type="file" id="mb-file-input-new" multiple style="display:none">
+            <input type="file" id="mb-image-input-new" accept="image/*" multiple style="display:none">
+            <div class="mb-composer-bar">
+              <div style="display:flex;gap:4px;color:var(--muted)">
+                <button class="icon-btn" id="btn-attach-file-new" title="Joindre un fichier" aria-label="Joindre un fichier"><i data-lucide="paperclip" class="w-4 h-4"></i></button>
+                <button class="icon-btn" id="btn-attach-image-new" title="Insérer une image" aria-label="Insérer une image"><i data-lucide="image" class="w-4 h-4"></i></button>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;margin-left:auto">
+                <span class="mb-compose-savetag" id="mb-compose-savetag" aria-live="polite"></span>
+                <button class="send" id="btn-compose-send-new">
+                  <i data-lucide="send" class="w-4 h-4"></i>
+                  Envoyer
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    pane.querySelectorAll('[data-toast]').forEach((el) => {
+      el.addEventListener('click', (e) => { e.preventDefault(); window.toast(el.dataset.toast); });
+    });
+
+    bindComposerFromDropdown(pane);
+
+    // Phase 4 — staged attachments for compose-new (same shape as the
+    // reply variant; scoped to this pane via local closure).
+    const stagedAttachmentsNew = [];
+
+    function renderAttachStripNew() {
+      const strip = pane.querySelector('#mb-attach-strip-new');
+      if (!strip) return;
+      strip.dataset.empty = stagedAttachmentsNew.length ? '0' : '1';
+      strip.innerHTML = stagedAttachmentsNew.map((a, i) => `
+        <span class="mb-attach-pill" data-idx="${i}">
+          <i data-lucide="${a.kind === 'inline' ? 'image' : 'paperclip'}" class="w-3 h-3"></i>
+          <span class="mb-attach-name" title="${escapeHtml(a.filename)}">${escapeHtml(a.filename)}</span>
+          <span class="mb-attach-size">${fmtBytes(a.size)}</span>
+          <button type="button" class="mb-attach-remove" data-idx="${i}" title="Retirer" aria-label="Retirer">
+            <i data-lucide="x" class="w-3 h-3"></i>
+          </button>
+        </span>
+      `).join('');
+      window.lucide?.createIcons({ el: strip });
+      strip.querySelectorAll('.mb-attach-remove').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const idx = parseInt(btn.dataset.idx, 10);
+          const removed = stagedAttachmentsNew.splice(idx, 1)[0];
+          renderAttachStripNew();
+          if (removed?.upload_id) {
+            try { await api.deleteUpload(removed.upload_id); } catch (_) {}
+          }
+        });
+      });
+    }
+
+    async function handleFilePickNew(files, kind) {
+      if (!files || !files.length) return;
+      for (const file of files) {
+        const tmp = { upload_id: null, filename: file.name, size: file.size, content_type: file.type, kind, uploading: true };
+        stagedAttachmentsNew.push(tmp);
+        renderAttachStripNew();
+        try {
+          const meta = await api.uploadAttachment(file);
+          tmp.upload_id = meta.upload_id;
+          tmp.filename = meta.filename;
+          tmp.size = meta.size;
+          tmp.content_type = meta.content_type;
+          tmp.uploading = false;
+          renderAttachStripNew();
+        } catch (err) {
+          const idx = stagedAttachmentsNew.indexOf(tmp);
+          if (idx >= 0) stagedAttachmentsNew.splice(idx, 1);
+          renderAttachStripNew();
+          window.toast(err?.message || 'Échec de l\'upload', 5000);
+        }
+      }
+    }
+
+    pane.querySelector('#btn-attach-file-new')?.addEventListener('click', () => pane.querySelector('#mb-file-input-new')?.click());
+    pane.querySelector('#btn-attach-image-new')?.addEventListener('click', () => pane.querySelector('#mb-image-input-new')?.click());
+    pane.querySelector('#mb-file-input-new')?.addEventListener('change', (e) => {
+      const files = [...(e.target.files || [])];
+      e.target.value = '';
+      handleFilePickNew(files, 'attachment');
+    });
+    pane.querySelector('#mb-image-input-new')?.addEventListener('change', (e) => {
+      const files = [...(e.target.files || [])];
+      e.target.value = '';
+      handleFilePickNew(files, 'inline');
+    });
+
+    const tagEl = pane.querySelector('#mb-compose-savetag');
+    let saveTimer = null;
+    let savePromise = null;
+    let pendingDelete = false;  // set when user clicks the trash; aborts the next autosave
+    const collect = () => ({
+      from_account: (pane.querySelector('#mbc-from')?.value || '').trim(),
+      to:       (pane.querySelector('#mbc-to')?.value || '').trim(),
+      subject:  (pane.querySelector('#mbc-subject')?.value || '').trim(),
+      body_text:(pane.querySelector('textarea')?.value || ''),
+    });
+    const flagSaving = (txt) => { if (tagEl) tagEl.textContent = txt; };
+
+    // Persist now. Returns a promise resolving to the (possibly new)
+    // draft id, or null when the form is empty (we don't materialise
+    // an empty row).
+    async function saveNow() {
+      if (pendingDelete) return null;
+      const v = collect();
+      const isEmpty = !v.to && !v.subject && !v.body_text.trim();
+      const snap = JSON.stringify({ from: v.from_account, to: v.to, subject: v.subject, body: v.body_text });
+      if (snap === lastSnapshot) return draftId;
+      if (isEmpty && !draftId) return null;
+      flagSaving('Enregistrement…');
+      try {
+        if (draftId == null) {
+          const created = await api.createDraft(v);
+          draftId = created?.id ?? null;
+        } else {
+          await api.updateDraft(draftId, v);
+        }
+        lastSnapshot = snap;
+        flagSaving('Brouillon enregistré');
+        // Brief auto-clear so the tag doesn't permanently squat the bar.
+        setTimeout(() => { if (tagEl && tagEl.textContent === 'Brouillon enregistré') tagEl.textContent = ''; }, 2000);
+      } catch (err) {
+        flagSaving('Échec enregistrement');
+      }
+      return draftId;
+    }
+
+    function scheduleSave() {
+      if (saveTimer) clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => {
+        saveTimer = null;
+        savePromise = saveNow();
+      }, 1500);  // 1.5s of inactivity before persisting
+    }
+
+    // Wire keystrokes on every editable field. The To/Subject/From
+    // controls are the inputs inside the meta strip + the textarea +
+    // the hidden #mbc-from updated by the custom dropdown.
+    ['#mbc-to', '#mbc-subject', '#mbc-from'].forEach((sel) => {
+      pane.querySelector(sel)?.addEventListener('input',  scheduleSave);
+      pane.querySelector(sel)?.addEventListener('change', scheduleSave);
+    });
+    pane.querySelector('textarea')?.addEventListener('input', scheduleSave);
+
+    pane.querySelector('#btn-delete-draft')?.addEventListener('click', async () => {
+      if (draftId == null) { renderEmpty(); return; }
+      if (!confirm('Supprimer ce brouillon ?')) return;
+      pendingDelete = true;
+      if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+      try {
+        await api.deleteDraft(draftId);
+        window.toast('Brouillon supprimé');
+        renderEmpty();
+        if (state.folder === 'draft') loadEmails();
+      } catch (err) {
+        pendingDelete = false;
+        window.toast('Échec suppression : ' + (err.message || ''));
+      }
+    });
+
+    pane.querySelector('#btn-close-compose')?.addEventListener('click', async () => {
+      // Flush any pending edit before closing so the user doesn't lose
+      // a draft they typed during the last 1.5s.
+      if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+      try { await saveNow(); } catch (_) {}
+      renderEmpty();
+      if (state.folder === 'draft') loadEmails();
+    });
+
+    pane.querySelector('#btn-compose-send-new')?.addEventListener('click', async (e) => {
+      const v = collect();
+      if (!v.from_account) { window.toast('Compte expéditeur requis.'); return; }
+      if (!v.to)   { window.toast('Destinataire requis.'); return; }
+      if (!v.body_text.trim()) { window.toast('Le message est vide.'); return; }
+      if (stagedAttachmentsNew.some((a) => a.uploading)) {
+        window.toast('Téléversement en cours, patientez…'); return;
+      }
+      const toList = v.to.split(',').map((s) => s.trim()).filter(Boolean);
+      const attachIds = stagedAttachmentsNew.filter((a) => a.kind === 'attachment' && a.upload_id).map((a) => a.upload_id);
+      const inlineIds = stagedAttachmentsNew.filter((a) => a.kind === 'inline'     && a.upload_id).map((a) => a.upload_id);
+      const setSending = sendButtonStateFactory(e.currentTarget, 'Envoyer');
+      // Cancel pending autosave — the message is about to leave anyway.
+      if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+      setSending('loading');
+      try {
+        await api.sendEmail({
+          from_account: v.from_account,
+          to: toList,
+          subject: v.subject,
+          body_text: v.body_text.trim(),
+          attachments: attachIds,
+          inline_images: inlineIds,
+        });
+        setSending('sent');
+        window.toast('Message envoyé');
+        // Drop the on-disk draft (if any) — the message has been sent
+        // and a stale draft would re-appear in Brouillons next visit.
+        if (draftId != null) {
+          pendingDelete = true;
+          api.deleteDraft(draftId).catch(() => {});
+        }
+        stagedAttachmentsNew.length = 0;
+        await new Promise((r) => setTimeout(r, 1500));
+        renderEmpty();
+        if (state.folder === 'draft') loadEmails();
+      } catch (err) {
+        setSending('idle');
+        const msg = (err && err.message) || "Échec de l'envoi";
+        window.toast(msg, 6000);
+      }
+    });
+
+    // Focus the To field so typing starts the destination address —
+    // unless we're re-opening an existing draft, in which case put the
+    // cursor at the end of the body for quick continuation.
+    setTimeout(() => {
+      if (opts.draft && initialBody) {
+        const ta = pane.querySelector('textarea');
+        if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+      } else {
+        pane.querySelector('#mbc-to')?.focus();
+      }
+    }, 0);
+    window.lucide?.createIcons();
+  }
+
+  $('#cta-compose').addEventListener('click', () => renderComposeNew());
 
   // ── Keyboard ──────────────────────────────────────────────
   function onKey(e) {
@@ -2164,20 +4140,43 @@ export async function mountMailbox(host, _opts) {
   }
   document.addEventListener('keydown', onEscape);
 
-  // Auto-refresh every 60s
+  // Auto-refresh every 20s
   const refreshTimer = setInterval(() => {
     loadEmails().catch(() => {});
     loadAccounts().catch(() => {});
-  }, 60_000);
+  }, 20_000);
+
+  // Refresh immediately when the user comes back to the tab
+  const onVisibility = () => {
+    if (!document.hidden) {
+      loadEmails().catch(() => {});
+      loadAccounts().catch(() => {});
+    }
+  };
+  document.addEventListener('visibilitychange', onVisibility);
 
   // ── Initial render ────────────────────────────────────────
   const _mountedAt = Date.now(); // used to synchronise accounts stagger with static stagger
   renderFolders();
   renderLabels();
+  renderUserLabels();
+  loadUserLabels();
+  loadCustomFolders();
   renderChips();
   renderSortBtn();
   renderAccounts();
   renderEmpty();
+
+  // "+" button next to the Dossiers section title — opens the
+  // folder-create modal. event.stopPropagation on the parent <button>
+  // markup prevents the section title from collapsing when clicking +.
+  $('#btn-add-folder')?.addEventListener('click', () => openFolderModal(null));
+
+  // "+" button next to the Étiquettes section title — opens the
+  // create modal. event.stopPropagation in the markup keeps the
+  // section from collapsing when the user just wants to add a
+  // label.
+  $('#btn-add-label')?.addEventListener('click', () => openLabelModal(null));
 
   // Collapsible sidebar sections — all open by default.
   // One-time migration: the old code force-set 'sb-folders' and 'sb-accounts'
@@ -2187,11 +4186,14 @@ export async function mountMailbox(host, _opts) {
     localStorage.removeItem('sb-accounts');
     localStorage.setItem('sb-open-default-v1', '1');
   }
-  initCollapsible($('#title-folders'), $('#wrap-folders'), 'sb-folders');
-  initCollapsible($('#title-labels'),  $('#wrap-labels'),  'sb-labels');
+  initCollapsible($('#title-folders'),     $('#wrap-folders'),     'sb-folders');
+  initCollapsible($('#title-labels'),      $('#wrap-labels'),      'sb-labels');
+  initCollapsible($('#title-userlabels'),  $('#wrap-userlabels'),  'sb-userlabels');
+
+  setupSidebarReorder();
 
   // Hide sidebar items immediately so they don't flash before the stagger fires.
-  host.querySelectorAll('.mb-side-head, .mb-cta, .mb-section-title, .mb-subsection-title, .mb-folder, .mb-label')
+  host.querySelectorAll('.mb-side-head, .mb-cta, .mb-section-title, .mb-subsection-title, .mb-folder, .mb-label, .mb-userlabel-empty')
     .forEach((el) => { el.style.opacity = '0'; });
 
   $('#btn-sync').addEventListener('click', triggerSync);
@@ -2206,7 +4208,7 @@ export async function mountMailbox(host, _opts) {
     const STEP = 28;
     let i = 0;
     host.querySelectorAll(
-      '.mb-side-head, .mb-cta, .mb-section-title, .mb-subsection-title, .mb-folder, .mb-label'
+      '.mb-side-head, .mb-cta, .mb-section-title, .mb-subsection-title, .mb-folder, .mb-label, .mb-userlabel-empty'
     ).forEach((el) => {
       el.style.opacity   = '0';
       el.style.animation = 'none';
@@ -2229,6 +4231,7 @@ export async function mountMailbox(host, _opts) {
     _teardownListObserver();
     if (syncTimer) clearInterval(syncTimer);
     if (refreshTimer) clearInterval(refreshTimer);
+    document.removeEventListener('visibilitychange', onVisibility);
     window.removeEventListener('app:key', onKey);
     document.removeEventListener('keydown', onEscape);
   };

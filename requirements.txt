@@ -19,6 +19,10 @@ keyring==25.5.0
 # /api/setup/* or destructive cleanup endpoints. See src/api.py.
 slowapi==0.1.9
 
+# Multipart form parsing. Required by FastAPI's `File` / `UploadFile`
+# helpers used for outbound-attachment uploads (POST /api/uploads).
+python-multipart==0.0.20
+
 # --- Desktop app (Windows) ---
 pywebview==5.3.2
 pystray==0.19.5

@@ -54,6 +54,7 @@
 </script>
 
 <link rel="stylesheet" href="/static/style.css" />
+<link rel="stylesheet" href="/static/rail-toast.css" />
 </head>
 <body class="font-sans bg-bg text-ink antialiased min-h-screen">
 
@@ -62,9 +63,6 @@
     <nav id="rail" class="rail" style="position:relative">
       <div id="rail-indicator" aria-hidden="true"></div>
       <div class="rail-top">
-        <a href="#/inbox" class="rail-logo" aria-label="Lull Mail">
-          <img src="/static/assets/lullmail-icon.svg" alt="Lull Mail" class="w-8 h-8 object-contain" />
-        </a>
         <a href="#/inbox" data-route="inbox" class="rail-btn"
            data-i18n-aria-label="rail.inbox" data-i18n-title="rail.inbox"
            aria-label="Boîte de réception" title="Boîte de réception">
@@ -93,18 +91,23 @@
           <i data-lucide="sun" class="w-5 h-5 only-light"></i>
           <i data-lucide="moon" class="w-5 h-5 only-dark"></i>
         </button>
-        <div class="rail-avatar" id="rail-avatar"
-             data-i18n-aria-label="rail.account"
-             aria-label="Compte actif">•</div>
+        <button id="cheat-toggle" class="rail-btn" aria-label="Raccourcis clavier" title="Raccourcis clavier (?)">
+          <i data-lucide="keyboard" class="w-5 h-5"></i>
+        </button>
+        <!-- RailToast slot — replaces the legacy rail-avatar. The placeholder
+             keeps the visual presence of the old avatar; an active toast
+             overlays it. -->
+        <div id="rail-toast-host" role="status" aria-live="polite">
+          <div class="rt-placeholder" aria-hidden="true">
+            <span class="loader"></span>
+          </div>
+        </div>
       </div>
     </nav>
 
     <!-- Page view (mailbox / dashboard) -->
     <main id="view" class="flex-1 min-w-0"></main>
   </div>
-
-  <!-- Toast container -->
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <!-- Unsubscribe confirm modal -->
   <div id="unsub-modal" class="unsub-modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="unsub-modal-title">
@@ -145,10 +148,6 @@
         <li><kbd>j</kbd> / <kbd>k</kbd><span data-i18n="shortcuts.next_prev">Mail suivant / précédent</span></li>
         <li><kbd>Enter</kbd><span data-i18n="shortcuts.open">Ouvrir le mail sélectionné</span></li>
         <li><kbd>e</kbd><span data-i18n="shortcuts.mark_read">Marquer comme lu</span></li>
-        <li><kbd>g</kbd> <kbd>i</kbd><span data-i18n="shortcuts.go_inbox">Boîte de réception</span></li>
-        <li><kbd>g</kbd> <kbd>d</kbd><span data-i18n="shortcuts.go_dashboard">Tableau de bord</span></li>
-        <li><kbd>g</kbd> <kbd>c</kbd><span data-i18n="shortcuts.go_cleanup">Nettoyage</span></li>
-        <li><kbd>c</kbd><span data-i18n="shortcuts.compose">Composer</span></li>
         <li><kbd>/</kbd><span data-i18n="shortcuts.search">Rechercher</span></li>
         <li><kbd>?</kbd><span data-i18n="shortcuts.help">Afficher cette aide</span></li>
       </ul>
@@ -157,6 +156,7 @@
 
   <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
   <script src="/static/i18n.js"></script>
+  <script type="module" src="/static/rail-toast.js"></script>
   <script type="module" src="/static/app.js"></script>
 </body>
 </html>

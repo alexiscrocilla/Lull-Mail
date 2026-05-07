@@ -129,15 +129,9 @@ export async function mountCleanup(host, _opts) {
     <div class="cln">
       <div class="cln-head">
         <div class="cln-head-titles">
-          <h1>Nettoyage</h1>
-          <div class="sub" id="cln-sub">Chargement…</div>
+          <h1>Nettoyage</h1><div class="sub" id="cln-sub">Chargement…</div>
         </div>
         <div class="cln-head-actions">
-          <button class="mb-cta" id="btn-cln-refresh"
-                  style="margin:0;padding:8px 14px;font-size:13px">
-            <i data-lucide="refresh-cw" class="w-4 h-4"></i>
-            <span>Actualiser</span>
-          </button>
         </div>
       </div>
 
@@ -156,6 +150,15 @@ export async function mountCleanup(host, _opts) {
       <section class="cln-pane" id="cln-pane">
         <!-- Pane content gets injected per-tab below -->
       </section>
+
+      <!-- Custom-rule side panel + overlay live at the .cln level
+           (NOT inside .cln-pane) so position:fixed actually anchors
+           to the viewport. .cln-pane has a fade-up animation whose
+           non-none transform creates a containing block for fixed
+           descendants — moving the panel outside is the only way to
+           keep it overlaying the head/tabs too. -->
+      <div class="cln-custom-panel-overlay" id="cln-custom-overlay"></div>
+      <div class="cln-custom-panel" id="cln-custom-panel" hidden></div>
     </div>
   `;
 
@@ -204,6 +207,12 @@ export async function mountCleanup(host, _opts) {
         return;
       }
       if (id === state.tab) return;
+      // Close the rule-edit side panel when leaving the Rules tab —
+      // it now lives at the .cln level (so position:fixed works) and
+      // would otherwise stay visible over an unrelated tab.
+      if (state.tab === 'rules' && state.customPanel) {
+        closeCustomPanel();
+      }
       state.tab = id;
       host.querySelectorAll('.cln-tab').forEach((b) => {
         const on = b.dataset.tab === id;
@@ -600,10 +609,6 @@ export async function mountCleanup(host, _opts) {
         </aside>
         <section class="cln-rules-detail" id="cln-rules-detail" aria-live="polite"></section>
       </div>
-      <!-- Overlay behind the custom panel -->
-      <div class="cln-custom-panel-overlay" id="cln-custom-overlay"></div>
-      <!-- Custom rule side panel (template picker / edit form) -->
-      <div class="cln-custom-panel" id="cln-custom-panel" hidden></div>
     `;
     renderRulesRail();
     if (state.selectedRule) openRuleDetail(state.selectedRule);
@@ -1940,24 +1945,29 @@ export async function mountCleanup(host, _opts) {
     );
 
     let banner = '';
-    if (!lastBackfill && missN > 0) {
+    if (!lastBackfill && missN > 0 && haveN === 0 && linkN === 0) {
       banner = `
         <div class="cln-unsub-banner">
           <i data-lucide="info" class="w-4 h-4"></i>
-          <span>Aucun en-tête de désabonnement n'a encore été extrait. Cliquez sur <strong>Réanalyser les en-têtes</strong> pour en extraire (~50 ms par mail, fait en une passe).</span>
+          <span>Les liens de désabonnement n'ont pas encore été détectés dans tes mails. Lance une analyse pour les retrouver et activer le désabonnement en un clic.</span>
         </div>`;
     }
+
+    const btnLabel =
+      missN === 0   ? 'À jour' :
+      !lastBackfill ? 'Analyser les liens' :
+                      'Actualiser';
 
     el.innerHTML = `
       ${banner}
       <div class="cln-unsub-status-row">
         <span class="cln-unsub-stat"><strong>${linkN}</strong> expéditeur${linkN > 1 ? 's' : ''} avec lien</span>
         <span class="cln-unsub-stat-muted">·</span>
-        <span class="cln-unsub-stat"><strong>${haveN}</strong> mails analysés</span>
-        ${missN > 0 ? `<span class="cln-unsub-stat-muted">·</span><span class="cln-unsub-stat cln-unsub-stat-warn"><strong>${missN}</strong> sans en-tête capturé</span>` : ''}
+        <span class="cln-unsub-stat"><strong>${haveN}</strong> mail${haveN > 1 ? 's' : ''} inspecté${haveN > 1 ? 's' : ''}</span>
+        ${missN > 0 ? `<span class="cln-unsub-stat-muted">·</span><span class="cln-unsub-stat cln-unsub-stat-warn"><strong>${missN}</strong> mail${missN > 1 ? 's' : ''} non analysé${missN > 1 ? 's' : ''}</span>` : ''}
         <button class="cln-unsub-backfill" id="btn-backfill" ${missN === 0 ? 'disabled' : ''} style="margin-left:auto">
           <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
-          ${missN === 0 ? 'En-têtes à jour' : 'Réanalyser les en-têtes'}
+          ${btnLabel}
         </button>
       </div>
     `;
@@ -2208,12 +2218,6 @@ export async function mountCleanup(host, _opts) {
       : '';
 
     const body = `
-      ${explainer ? `
-        <div class="cln-unsub-explainer">
-          <i data-lucide="${s.has_one_click ? 'zap' : s.http_url ? 'globe' : 'mail'}" class="w-4 h-4"></i>
-          <span>${explainer}</span>
-        </div>` : ''}
-
       <div class="cln-unsub-kpis">
         <div class="cln-unsub-kpi">
           <span class="cln-unsub-kpi-val">${s.total}</span>
@@ -2637,8 +2641,6 @@ export async function mountCleanup(host, _opts) {
   }
 
   // ── Wire-up ──────────────────────────────────────────────
-  $('#btn-cln-refresh').addEventListener('click', () => loadSenders());
-
   // Honour ?tab= deep-link (e.g. #/cleanup?tab=unsubscribe from the dashboard)
   const hashParams = new URLSearchParams(location.hash.includes('?') ? location.hash.split('?')[1] : '');
   const deepTab = hashParams.get('tab');
