@@ -64,8 +64,8 @@ months. Spots the unsubscribe link in one click. Suggests automatic
 rules: move, mark read, delete. Nothing breaks.
 
 **Lives on your machine.** No cloud. No €12/month SaaS. No account
-to create with us. Lull is a `.exe` you run on your PC that talks
-straight to your IMAP servers.
+to create with us. Lull is a native app you run on your machine that
+talks straight to your IMAP servers.
 
 ### What Lull is NOT
 
@@ -75,7 +75,7 @@ straight to your IMAP servers.
   Gmail, Outlook/Microsoft 365, iCloud, Yahoo, ProtonMail
   (via Bridge), Orange, OVH, Free, or any IMAP server.
 - **Not a cloud.** Your credentials never leave your machine. The
-  database lives in `%APPDATA%`. Want to wipe everything? One button.
+  database lives locally on your drive. Want to wipe everything? One button.
 - **Not a product that watches you.** We don't sell your emails.
   We don't index them to target ads. We do nothing except what's
   written on the box.
@@ -93,7 +93,7 @@ straight to your IMAP servers.
 
 ### Two-minute setup
 
-1. Download `LullMail-Setup.exe`.
+1. Download the installer for your platform (Windows / macOS / Linux).
 2. Connect your mail accounts (guided wizard).
 3. Paste the notification topic into the ntfy app on your phone.
 
@@ -105,14 +105,13 @@ That's exactly the point.
 ## Short pitch (App Store, Product Hunt, meta description)
 
 > **Lull** — An inbox that only rings for what genuinely matters.
-> Runs 100% locally on your PC, plugged into your Gmail, Outlook,
-> iCloud or IMAP accounts. You get a notification when an urgent
-> email arrives. For everything else, silence.
+> Runs 100% locally on your machine (Windows, macOS, Linux), plugged
+> into your Gmail, Outlook, iCloud or IMAP accounts. You get a
+> notification when an urgent email arrives. For everything else, silence.
 
 **160 characters:**
 > Lull reads your emails, stays silent on the noise, and only
-> notifies you when something matters. Local on your PC. Your data
-> stays yours.
+> notifies you when something matters. Runs locally. Your data stays yours.
 
 ---
 

@@ -33,7 +33,7 @@ SMTP yet).
 
 **Library options.**
 - `python-gnupg` — wraps the GnuPG CLI. Mature, but adds an
-  external runtime dep (gpg.exe on Windows) and ships a fairly
+  external runtime dep (`gpg` / `gpg.exe`) and ships a fairly
   large binary distribution.
 - `PGPy` — pure Python implementation. No external deps, smaller
   PyInstaller bundle, slower decryption on large mails.

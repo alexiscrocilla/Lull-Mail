@@ -2,7 +2,7 @@
 YAML config loader.
 
 Resolves paths via src.paths so the same code works in dev (project
-root) and packaged (.exe → %APPDATA%\\LullMail).
+root) and packaged (frozen build → OS per-user data directory).
 
 The module is intentionally lenient at import time so the API can boot
 into "setup mode" with no config at all — the wizard then writes the

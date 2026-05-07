@@ -17,16 +17,16 @@ Three modes:
   • Override — set the env var LULLMAIL_DATA to force a specific dir.
     Useful for tests and for users who want their config on a USB stick.
 
-Two migrations run at import time (Windows only) so the rest of the
-codebase only ever sees the canonical data layout:
+Two migrations may run at import time so the rest of the codebase only
+ever sees the canonical data layout:
 
-  1. Rename %APPDATA%\\AgenticMail → %APPDATA%\\LullMail when the app was
-     previously installed under the old name. Keeps existing accounts,
-     mail history, attachments, and rules.
+  1. (Windows only) Rename %APPDATA%\\AgenticMail → %APPDATA%\\LullMail
+     when the app was previously installed under the old name. Keeps
+     existing accounts, mail history, attachments, and rules.
 
   2. The first time a frozen build runs and finds no config in the data
      dir, look for a legacy config.yaml + data/ next to the exe (or one
-     level up, to handle the dist\\LullMail\\ case). If found, copy them
+     level up, to handle the dist/LullMail/ case). If found, copy them
      so the user keeps their setup.
 
 Migration #2 is skipped when:

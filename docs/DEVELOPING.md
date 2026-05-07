@@ -14,7 +14,9 @@ Guide to clone, run in dev mode, build the app, and produce release packages.
 - **Linux** — to produce the `.tar.gz`. Requires `libwebkit2gtk-4.1-dev`
   (or `4.0` on older distros): `sudo apt install libwebkit2gtk-4.1-dev`.
 
-## All commands go through `dev.bat`
+## Dev commands
+
+**Windows** — all commands go through `dev.bat`:
 
 ```cmd
 .\dev.bat install        :: create .venv and install deps (run once)
@@ -27,6 +29,13 @@ Guide to clone, run in dev mode, build the app, and produce release packages.
 `dev.bat` is a thin dispatcher that routes to the real scripts in
 `scripts/`. It's the single entry point at the root — same role as
 a `Makefile` or `npm run` in other ecosystems.
+
+**macOS / Linux** — use the shell script directly:
+
+```bash
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+bash scripts/build.sh    # produces dist/LullMail/ (and dist/LullMail.app on macOS)
+```
 
 ## Running the test suite
 
@@ -41,7 +50,7 @@ sandbox iframe), the anti-phishing analyser (`src/safe_link.py`),
 the OS-keyring round-trip, the attachment-security helpers, the
 SPF/DKIM/DMARC parser, and the Pydantic config schema. Tests use a
 per-test tempdir + an in-memory keyring backend so they never touch
-your real `%APPDATA%\LullMail\` or your Credential Manager.
+your real OS data directory or your OS keyring.
 
 CI runs the same `pytest -q` on every push to `develop` / `main`
 and on every PR via [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
@@ -59,8 +68,8 @@ is loud enough to catch in review.
 server is responding. The dashboard is identical to the native app's.
 
 In dev mode, `config.yaml` and `data/` live **at the project root**
-(not in `%APPDATA%`). Handy to test with a throwaway config without
-polluting your installed Lull Mail.
+(not in the OS data directory). Handy to test with a throwaway config
+without polluting your installed Lull Mail.
 
 ## Building on Windows
 

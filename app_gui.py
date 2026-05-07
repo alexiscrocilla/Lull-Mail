@@ -1,12 +1,13 @@
 """
-Lull Mail — entry point for the native Windows desktop app.
+Lull Mail — entry point for the native desktop app (Windows, macOS, Linux).
 
 Runs the FastAPI server in a background thread and presents the dashboard
-in a real OS window via pywebview (Edge WebView2 on Windows). A system tray
-icon keeps the email polling alive when the window is closed.
+in a real OS window via pywebview (Edge WebView2 on Windows, WebKit on
+macOS, WebKit2GTK on Linux). A system tray icon keeps the email polling
+alive when the window is closed.
 
-This file replaces start.bat as the recommended way to launch the app and
-is the entry point bundled into LullMail.exe by PyInstaller.
+This file is the entry point bundled by PyInstaller into the platform
+executable (LullMail.exe on Windows, LullMail on macOS/Linux).
 """
 
 from __future__ import annotations

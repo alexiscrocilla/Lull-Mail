@@ -17,9 +17,6 @@ until you have time. Or quietly disappears.
 [![Latest release](https://img.shields.io/github/v/release/alexiscrocilla/Lull-Mail?label=download)](../../releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/alexiscrocilla/Lull-Mail/total)](../../releases)
 
-**Note**: Lull Mail runs on Windows 10/11. The Python code is
-cross-platform — only the desktop packaging is Windows-only for now.
-
 <br clear="left">
 
 
@@ -27,16 +24,22 @@ cross-platform — only the desktop packaging is Windows-only for now.
 
 ## Download
 
-Head to the **[Releases](../../releases/latest)** page and grab
-`LullMail-Setup-X.Y.Z.exe`. Double-click to install.
+Head to the **[Releases](../../releases/latest)** page and grab the installer for your platform:
 
-> ⚠️ **First launch & SmartScreen.** The installer is not yet
+| Platform | File | Install |
+|---|---|---|
+| Windows 10/11 | `LullMail-Setup-X.Y.Z.exe` | Double-click to install |
+| macOS 12+ | `LullMail-X.Y.Z.dmg` | Open, drag to Applications |
+| Linux | `LullMail-X.Y.Z.tar.gz` | Extract and run `LullMail/LullMail` |
+
+> ⚠️ **Windows — SmartScreen warning.** The installer is not yet
 > code-signed. Windows will show *"Windows protected your PC"* —
-> click **More info → Run anyway**. This is expected for now;
-> code signing will come once the project has built up some track
-> record.
+> click **More info → Run anyway**. This is expected for now.
 
-The installer drops the app in `%LOCALAPPDATA%\Programs\LullMail`
+> ⚠️ **macOS — Gatekeeper warning.** The app is not yet notarised.
+> Right-click → **Open** on first launch to bypass the warning.
+
+The Windows installer drops the app in `%LOCALAPPDATA%\Programs\LullMail`
 (no admin prompt). It creates a desktop shortcut, a Start Menu entry,
 and registers the app in *Installed apps* for clean uninstallation.
 
@@ -61,7 +64,7 @@ and registers the app in *Installed apps* for clean uninstallation.
   ProtonMail (via Bridge), and any standard IMAP server.
 
 - **Lives on your machine.** No cloud, no SaaS, no account to create
-  with us. It's a `.exe` that talks straight to your IMAP servers.
+  with us. It's a native desktop app that talks straight to your IMAP servers.
 
 ---
 
@@ -108,8 +111,8 @@ your machine, stays on your machine.**
 |---|---|
 | IMAP credentials (app password) | OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service). `config.yaml` only holds an opaque `keyring:user@host` reference. |
 | OpenAI API key | OS keyring (same as above). |
-| Downloaded emails, summaries, scores | `%APPDATA%\LullMail\data\mail.db` (local SQLite) |
-| Attachments | `%APPDATA%\LullMail\data\attachments\` (UUID filenames, owner-only on POSIX, integrity-checked on every download) |
+| Downloaded emails, summaries, scores | Local SQLite — Windows: `%APPDATA%\LullMail\data\mail.db` · macOS: `~/Library/Application Support/LullMail/data/mail.db` · Linux: `~/.local/share/LullMail/data/mail.db` |
+| Attachments | Same data directory, `data/attachments/` (UUID filenames, owner-only permissions, integrity-checked on every download) |
 
 **The only outbound flows**:
 
@@ -153,21 +156,19 @@ analysis — those are network calls.
 
 **Can I drop it overnight?**
 Yes. Lull Mail doesn't write to your servers (read-only by default)
-and registers nowhere. Uninstall it, delete `%APPDATA%\LullMail`,
-no trace left.
+and registers nowhere. Uninstall the app and delete your data directory
+(Windows: `%APPDATA%\LullMail`, macOS: `~/Library/Application Support/LullMail`,
+Linux: `~/.local/share/LullMail`) — no trace left.
 
-**Why Windows only?**
-For now packaging and testing are Windows-first. The Python code is
-cross-platform and a macOS / Linux build is doable (see
-[`docs/DEVELOPING.md`](docs/DEVELOPING.md) if you want to try).
+**Which platforms?**
+Windows 10/11, macOS 12+, and Linux. Download the right installer from
+the [Releases](../../releases/latest) page.
 
 **Which languages?**
-Lull Mail follows the Windows display language: French if your system
-is French, English otherwise. The setup wizard and the navigation
-chrome are fully translated. The deeper screens (inbox, cleanup,
-settings) are still French in v0.3.0 — full English translation is
-slated for v0.4.0. To force a language manually, append `?lang=en` or
-`?lang=fr` to the URL.
+Lull Mail detects your browser language: French if it starts with `fr`,
+English otherwise. The setup wizard and the navigation chrome are fully
+translated. To force a language manually, append `?lang=en` or `?lang=fr`
+to the URL.
 
 **Are my IMAP passwords stored in plain text?**
 No. They live in the OS keyring (Windows Credential Manager / macOS
@@ -188,7 +189,7 @@ account password if anything goes wrong.
 ## For developers
 
 See [`docs/DEVELOPING.md`](docs/DEVELOPING.md) — local setup,
-developer mode (console + browser), exe build, installer build,
+developer mode (console + browser), build instructions for all platforms,
 architecture, environment variables.
 
 The product tone and positioning is documented in
