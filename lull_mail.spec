@@ -15,11 +15,28 @@ is produced in addition to the onedir tree, ready to be wrapped in a .dmg.
 """
 
 import os as _os
+import re as _re
 import sys as _sys
 
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 block_cipher = None
+
+
+def _app_bundle_version() -> str:
+    """Match scripts/build.sh: env override, else src/_version.py, else fallback."""
+    ver = _os.environ.get("LULLMAIL_VERSION", "").strip()
+    if not ver:
+        vfile = _os.path.join(_os.path.dirname(_os.path.abspath(SPEC)), "src", "_version.py")
+        if _os.path.isfile(vfile):
+            with open(vfile, encoding="utf-8") as _vf:
+                _m = _re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', _vf.read())
+            if _m:
+                ver = _m.group(1)
+    if not ver:
+        ver = "0.0.0"
+    # CFBundleShortVersionString should be a numeric major.minor.patch (no prerelease tag).
+    return ver.split("-")[0].split("+")[0] or "0.0.0"
 
 datas = []
 datas += [("frontend", "frontend")]
@@ -43,6 +60,7 @@ _pystray_backends: dict = {
 }
 hiddenimports += _pystray_backends.get(_sys.platform, ["pystray._xorg"])
 hiddenimports += [
+    "src._version",
     "PIL._tkinter_finder",
     "uvicorn.logging",
     "uvicorn.loops",
@@ -120,9 +138,14 @@ coll = COLLECT(
 if _sys.platform == "darwin":
     _icns = _os.path.join("assets", "lull_mail.icns")
     _bundle_extra = {"icon": _icns} if _os.path.isfile(_icns) else {}
+    _ver = _app_bundle_version()
     app = BUNDLE(
         coll,
         name="LullMail.app",
         bundle_identifier="fr.lullmail.app",
+        info_plist={
+            "CFBundleShortVersionString": _ver,
+            "CFBundleVersion": _ver,
+        },
         **_bundle_extra,
     )
