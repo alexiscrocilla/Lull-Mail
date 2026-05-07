@@ -149,13 +149,13 @@ jobs:
           .venv/bin/pip install -r requirements.txt
           .venv/bin/pip install pyinstaller==6.11.1
 
-      # Generate a proper macOS .icns from the PNG source using sips (built-in)
-      # and iconutil (built-in). No external dependencies needed.
+      # Generate .icns from the 1024px light source using sips + iconutil (both
+      # built-in on macOS — no external dependencies needed).
       - name: Generate .icns icon
         run: |
-          SRC="frontend/assets/lullmail-icon.png"
+          SRC="assets/lull_mail_light_1024.png"
           ICONSET="assets/lull_mail.iconset"
-          mkdir -p "$ICONSET" assets
+          mkdir -p "$ICONSET"
           for SIZE in 16 32 64 128 256 512; do
             sips -z $SIZE $SIZE "$SRC" --out "$ICONSET/icon_${SIZE}x${SIZE}.png"            > /dev/null
             sips -z $((SIZE*2)) $((SIZE*2)) "$SRC" --out "$ICONSET/icon_${SIZE}x${SIZE}@2x.png" > /dev/null
