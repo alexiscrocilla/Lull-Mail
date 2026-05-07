@@ -386,7 +386,7 @@ def generate_draft(int_id: int):
     flags too so the frontend can update its local cache without a
     follow-up GET.
     """
-    from src.ai_processor import enrich_draft
+    from src.ai_processor import enrich_draft, init_client
     em = db.get_email_by_id(int_id)
     if not em:
         raise HTTPException(404, "Email introuvable")
@@ -399,7 +399,13 @@ def generate_draft(int_id: int):
             "draft_response": em["draft_response"],
             "needs_reply": True,
         }
+    if not cfg.ai_enabled():
+        raise HTTPException(409, "IA désactivée. Activez-la dans Réglages > Intelligence artificielle pour générer des brouillons.")
     conf = cfg.get()
+    # Lazy init: covers the path where the user just toggled AI on via
+    # Settings. The startup-time init in lifecycle.py was skipped (key
+    # was empty back then) and the next sync hasn't run yet.
+    init_client(conf["openai"]["api_key"])
     model = conf.get("openai", {}).get("model", "gpt-4o-mini")
     result = enrich_draft(em, dict(em), model=model)
     draft = result.get("draft_response") or ""
@@ -414,11 +420,14 @@ def generate_draft(int_id: int):
 
 @app.post("/api/emails/{int_id}/reanalyze")
 def reanalyze_email(int_id: int):
-    from src.ai_processor import process_email
+    from src.ai_processor import process_email, init_client
     em = db.get_email_by_id(int_id)
     if not em:
         raise HTTPException(404, "Email introuvable")
+    if not cfg.ai_enabled():
+        raise HTTPException(409, "IA désactivée. Activez-la dans Réglages > Intelligence artificielle pour ré-analyser cet email.")
     conf = cfg.get()
+    init_client(conf["openai"]["api_key"])
     model = conf.get("openai", {}).get("model", "gpt-4o-mini")
     result = process_email(em, model=model)
     if not result:

@@ -1297,7 +1297,14 @@ export async function mountMailbox(host, _opts) {
 
     const chevron  = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
     const sortIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="m21 8-4-4-4 4"/><path d="M17 4v16"/></svg>`;
-    const curSort  = SORT_OPTIONS.find((o) => o.value === state.sortMode) || SORT_OPTIONS[0];
+    // In no-AI mode every email gets the neutral score=5, so "Par
+    // importance" is meaningless — drop it from the menu and reset the
+    // current sort if it was selected.
+    const visibleOptions = window.aiEnabled
+      ? SORT_OPTIONS
+      : SORT_OPTIONS.filter((o) => o.value !== 'score');
+    if (!window.aiEnabled && state.sortMode === 'score') state.sortMode = 'date-desc';
+    const curSort  = visibleOptions.find((o) => o.value === state.sortMode) || visibleOptions[0];
 
     const wrap = $('#sort-select-wrap');
     wrap.innerHTML = `
@@ -1305,7 +1312,7 @@ export async function mountMailbox(host, _opts) {
         ${sortIcon}<span>${escapeHtml(curSort.short)}</span>${chevron}
       </button>
       <div class="sort-select-drop" id="sort-select-drop" role="listbox" aria-label="Trier par">
-        ${SORT_OPTIONS.map((opt) => `
+        ${visibleOptions.map((opt) => `
           <div class="acc-select-opt ${state.sortMode === opt.value ? 'active' : ''}"
                data-sort="${escapeHtml(opt.value)}" role="option"
                aria-selected="${state.sortMode === opt.value}">
@@ -1565,8 +1572,12 @@ export async function mountMailbox(host, _opts) {
     const col = avatarColor(sEmail || sName);
     const logoImg = avatarImgHtml(sEmail);
     const isUnread = !em.is_read;
-    const score = em.importance_score || 0;
-    const showSummary = em.summary && em.summary.length > 0;
+    // In no-AI mode every email gets a neutral score=5 fallback; we
+    // suppress score/summary/draft hints entirely so the UI doesn't
+    // pretend to be intelligent when it isn't.
+    const aiOn = !!window.aiEnabled;
+    const score = aiOn ? (em.importance_score || 0) : 0;
+    const showSummary = aiOn && em.summary && em.summary.length > 0;
     const isSelected = state.selectedId === em.int_id;
     const isChecked = state.selectedIds.has(em.int_id);
 
@@ -1613,8 +1624,8 @@ export async function mountMailbox(host, _opts) {
                 if (a.suspicious) return `<i data-lucide="paperclip" class="w-3.5 h-3.5 mb-att-warn" title="Pièce jointe à vérifier"></i>`;
                 return `<i data-lucide="paperclip" class="w-3.5 h-3.5 mb-att-icon" title="${a.total} pièce${a.total>1?'s':''} jointe${a.total>1?'s':''}"></i>`;
               })()}
-              ${em.needs_reply ? `<i data-lucide="reply" class="w-3.5 h-3.5 mb-reply-inline" title="Réponse attendue"></i>` : ''}
-              ${em.draft_response ? `<i data-lucide="pencil-line" class="w-3.5 h-3.5 mb-draft-inline" title="Brouillon IA prêt"></i>` : ''}
+              ${aiOn && em.needs_reply ? `<i data-lucide="reply" class="w-3.5 h-3.5 mb-reply-inline" title="Réponse attendue"></i>` : ''}
+              ${aiOn && em.draft_response ? `<i data-lucide="pencil-line" class="w-3.5 h-3.5 mb-draft-inline" title="Brouillon IA prêt"></i>` : ''}
             </div>
             ${em.category && em.category !== 'pending' ? `<i data-lucide="${CATEGORY_ICON[em.category] || 'tag'}" class="mb-cat-icon" style="color:${CATEGORY_COLOR[em.category] || 'var(--muted-2)'}" title="${escapeHtml(CATEGORY_LABEL[em.category] || em.category)}"></i>` : ''}
             <span class="mb-date">${escapeHtml(shortDate(em.date_received))}</span>
@@ -2362,7 +2373,8 @@ export async function mountMailbox(host, _opts) {
     const col = avatarColor(sEmail || sName);
     const logoImg = avatarImgHtml(sEmail, 36);
 
-    const aiBox = em.summary ? `
+    const aiOn = !!window.aiEnabled;
+    const aiBox = aiOn && em.summary ? `
       <div class="mb-ai-box">
         <div class="ai-body">
           <div class="ai-title">
@@ -2476,10 +2488,12 @@ export async function mountMailbox(host, _opts) {
                 <i data-lucide="trash-2" class="w-4 h-4"></i>
               </button>
               <span class="mb-thread-actions-sep" aria-hidden="true"></span>
-              <!-- Group 2 — engagement : analyser IA / répondre -->
-              <button class="read-action-btn read-action-btn-ai ${em.summary ? 'has-analysis' : ''}" id="btn-analyze" title="${em.summary ? 'Ré-analyser avec l\'IA' : 'Analyser avec l\'IA'}">
+              <!-- Group 2 — engagement : analyser IA / répondre.
+                   The analyse-IA button is hidden in no-AI mode — clicking
+                   it would just hit the 409 from /reanalyze. -->
+              ${aiOn ? `<button class="read-action-btn read-action-btn-ai ${em.summary ? 'has-analysis' : ''}" id="btn-analyze" title="${em.summary ? 'Ré-analyser avec l\'IA' : 'Analyser avec l\'IA'}">
                 <i data-lucide="sparkles" class="w-4 h-4"></i>
-              </button>
+              </button>` : ''}
               <button class="read-action-btn" id="btn-reply-toggle" title="Répondre">
                 <i data-lucide="reply" class="w-4 h-4"></i>
               </button>
@@ -2524,10 +2538,10 @@ export async function mountMailbox(host, _opts) {
               <button class="icon-btn" id="btn-attach-image" title="Insérer une image" aria-label="Insérer une image"><i data-lucide="image" class="w-4 h-4"></i></button>
             </div>
             <div style="display:flex;gap:8px;align-items:center;margin-left:auto">
-              <button class="mb-ai-draft-btn" id="btn-ai-draft" title="Suggérer une réponse avec l'IA">
+              ${aiOn ? `<button class="mb-ai-draft-btn" id="btn-ai-draft" title="Suggérer une réponse avec l'IA">
                 <i data-lucide="sparkles" class="w-4 h-4"></i>
                 Brouillon IA
-              </button>
+              </button>` : ''}
               <button class="send" id="btn-composer-send">
                 <i data-lucide="send" class="w-4 h-4"></i>
                 Envoyer

@@ -134,6 +134,19 @@ async function saveOpenAIAndNext() {
   }
 }
 
+// "Utiliser sans IA" — persist an empty key so the rest of the wizard
+// proceeds in no-AI mode. The user can still flip AI on later from
+// Settings → Intelligence artificielle.
+async function skipOpenAIAndNext() {
+  const model = document.getElementById('openai-model').value || 'gpt-4o-mini';
+  try {
+    await api('POST', '/api/setup/openai', { api_key: '', model });
+    goToStep(2);
+  } catch (e) {
+    toast(window.t('ob.toast.error', { error: e.message }), 'err');
+  }
+}
+
 // ── Step 2 — Accounts ────────────────────────────────────────────────────────
 // Returns the localised display name for a provider, falling back to
 // whatever the backend sent if no override is registered.

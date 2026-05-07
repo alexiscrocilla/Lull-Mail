@@ -63,7 +63,7 @@ const STRINGS = {
     'ob.subtitle': 'Configurons votre boîte intelligente — quelques minutes suffisent.',
 
     'ob.step1.title': 'Bienvenue',
-    'ob.step1.desc': 'Lull Mail trie, résume et priorise vos emails grâce à OpenAI. On commence par votre clé API.',
+    'ob.step1.desc': 'Lull Mail trie, résume et priorise vos emails grâce à OpenAI. Saisissez votre clé API pour activer l\'IA, ou continuez sans IA pour un tri basique.',
     'ob.step1.key_label': 'Clé API OpenAI',
     'ob.step1.no_key_prefix': 'Pas encore de clé ?',
     'ob.step1.no_key_link': 'Créez-en une ici',
@@ -73,6 +73,8 @@ const STRINGS = {
     'ob.step1.model_4o': 'gpt-4o — plus précis, plus cher',
     'ob.step1.model_4o_short': 'plus précis, plus cher',
     'ob.step1.cta': 'Continuer',
+    'ob.step1.skip_cta': 'Utiliser sans IA',
+    'ob.step1.skip_hint': 'Pas de clé ? Vous pouvez utiliser Lull Mail sans IA — le tri restera basique mais fonctionnel. Vous pourrez activer l\'IA plus tard depuis les Réglages.',
 
     'ob.step2.title': 'Vos comptes email',
     'ob.step2.desc': "Ajoutez au moins un compte. Vous pouvez en ajouter d'autres plus tard depuis les réglages.",
@@ -210,7 +212,7 @@ const STRINGS = {
     'ob.subtitle': "Let's set up your inbox — a few minutes is enough.",
 
     'ob.step1.title': 'Welcome',
-    'ob.step1.desc': 'Lull Mail sorts, summarises and prioritises your emails using OpenAI. We start with your API key.',
+    'ob.step1.desc': 'Lull Mail sorts, summarises and prioritises your emails using OpenAI. Enter your API key to enable AI, or continue without AI for basic sorting.',
     'ob.step1.key_label': 'OpenAI API key',
     'ob.step1.no_key_prefix': "Don't have a key yet?",
     'ob.step1.no_key_link': 'Create one here',
@@ -220,6 +222,8 @@ const STRINGS = {
     'ob.step1.model_4o': 'gpt-4o — more accurate, more expensive',
     'ob.step1.model_4o_short': 'more accurate, more expensive',
     'ob.step1.cta': 'Continue',
+    'ob.step1.skip_cta': 'Use without AI',
+    'ob.step1.skip_hint': 'No key? You can use Lull Mail without AI — sorting will be basic but functional. You can enable AI later from Settings.',
 
     'ob.step2.title': 'Your email accounts',
     'ob.step2.desc': 'Add at least one account. You can add more later from settings.',

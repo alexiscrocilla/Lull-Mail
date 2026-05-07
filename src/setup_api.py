@@ -232,6 +232,9 @@ SMTP_DEFAULTS: Dict[str, Dict[str, Any]] = {
 
 
 class OpenAIPayload(BaseModel):
+    # An empty `api_key` is now a valid signal: "disable AI". The endpoint
+    # detects this case and purges the OS keyring entry so a wiped key
+    # doesn't linger. `MASK` still means "keep the existing value".
     api_key: str
     model: str = "gpt-4o-mini"
 
@@ -397,7 +400,9 @@ def setup_status() -> Dict[str, Any]:
 @router.get("/config")
 def get_config() -> Dict[str, Any]:
     data = _load_or_default()
-    # Mask secrets before returning.
+    # Mask the OpenAI key only when one is configured. An empty string
+    # is the explicit "no-AI" signal — leaking it as MASK would make the
+    # frontend believe a key exists and render the form accordingly.
     if data.get("openai") and data["openai"].get("api_key"):
         data["openai"] = {**data["openai"], "api_key": MASK}
 
@@ -432,18 +437,29 @@ def list_providers() -> List[Dict[str, Any]]:
 def save_openai(payload: OpenAIPayload) -> Dict[str, Any]:
     data = _load_or_default()
     existing_key = (data.get("openai") or {}).get("api_key", "")
-    new_key = _unmask_password(payload.api_key, existing_key)
-    if not new_key:
-        raise HTTPException(400, "Clé API OpenAI requise.")
-    # If new_key is already a sentinel (came from existing_key via MASK
-    # — user kept the saved key), we write it back unchanged. If it's a
-    # fresh user input, validate the format and push it into the
-    # keyring before storing the sentinel in YAML.
     from src import secrets_store
-    if not secrets_store.is_sentinel(new_key):
-        if not (new_key.startswith("sk-") or new_key.startswith("sk_")):
+
+    # Three intents: keep / disable / change. We resolve them in order
+    # because they're mutually exclusive.
+    if payload.api_key == MASK:
+        # "Keep" — re-write the existing sentinel/value as-is.
+        new_key = existing_key
+    elif payload.api_key == "":
+        # "Disable" — drop the keyring entry and persist an empty key.
+        # The runtime treats empty key == no-AI mode (cfg.ai_enabled()).
+        if existing_key:
+            try:
+                secrets_store.delete_openai()
+            except Exception:
+                logger.exception("delete_openai (toggle off) failed")
+        new_key = ""
+    else:
+        # "Change" / "Set" — fresh user input. Validate format then push
+        # into the keyring and replace with the sentinel.
+        if not (payload.api_key.startswith("sk-") or payload.api_key.startswith("sk_")):
             raise HTTPException(400, "Format de clé OpenAI inattendu (devrait commencer par sk-).")
-        new_key = _store_openai_secret(new_key)
+        new_key = _store_openai_secret(payload.api_key)
+
     data["openai"] = {"api_key": new_key, "model": payload.model or "gpt-4o-mini"}
     _persist(data)
     return {"ok": True}

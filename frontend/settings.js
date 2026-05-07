@@ -107,8 +107,15 @@ export async function mountSettings(host, opts = {}) {
             <span style="display:flex;align-items:center;gap:8px">
               <i data-lucide="sparkles" class="w-4 h-4"></i>Intelligence artificielle
             </span>
+            <label class="set-toggle">
+              <input id="ai-enabled" type="checkbox" />
+              <span>Activer l'IA</span>
+            </label>
           </h3>
-          <div style="display:flex;align-items:center;gap:16px">
+          <div id="ai-disabled-msg" class="sub hidden" style="margin-top:8px">
+            L'IA est désactivée. Activez-la pour bénéficier du tri intelligent, des résumés et des brouillons générés.
+          </div>
+          <div id="ai-fields" style="display:flex;align-items:center;gap:16px;margin-top:10px">
             <div class="set-grid" style="flex:1">
               <label class="set-field">
                 <span class="set-label">Clé d'accès OpenAI</span>
@@ -370,6 +377,9 @@ export async function mountSettings(host, opts = {}) {
     accList:  host.querySelector('#accounts-list'),
     openaiKey:   host.querySelector('#openai-key'),
     openaiModel: host.querySelector('#openai-model'),
+    aiEnabled:   host.querySelector('#ai-enabled'),
+    aiFields:    host.querySelector('#ai-fields'),
+    aiDisabledMsg: host.querySelector('#ai-disabled-msg'),
     ntfyEnabled: host.querySelector('#ntfy-enabled'),
     ntfyTopic:   host.querySelector('#ntfy-topic'),
     ntfyMin:     host.querySelector('#ntfy-min'),
@@ -554,8 +564,14 @@ export async function mountSettings(host, opts = {}) {
 
     // OpenAI
     const oa = state.config.openai || {};
+    // The backend returns "***" when a key is set, "" when AI is off.
+    // Use that to drive the section's disabled/enabled visual state.
+    const aiOn = !!oa.api_key;
+    els.aiEnabled.checked = aiOn;
+    els.aiFields.classList.toggle('hidden', !aiOn);
+    els.aiDisabledMsg.classList.toggle('hidden', aiOn);
     els.openaiKey.value = '';
-    els.openaiKey.placeholder = oa.api_key ? '*** (laisser pour conserver)' : 'sk-…';
+    els.openaiKey.placeholder = aiOn ? '*** (laisser pour conserver)' : 'sk-…';
     els.openaiModel.value = oa.model || 'gpt-4o-mini';
     const _mWrap = host.querySelector('#openai-model-wrap');
     if (_mWrap && _mWrap._sync) _mWrap._sync(els.openaiModel.value);
@@ -592,11 +608,27 @@ export async function mountSettings(host, opts = {}) {
   async function saveOpenAI() {
     const key = els.openaiKey.value.trim();
     const model = els.openaiModel.value;
+    const enabled = els.aiEnabled.checked;
+    // Three cases drive the api_key payload:
+    //   • toggle off   → "" (backend purges keyring, no-AI mode)
+    //   • toggle on, new key typed → that key
+    //   • toggle on, field empty   → MASK (keep existing)
+    let apiKey;
+    if (!enabled) {
+      apiKey = '';
+    } else if (key) {
+      apiKey = key;
+    } else {
+      apiKey = MASK;
+    }
     setBusy(els.btnSaveOA, true, 'Enregistrement…');
     try {
-      await api('POST', '/api/setup/openai', { api_key: key || MASK, model });
-      window.toast?.('Clé enregistrée');
+      await api('POST', '/api/setup/openai', { api_key: apiKey, model });
+      window.toast?.(enabled ? 'IA activée' : 'IA désactivée');
       els.openaiKey.value = '';
+      // Notify the rest of the SPA (mailbox / dashboard) so they re-render
+      // their AI-conditional UI without a hard reload.
+      window.dispatchEvent(new CustomEvent('ai-config-changed', { detail: { enabled } }));
       await loadAll();
     } catch (e) { window.toast?.('Erreur : ' + e.message, 3500); }
     finally { setBusy(els.btnSaveOA, false); }
@@ -974,6 +1006,13 @@ export async function mountSettings(host, opts = {}) {
   // ── Wire events ──
   els.btnAdd.addEventListener('click', openModal);
   els.btnSaveOA.addEventListener('click', saveOpenAI);
+  // Live toggle: reveal/hide the key+model form as the user flips the
+  // switch. The actual disable/enable is committed only on Enregistrer.
+  els.aiEnabled.addEventListener('change', () => {
+    const on = els.aiEnabled.checked;
+    els.aiFields.classList.toggle('hidden', !on);
+    els.aiDisabledMsg.classList.toggle('hidden', on);
+  });
   els.btnSaveNt.addEventListener('click', saveNtfy);
   els.btnSaveGn.addEventListener('click', saveGeneral);
   host.querySelector('#btn-open-data')?.addEventListener('click', async () => {

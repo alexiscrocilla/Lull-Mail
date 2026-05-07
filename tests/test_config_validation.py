@@ -28,12 +28,14 @@ def test_minimal_valid():
     _validate(_valid_minimum())  # no raise
 
 
-def test_missing_openai_key():
-    from src.config import _validate, ConfigError
+def test_empty_openai_key_accepted():
+    """Empty `api_key` is the explicit signal for no-AI mode and must
+    pass validation. The runtime treats missing-or-empty key as "skip
+    every OpenAI call"."""
+    from src.config import _validate
     conf = _valid_minimum()
     conf["openai"]["api_key"] = ""
-    with pytest.raises(ConfigError):
-        _validate(conf)
+    _validate(conf)  # no raise
 
 
 def test_todo_placeholder_rejected():

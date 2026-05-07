@@ -60,7 +60,10 @@ _TODO_PLACEHOLDER = "TODO"
 
 
 class OpenAIConfig(BaseModel):
-    api_key: str = Field(min_length=1)
+    # Optional: an empty key signals "no-AI mode" — Lull Mail then runs
+    # only the local rules-based classifier and disables every feature
+    # that needs OpenAI (summaries, draft replies, on-demand re-analysis).
+    api_key: str = ""
     model: str = "gpt-4o-mini"
 
     @field_validator("api_key")
@@ -279,6 +282,19 @@ def reload() -> Optional[Dict[str, Any]]:
     global _config
     _config = {}
     return try_load()
+
+
+def ai_enabled() -> bool:
+    """True when the loaded config carries a non-empty OpenAI key.
+
+    Used by every code path that has to choose between calling OpenAI
+    and running in degraded "no-AI" mode (rule-based classifier only).
+    Reads the in-memory `_config` so callers don't pay a disk hit on
+    each check — it's already kept in sync by `load()` / `reload()`.
+    """
+    conf = _config or {}
+    key = (conf.get("openai") or {}).get("api_key", "")
+    return bool(key)
 
 
 def is_configured() -> bool:

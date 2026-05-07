@@ -55,11 +55,19 @@ def start_email_services(*, restart: bool = False) -> bool:
                 logger.exception("Échec arrêt scheduler avant redémarrage")
             _scheduler = None
 
-        try:
-            init_client(conf["openai"]["api_key"])
-        except Exception:
-            logger.exception("init_client a échoué")
-            return False
+        # When the user opted out of AI (empty key), skip OpenAI client
+        # init entirely — the scheduler will fall back to rule-based
+        # classification and the on-demand /draft + /reanalyze endpoints
+        # short-circuit with a 409.
+        api_key = (conf.get("openai") or {}).get("api_key", "")
+        if api_key:
+            try:
+                init_client(api_key)
+            except Exception:
+                logger.exception("init_client a échoué")
+                return False
+        else:
+            logger.info("Mode sans IA actif — pas d'initialisation du client OpenAI")
 
         interval = int(conf.get("polling", {}).get("interval_minutes", 10))
         sched = BackgroundScheduler(timezone="Europe/Paris")

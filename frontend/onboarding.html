@@ -627,7 +627,14 @@
         </div>
       </div>
 
-      <div class="flex justify-end mt-8 gap-3">
+      <div class="mt-4 text-xs" style="color: var(--muted);">
+        <span data-i18n="ob.step1.skip_hint">Pas de clé ? Vous pouvez utiliser Lull Mail sans IA — le tri restera basique mais fonctionnel.</span>
+      </div>
+
+      <div class="flex justify-between items-center mt-8 gap-3">
+        <button class="btn btn-ghost" onclick="skipOpenAIAndNext()">
+          <i data-lucide="zap-off"></i> <span data-i18n="ob.step1.skip_cta">Utiliser sans IA</span>
+        </button>
         <button class="btn" onclick="saveOpenAIAndNext()">
           <span data-i18n="ob.step1.cta">Continuer</span> <i data-lucide="arrow-right"></i>
         </button>

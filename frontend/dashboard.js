@@ -220,12 +220,18 @@ export async function mountDashboard(host, opts) {
     $('#kpi-throughput').textContent = `${total30d} mails analysés / 30 j`;
     $('#kpi-peak').textContent       = `Pic : ${peakDay} / jour`;
 
-    // Cost: real if token data exists, else hide
-    const model   = s.ai_model || 'gpt-4o-mini';
-    const tokens  = s.tokens_30d || { tokens_in: 0, tokens_out: 0 };
-    const hasReal = tokens.tokens_in > 0 || tokens.tokens_out > 0;
-    $('#kpi-cost').textContent     = hasReal ? formatCostUsd(s.cost_30d_usd || 0) : '—';
-    $('#kpi-cost-lbl').textContent = 'coût réel / 30 j';
+    // Cost: hidden in no-AI mode (nothing to bill), real if token data
+    // exists, else placeholder dash.
+    const costKpi = $('#kpi-cost')?.closest('.kpi');
+    if (!window.aiEnabled) {
+      if (costKpi) costKpi.style.display = 'none';
+    } else {
+      if (costKpi) costKpi.style.display = '';
+      const tokens  = s.tokens_30d || { tokens_in: 0, tokens_out: 0 };
+      const hasReal = tokens.tokens_in > 0 || tokens.tokens_out > 0;
+      $('#kpi-cost').textContent     = hasReal ? formatCostUsd(s.cost_30d_usd || 0) : '—';
+      $('#kpi-cost-lbl').textContent = 'coût réel / 30 j';
+    }
 
     drawSpark(daily, 'day');
   }

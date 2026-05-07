@@ -46,7 +46,10 @@ def run_sync():
     _running = True
     try:
         conf = cfg.get()
-        init_client(conf["openai"]["api_key"])
+        api_key = (conf.get("openai") or {}).get("api_key", "")
+        ai_on = bool(api_key)
+        if ai_on:
+            init_client(api_key)
 
         accounts = [a for a in conf.get("accounts", []) if a.get("enabled", True)]
         limit = conf.get("polling", {}).get("initial_fetch_count", 100)
@@ -174,6 +177,22 @@ def run_sync():
                         cache_hits += 1
 
             # ── Niveau 3 : IA classification (body réduit à 800 cars.) ─────────
+            # In no-AI mode we fabricate a neutral result so the email still
+            # lands in the inbox with a predictable category/score. The user
+            # has explicitly opted out — no GPT call must happen here.
+            if result is None and not ai_on:
+                result = {
+                    "category": "other",
+                    "importance_score": 5,
+                    "importance_reason": "Non classé (mode sans IA)",
+                    "summary": "",
+                    "needs_reply": False,
+                    "draft_response": None,
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                    "local_classified": True,
+                }
+
             if result is None:
                 result = process_email(em, model=model)
                 if result:

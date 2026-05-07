@@ -168,8 +168,36 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// ── AI mode global ─────────────────────────────────────────
+// Every view (mailbox, dashboard) reads `window.aiEnabled` to decide
+// whether to render AI affordances (score badges, summaries, draft
+// buttons, cost KPI). We probe /api/setup/status once at boot and
+// re-probe whenever the Settings page broadcasts a change.
+async function refreshAiFlag() {
+  try {
+    const r = await fetch('/api/setup/status');
+    if (!r.ok) return;
+    const s = await r.json();
+    window.aiEnabled = !!s.has_openai;
+  } catch (_) {
+    // Network hiccup at boot — default to off so the no-AI UI renders;
+    // a successful future probe will flip it back on.
+    window.aiEnabled = false;
+  }
+}
+window.addEventListener('ai-config-changed', async () => {
+  await refreshAiFlag();
+  // Re-render the current view so its AI-conditional UI updates without
+  // a hard reload.
+  render();
+});
+
 // ── Boot ───────────────────────────────────────────────────
 if (!location.hash) location.hash = '#/inbox';
+// Resolve the AI flag before the first render so the initial paint is
+// already correct. Awaiting here is fine — /api/setup/status is local,
+// served by the same process.
+await refreshAiFlag();
 render();
 refreshIcons();
 
