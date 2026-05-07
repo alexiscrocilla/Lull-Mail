@@ -1,16 +1,18 @@
 # Developing Lull Mail
 
-Guide to clone, run in dev mode, build the exe and the installer.
+Guide to clone, run in dev mode, build the app, and produce release packages.
 
 ---
 
 ## Prerequisites
 
-- **Windows 10 or 11.** The Python code is cross-platform but the
-  onedir packaging + WebView2 + tray icon are tested on Windows
-  only.
 - **Python 3.11+** with `python` or `py` on `PATH`.
-- *(Optional — to build the installer)* [Inno Setup 6](https://jrsoftware.org/isdl.php).
+- **Windows 10/11** — to produce the Inno Setup installer (`.exe`).
+  *(Optional)* [Inno Setup 6](https://jrsoftware.org/isdl.php) for local installer builds.
+- **macOS 12+** — to produce the `.app` / `.dmg`. No extra tools needed
+  (icon generation uses `sips` + `iconutil`, which ship with macOS).
+- **Linux** — to produce the `.tar.gz`. Requires `libwebkit2gtk-4.1-dev`
+  (or `4.0` on older distros): `sudo apt install libwebkit2gtk-4.1-dev`.
 
 ## All commands go through `dev.bat`
 
@@ -60,56 +62,83 @@ In dev mode, `config.yaml` and `data/` live **at the project root**
 (not in `%APPDATA%`). Handy to test with a throwaway config without
 polluting your installed Lull Mail.
 
-## Building a Windows exe
+## Building on Windows
 
 ```cmd
-.\dev.bat build
+.\dev.bat build          :: produces dist\LullMail\LullMail.exe (PyInstaller)
+.\dev.bat installer      :: produces dist\LullMail-Setup-X.Y.Z.exe (Inno Setup)
 ```
 
-Runs PyInstaller through `lull_mail.spec` and produces a **onedir**
-bundle (the `dist\LullMail\` folder contains the exe + DLLs +
-`frontend/`). No onefile: faster startup, easier debugging.
+`dev.bat build` runs PyInstaller through `lull_mail.spec` and produces a
+**onedir** bundle (`dist\LullMail\` — exe + DLLs + `frontend/`).
 
-## Building an installer (Inno Setup)
-
-```cmd
-.\dev.bat installer
-```
-
-Chains `dev.bat build` (silent mode via `LULLMAIL_NOINTERACT=1`) and
-then compiles `scripts\installer.iss` to produce
-`dist\LullMail-Setup-X.Y.Z.exe`. The installer:
-
-- installs to `%LOCALAPPDATA%\Programs\LullMail` (no admin),
-- adds a Start Menu entry + an optional desktop shortcut,
-- offers Windows autostart (checkbox, off by default),
-- registers in Add/Remove Programs (clean uninstall),
-- **does not touch** `%APPDATA%\LullMail` (user data stays intact
-  after uninstall — use `Settings → Storage → Delete my data`
-  beforehand if you want to wipe everything).
+`dev.bat installer` chains the build (silent via `LULLMAIL_NOINTERACT=1`)
+and then compiles `scripts\installer.iss` to produce the setup exe. The
+installer installs to `%LOCALAPPDATA%\Programs\LullMail` (no admin needed),
+adds a Start Menu entry, optional desktop shortcut, and registers in
+Add/Remove Programs. It does **not** touch `%APPDATA%\LullMail` (user data
+survives uninstall).
 
 **Bumping the version**: edit `MyAppVersion` at the top of
-`scripts\installer.iss`. The value flows into the output filename
-and the Add/Remove Programs entry.
+`scripts\installer.iss`.
+
+## Building on macOS
+
+```bash
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+bash scripts/build.sh
+```
+
+Produces `dist/LullMail/LullMail` (onedir) and `dist/LullMail.app`.
+To wrap it in a `.dmg` for distribution:
+
+```bash
+VERSION=0.4.0
+hdiutil create -volname "Lull Mail $VERSION" \
+  -srcfolder dist/LullMail.app -ov -format UDZO \
+  dist/LullMail-$VERSION.dmg
+```
+
+> **Note**: Without an Apple Developer certificate, macOS Gatekeeper will
+> warn on first launch. Users can right-click → Open to bypass it.
+
+## Building on Linux
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev   # Ubuntu 22.04+ (use 4.0 on older)
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+bash scripts/build.sh
+```
+
+Produces `dist/LullMail/LullMail`. To create a portable archive:
+
+```bash
+tar -czf dist/LullMail-0.4.0.tar.gz -C dist LullMail
+```
 
 ## Release cycle (CI)
 
 The [`.github/workflows/release.yml`](../.github/workflows/release.yml)
-workflow builds the app + installer on tag `vX.Y.Z` and publishes the
-result as a draft release. Procedure:
+workflow builds on **Windows, macOS, and Linux** in parallel on tag
+`vX.Y.Z` and publishes all three artefacts as a draft release:
 
-```cmd
-:: 1. Bump the version in scripts\installer.iss (#define MyAppVersion).
-:: 2. Merge the work into main and push.
-git checkout main
-git merge develop
-git push origin main
-:: 3. Tag and push the tag (this triggers the workflow).
-git tag v0.4.0
-git push origin v0.4.0
-:: 4. The workflow runs ~10 min on a Windows runner. A draft release
-::    appears in the Releases tab with the exe attached. Verify, publish.
-:: 5. Back to the develop branch.
+| Platform | Artefact |
+|---|---|
+| Windows | `LullMail-Setup-X.Y.Z.exe` |
+| macOS   | `LullMail-X.Y.Z.dmg` |
+| Linux   | `LullMail-X.Y.Z.tar.gz` |
+
+Release procedure:
+
+```bash
+# 1. Bump the version in scripts/installer.iss (#define MyAppVersion).
+# 2. Merge develop → main and push.
+git checkout main && git merge develop && git push origin main
+# 3. Tag and push — this triggers all three build jobs.
+git tag v0.5.0 && git push origin v0.5.0
+# 4. The workflow runs ~10-15 min. A draft release appears in the
+#    Releases tab with the three artefacts attached. Review and publish.
+# 5. Back to develop.
 git checkout develop
 ```
 
@@ -127,6 +156,7 @@ README.md
 
 assets/
   lull_mail.ico       ← multi-resolution Windows icon (16…256)
+  lull_mail.icns      ← macOS icon (generated by CI from lullmail-icon.png)
 
 frontend/             ← UI served by FastAPI
   index.html / app.js / dashboard.js / mailbox.js / cleanup.js
@@ -175,13 +205,14 @@ tests/                ← pytest suite (run via `python -m pytest -q`)
   test_auth_results.py
   test_config_validation.py
 
-scripts/              ← dev scripts (never run directly, go through dev.bat)
-  install.bat         ← venv + dependencies
-  start.bat           ← console mode
-  build.bat           ← PyInstaller
-  build_installer.bat ← chains build.bat + ISCC
-  installer.iss       ← Inno Setup script
-  create_shortcut.bat ← desktop shortcut (dev)
+scripts/              ← dev scripts (never run directly, go through dev.bat / bash)
+  install.bat         ← venv + dependencies (Windows)
+  start.bat           ← console mode (Windows)
+  build.bat           ← PyInstaller (Windows)
+  build.sh            ← PyInstaller (macOS / Linux)
+  build_installer.bat ← chains build.bat + ISCC (Windows)
+  installer.iss       ← Inno Setup script (Windows installer)
+  create_shortcut.bat ← desktop shortcut (dev, Windows)
   open_when_ready.ps1 ← waits for the port before opening the browser
 
 docs/

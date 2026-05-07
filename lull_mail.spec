@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec for LullMail.exe.
+PyInstaller spec for Lull Mail.
 
   pyinstaller lull_mail.spec --noconfirm --clean
 
@@ -9,7 +9,13 @@ debugging than onefile, and lets users see/edit data/ next to the exe).
 
 The frontend assets are bundled inside the exe directory; api.py looks
 them up via _MEIPASS at runtime.
+
+Supports Windows, macOS, and Linux. On macOS a .app bundle (dist/LullMail.app)
+is produced in addition to the onedir tree, ready to be wrapped in a .dmg.
 """
+
+import os as _os
+import sys as _sys
 
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
@@ -26,11 +32,17 @@ hiddenimports += collect_submodules("webview")
 # `keyring` discovers its OS backends at runtime (Windows Vault, macOS
 # Keychain, Linux Secret Service…). PyInstaller's static analysis
 # misses them, so we collect every submodule explicitly. Without this
-# the frozen .exe would fall back to `keyring.backends.fail` on every
+# the frozen build would fall back to `keyring.backends.fail` on every
 # machine — and our credential migration would silently no-op.
 hiddenimports += collect_submodules("keyring")
+# `pystray` discovers its OS backend at runtime too. Include the right one
+# per platform so it isn't missed by static analysis.
+_pystray_backends: dict = {
+    "win32":  ["pystray._win32"],
+    "darwin": ["pystray._darwin"],
+}
+hiddenimports += _pystray_backends.get(_sys.platform, ["pystray._xorg"])
 hiddenimports += [
-    "pystray._win32",
     "PIL._tkinter_finder",
     "uvicorn.logging",
     "uvicorn.loops",
@@ -62,12 +74,15 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-# Optional .ico — drop one at assets/lull_mail.ico to brand the exe.
+# ── Icon — platform-specific ──────────────────────────────────────────────────
 # PyInstaller raises FileNotFoundError if `icon=` points to a missing file,
-# so we omit the kwarg entirely when the file isn't there.
-import os as _os
-_icon_candidate = _os.path.join("assets", "lull_mail.ico")
-exe_extra = {"icon": _icon_candidate} if _os.path.isfile(_icon_candidate) else {}
+# so we probe each candidate and skip the kwarg when none is found.
+_icon_candidates = {
+    "win32":  _os.path.join("assets", "lull_mail.ico"),
+    "darwin": _os.path.join("assets", "lull_mail.icns"),
+}
+_icon_path = _icon_candidates.get(_sys.platform, "")
+exe_extra = {"icon": _icon_path} if _icon_path and _os.path.isfile(_icon_path) else {}
 
 exe = EXE(
     pyz,
@@ -98,3 +113,16 @@ coll = COLLECT(
     upx_exclude=[],
     name="LullMail",
 )
+
+# ── macOS .app bundle ─────────────────────────────────────────────────────────
+# BUNDLE is macOS-only; PyInstaller ignores it on other platforms, but we
+# guard explicitly so the intent is clear and to avoid any future surprises.
+if _sys.platform == "darwin":
+    _icns = _os.path.join("assets", "lull_mail.icns")
+    _bundle_extra = {"icon": _icns} if _os.path.isfile(_icns) else {}
+    app = BUNDLE(
+        coll,
+        name="LullMail.app",
+        bundle_identifier="fr.lullmail.app",
+        **_bundle_extra,
+    )

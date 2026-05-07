@@ -3,9 +3,12 @@ Centralised path resolution for Lull Mail.
 
 Three modes:
 
-  • Frozen (PyInstaller .exe) — config + DB + logs + attachments live in
-    %APPDATA%\\LullMail\\, the canonical Windows per-user data dir. The
-    exe and its bundled DLLs stay read-only in dist\\LullMail\\.
+  • Frozen (PyInstaller bundle) — config + DB + logs + attachments live in
+    the per-user data directory for the host OS:
+      Windows : %APPDATA%\\LullMail\\
+      macOS   : ~/Library/Application Support/LullMail/
+      Linux   : ~/.local/share/LullMail/  (or $XDG_DATA_HOME/LullMail/)
+    The executable and bundled files stay read-only in dist/LullMail/.
 
   • Dev (python main.py / python app_gui.py) — same layout, but anchored
     at the project root so existing developers keep their working
@@ -14,21 +17,21 @@ Three modes:
   • Override — set the env var LULLMAIL_DATA to force a specific dir.
     Useful for tests and for users who want their config on a USB stick.
 
-Two migrations run at import time so the rest of the codebase only ever
-sees the canonical %APPDATA%\\LullMail layout:
+Two migrations run at import time (Windows only) so the rest of the
+codebase only ever sees the canonical data layout:
 
   1. Rename %APPDATA%\\AgenticMail → %APPDATA%\\LullMail when the app was
      previously installed under the old name. Keeps existing accounts,
      mail history, attachments, and rules.
 
-  2. The first time a frozen build runs and finds no config in %APPDATA%,
-     look for a legacy config.yaml + data/ next to the exe (or one level
-     up, to handle the dist\\LullMail\\ case). If found, copy them into
-     %APPDATA% so the user keeps their setup.
+  2. The first time a frozen build runs and finds no config in the data
+     dir, look for a legacy config.yaml + data/ next to the exe (or one
+     level up, to handle the dist\\LullMail\\ case). If found, copy them
+     so the user keeps their setup.
 
 Migration #2 is skipped when:
   • the candidate dir looks like a dev source tree (contains src/paths.py,
-    lull_mail.spec, .git, etc.) — protects test runs of dist\\LullMail\\
+    lull_mail.spec, .git, etc.) — protects test runs of dist/LullMail/
     from inheriting the developer's working config.yaml
   • LULLMAIL_NO_MIGRATE is set — explicit escape hatch for onboarding tests
 """
@@ -45,8 +48,14 @@ logger = logging.getLogger(__name__)
 
 
 def _appdata_root() -> Path:
-    appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-    return Path(appdata)
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(appdata)
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support"
+    # Linux / freedesktop XDG Base Directory spec
+    xdg = os.environ.get("XDG_DATA_HOME")
+    return Path(xdg) if xdg else Path.home() / ".local" / "share"
 
 
 def _rename_legacy_appdata_dir() -> None:

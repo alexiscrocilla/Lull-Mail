@@ -1,9 +1,14 @@
 name: Release
 
-# Tag the repo with vX.Y.Z to trigger a build. The workflow produces
-# dist\LullMail-Setup-X.Y.Z.exe and uploads it as a *draft* release on
-# GitHub — review the artefact, then click "Publish release" manually
-# so a botched build never goes live by accident.
+# Tag the repo with vX.Y.Z to trigger a build. The workflow produces:
+#   Windows : dist\LullMail-Setup-X.Y.Z.exe  (Inno Setup installer)
+#   macOS   : dist/LullMail-X.Y.Z.dmg        (disk image with .app inside)
+#   Linux   : dist/LullMail-X.Y.Z.tar.gz     (onedir bundle)
+#
+# All three are uploaded as workflow artifacts. On a tag push they are
+# also attached to a *draft* GitHub release — review the artefacts, then
+# click "Publish release" manually so a botched build never goes live
+# by accident.
 #
 # workflow_dispatch is also wired so you can fire a build by hand from
 # the Actions tab without having to push a tag.
@@ -20,21 +25,18 @@ on:
         type: string
 
 jobs:
-  build:
+  # ───────────────────────────────────────────────────────────────────────────
+  # Windows — PyInstaller onedir → Inno Setup installer (.exe)
+  # ───────────────────────────────────────────────────────────────────────────
+  build-windows:
     runs-on: windows-latest
     permissions:
-      # Needed by softprops/action-gh-release to create the draft release.
       contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ───────────────────────────────────────────────────────────────
-      # Resolve the version we'll bake into the installer + filename.
-      # On tag push: strip the leading "v" from refs/tags/vX.Y.Z.
-      # On manual run: use the input the user typed.
-      # ───────────────────────────────────────────────────────────────
       - name: Resolve version
         id: ver
         shell: bash
@@ -45,7 +47,7 @@ jobs:
             VERSION="${GITHUB_REF_NAME#v}"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Building Lull Mail $VERSION"
+          echo "Building Lull Mail $VERSION (Windows)"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -61,8 +63,6 @@ jobs:
           .venv\Scripts\pip install -r requirements.txt
           .venv\Scripts\pip install pyinstaller==6.11.1
 
-      # build.bat normally pops Explorer + pauses at the end; this env
-      # var short-circuits that so the workflow can keep running.
       - name: Build app (PyInstaller)
         shell: cmd
         env:
@@ -78,10 +78,7 @@ jobs:
             exit /b 1
           )
 
-      # Inno Setup is pre-installed on windows-latest runners; if that
-      # ever changes, swap to: choco install innosetup -y --no-progress
       - name: Locate Inno Setup
-        id: iscc
         shell: cmd
         run: |
           set "ISCC="
@@ -94,9 +91,6 @@ jobs:
           )
           echo ISCC=%ISCC%>> %GITHUB_ENV%
 
-      # /D overrides the #define inside the .iss so the version stays
-      # in lock-step with the git tag. The OutputBaseFilename derives
-      # from MyAppVersion automatically.
       - name: Compile installer
         shell: cmd
         run: |
@@ -111,19 +105,235 @@ jobs:
             exit /b 1
           )
 
-      - name: Upload installer as workflow artefact
+      - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LullMail-Setup-${{ steps.ver.outputs.version }}
+          name: LullMail-Setup-${{ steps.ver.outputs.version }}-windows
           path: dist/LullMail-Setup-${{ steps.ver.outputs.version }}.exe
           retention-days: 30
 
+  # ───────────────────────────────────────────────────────────────────────────
+  # macOS — PyInstaller onedir + .app bundle → hdiutil .dmg
+  # ───────────────────────────────────────────────────────────────────────────
+  build-macos:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building Lull Mail $VERSION (macOS)"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Create venv & install deps
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+          .venv/bin/pip install pyinstaller==6.11.1
+
+      # Generate a proper macOS .icns from the PNG source using sips (built-in)
+      # and iconutil (built-in). No external dependencies needed.
+      - name: Generate .icns icon
+        run: |
+          SRC="frontend/assets/lullmail-icon.png"
+          ICONSET="assets/lull_mail.iconset"
+          mkdir -p "$ICONSET" assets
+          for SIZE in 16 32 64 128 256 512; do
+            sips -z $SIZE $SIZE "$SRC" --out "$ICONSET/icon_${SIZE}x${SIZE}.png"            > /dev/null
+            sips -z $((SIZE*2)) $((SIZE*2)) "$SRC" --out "$ICONSET/icon_${SIZE}x${SIZE}@2x.png" > /dev/null
+          done
+          iconutil -c icns "$ICONSET" -o assets/lull_mail.icns
+          rm -rf "$ICONSET"
+          echo "Icon generated: assets/lull_mail.icns"
+
+      - name: Build app (PyInstaller)
+        env:
+          LULLMAIL_NOINTERACT: '1'
+          LULLMAIL_VERSION: ${{ steps.ver.outputs.version }}
+        run: bash scripts/build.sh
+
+      - name: Verify build output
+        run: |
+          if [[ ! -d "dist/LullMail.app" ]]; then
+            echo "[ERROR] dist/LullMail.app missing."
+            ls dist/ || true
+            exit 1
+          fi
+
+      - name: Create .dmg
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          DMG="dist/LullMail-${VERSION}.dmg"
+          # Stage the .app + an /Applications symlink in a temp dir so the
+          # user gets the standard drag-to-install UX. Build directly to UDZO
+          # to avoid the APFS/HFS device-path parsing issues with the rw approach.
+          STAGING=$(mktemp -d)
+          cp -r dist/LullMail.app "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create \
+            -volname "Lull Mail ${VERSION}" \
+            -srcfolder "$STAGING" \
+            -ov -format UDZO \
+            "$DMG"
+          rm -rf "$STAGING"
+          echo "DMG created: $DMG"
+
+      - name: Verify .dmg
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          if [[ ! -f "dist/LullMail-${VERSION}.dmg" ]]; then
+            echo "[ERROR] DMG not produced."
+            ls dist/ || true
+            exit 1
+          fi
+
+      - name: Upload .dmg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LullMail-${{ steps.ver.outputs.version }}-macos
+          path: dist/LullMail-${{ steps.ver.outputs.version }}.dmg
+          retention-days: 30
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Linux — PyInstaller onedir → .tar.gz
+  # ───────────────────────────────────────────────────────────────────────────
+  build-linux:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building Lull Mail $VERSION (Linux)"
+
+      # pywebview on Linux uses the GTK WebKit backend at runtime.
+      # The library must be present on the build machine so PyInstaller
+      # can find and bundle the right shared objects.
+      - name: Install WebKitGTK
+        run: |
+          sudo apt-get update -qq
+          # Try 4.1 first (Ubuntu 22.04+), fall back to 4.0 (20.04)
+          sudo apt-get install -y libwebkit2gtk-4.1-dev || \
+          sudo apt-get install -y libwebkit2gtk-4.0-dev
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Create venv & install deps
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+          .venv/bin/pip install pyinstaller==6.11.1
+
+      - name: Build app (PyInstaller)
+        env:
+          LULLMAIL_NOINTERACT: '1'
+          LULLMAIL_VERSION: ${{ steps.ver.outputs.version }}
+        run: bash scripts/build.sh
+
+      - name: Verify build output
+        run: |
+          if [[ ! -f "dist/LullMail/LullMail" ]]; then
+            echo "[ERROR] dist/LullMail/LullMail missing."
+            ls dist/ || true
+            exit 1
+          fi
+
+      - name: Create .tar.gz
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          ARCHIVE="dist/LullMail-${VERSION}.tar.gz"
+          tar -czf "$ARCHIVE" -C dist LullMail
+          echo "Archive created: $ARCHIVE"
+
+      - name: Verify .tar.gz
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          if [[ ! -f "dist/LullMail-${VERSION}.tar.gz" ]]; then
+            echo "[ERROR] Archive not produced."
+            ls dist/ || true
+            exit 1
+          fi
+
+      - name: Upload .tar.gz artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LullMail-${{ steps.ver.outputs.version }}-linux
+          path: dist/LullMail-${{ steps.ver.outputs.version }}.tar.gz
+          retention-days: 30
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Draft release — runs only on tag push, after all three builds succeed
+  # ───────────────────────────────────────────────────────────────────────────
+  release:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Resolve version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: LullMail-Setup-${{ steps.ver.outputs.version }}-windows
+          path: release-assets/
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: LullMail-${{ steps.ver.outputs.version }}-macos
+          path: release-assets/
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: LullMail-${{ steps.ver.outputs.version }}-linux
+          path: release-assets/
+
       - name: Create draft GitHub release
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           name: Lull Mail ${{ steps.ver.outputs.version }}
           tag_name: ${{ github.ref_name }}
           draft: true
           generate_release_notes: true
-          files: dist/LullMail-Setup-${{ steps.ver.outputs.version }}.exe
+          files: release-assets/*
