@@ -14,11 +14,29 @@ deserve your attention, summarises them in two lines, and sends *one*
 notification — the right one, at the right moment. The rest waits
 until you have time. Or quietly disappears.
 
-[![Latest release](https://img.shields.io/github/v/release/alexiscrocilla/Lull-Mail?label=download)](../../releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/alexiscrocilla/Lull-Mail/total?cacheSeconds=300)](../../releases)
+[![Latest release](https://img.shields.io/github/v/release/alexiscrocilla/Lull-Mail?label=download&color=2da44e)](../../releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/alexiscrocilla/Lull-Mail/total?color=2da44e)](../../releases)
+[![Build](https://img.shields.io/github/actions/workflow/status/alexiscrocilla/Lull-Mail/release.yml?label=build)](../../actions/workflows/release.yml)
+[![License: GPL v3](https://img.shields.io/badge/license-GPL%20v3-blue)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#download)
+[![Last commit](https://img.shields.io/github/last-commit/alexiscrocilla/Lull-Mail?color=informational)](../../commits)
 
 <br clear="left">
 
+## See it in action
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/01-triage.png" alt="Smart triage view" width="100%"></td>
+    <td><img src="docs/screenshots/02-summary.png" alt="Two-line summaries" width="100%"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/03-dashboard.png" alt="AI triage dashboard" width="100%"></td>
+    <td><img src="docs/screenshots/04-notification.png" alt="Single push notification" width="100%"></td>
+  </tr>
+</table>
+
+<p align="center"><img src="docs/screenshots/demo.gif" alt="Lull Mail demo" width="720"></p>
 
 ---
 
@@ -78,6 +96,25 @@ and registers the app in *Installed apps* for clean uninstallation.
 
 - **Not a cloud.** Your IMAP credentials never leave your machine.
   See [Privacy](#privacy) below.
+
+---
+
+## Lull Mail vs other approaches
+
+*Lull Mail isn't trying to replace your inbox. It sits in front of it.
+Here's how that compares.*
+
+| | Lull Mail | SaneBox | Mailbutler | Hey |
+|---|---|---|---|---|
+| **What it is** | Native desktop app, layer over your accounts | Cloud service, sorts into IMAP folders | Plugin for Outlook / Apple Mail / Gmail | Standalone email service with new address |
+| **Keep your existing address** | Yes | Yes | Yes | No (`@hey.com` required) |
+| **Where your emails live** | Your machine (local SQLite) | SaneBox servers + your IMAP | Your provider + Mailbutler cloud for AI | Hey servers |
+| **Pricing** | Free, you pay your own OpenAI usage (~$0.15 / 100 emails) | $7–36 / month | $5–30 / month | $99 / year, flat |
+| **Works offline (browse synced mail)** | Yes | No | Partial | No |
+| **Open source** | Yes (GPL v3) | No | No | No |
+| **Platforms** | Windows, macOS, Linux | Any IMAP client | Outlook, Apple Mail, Gmail web | Web, iOS, Android, macOS |
+| **Telemetry on your emails** | None | Per their privacy policy | Per their privacy policy | Per their privacy policy |
+| **Replaces your email client** | No | No | No (it embeds) | Yes |
 
 ---
 
@@ -195,8 +232,24 @@ architecture, environment variables.
 The product tone and positioning is documented in
 [`docs/MARKETING.md`](docs/MARKETING.md).
 
+If you'd like to contribute, read
+[`CONTRIBUTING.md`](CONTRIBUTING.md). All participants are expected
+to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ---
 
 ## Licence
 
-To be defined.
+Lull Mail is licensed under the **GNU General Public License v3.0 or
+later**. See [`LICENSE`](LICENSE) for the full text.
+
+You can run, study, modify, and redistribute Lull Mail. If you
+distribute a modified version, the source must come with it. Private
+modifications on your own machine require nothing.
+
+<p align="center">
+  <a href="https://alexiscrocilla.github.io/Lull-Mail/">website</a> ·
+  <a href="LICENSE">GPL v3</a> ·
+  <a href="CONTRIBUTING.md">contribute</a> ·
+  <a href="docs/SECURITY-ROADMAP.md">security</a>
+</p>
