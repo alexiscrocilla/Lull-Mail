@@ -8,9 +8,13 @@ surfaces update at once — no markdown or HTML edits needed.
 
 | Filename | Format | Dimensions | Max size | Used in |
 |---|---|---|---|---|
-| `01-triage.png` | PNG | 1280×800 | 500 KB | README grid (left), landing demo |
-| `02-summary.png` | PNG | 1280×800 | 500 KB | README grid (centre), landing demo |
-| `03-dashboard.png` | PNG | 1280×800 | 500 KB | README grid (right), landing demo |
+| `01-triage.png` | PNG | 1280×800 | 500 KB | README grid (left) |
+| `02-summary.png` | PNG | 1280×800 | 500 KB | README grid (centre) |
+| `03-dashboard.png` | PNG | 1280×800 | 500 KB | README grid (right) |
+
+The landing page (`docs/index.html`) renders both the inbox and the
+dashboard as CSS-only mockups inside a swipe carousel, so it does
+not reference any file in this folder.
 
 ## Optional (dark variants)
 
