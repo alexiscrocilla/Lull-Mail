@@ -153,3 +153,80 @@ def test_reanalyze_endpoint_returns_409_when_ai_off(client, monkeypatch):
 
     r = client.post(f"/api/emails/{int_id}/reanalyze")
     assert r.status_code == 409
+
+
+def test_requeue_no_ai_fallback_emails(fresh_app):
+    """Regression: emails fabricated by the no-AI fallback (importance_reason
+    == NO_AI_FALLBACK_REASON) must be reset to 'pending' when AI is later
+    enabled. Emails classified by other paths (local rules, AI, age-skip)
+    must NOT be touched.
+
+    Bug: with AI off, the scheduler fabricated a 'other' result and
+    marked processed_at, so the queue emptied — but turning AI back on
+    used to leave those emails frozen forever because nothing put them
+    back into the pending state.
+    """
+    import sqlite3
+    from src import database as db
+    from src import paths
+    from src.scheduler import NO_AI_FALLBACK_REASON
+
+    common = {
+        "account": "u@example.com",
+        "account_email": "u@example.com",
+        "recipient": "u@example.com",
+        "body_text": "hello",
+        "body_html": "",
+        "date_received": "2026-01-01T00:00:00",
+    }
+
+    # Email A: classified by the no-AI fallback path. Should be requeued.
+    db.insert_email({**common, "message_id": "<noai@x>", "uid": "1",
+                     "sender": "x@y.com", "subject": "fallback"})
+    db.update_email_ai("<noai@x>", {
+        "category": "other", "importance_score": 5,
+        "importance_reason": NO_AI_FALLBACK_REASON,
+        "summary": "", "needs_reply": False, "draft_response": None,
+        "tokens_in": 0, "tokens_out": 0, "local_classified": True,
+    })
+
+    # Email B: classified by a real local rule. Must stay put.
+    db.insert_email({**common, "message_id": "<local@x>", "uid": "2",
+                     "sender": "newsletter@example.com", "subject": "promo"})
+    db.update_email_ai("<local@x>", {
+        "category": "newsletter", "importance_score": 2,
+        "importance_reason": "Règle locale: motif newsletter",
+        "summary": "", "needs_reply": False, "draft_response": None,
+        "tokens_in": 0, "tokens_out": 0, "local_classified": True,
+    })
+
+    # Email C: failed AI 3 times. Must stay put (retrying won't help).
+    db.insert_email({**common, "message_id": "<failed@x>", "uid": "3",
+                     "sender": "x@y.com", "subject": "broken"})
+    db.mark_ai_failed("<failed@x>")
+
+    # Sanity: nothing pending right now (all three are "processed").
+    assert db.count_pending() == 0
+
+    n = db.requeue_emails_by_reason(NO_AI_FALLBACK_REASON)
+    assert n == 1
+
+    # Email A is back in the queue, processed_at cleared.
+    assert db.count_pending() == 1
+    with sqlite3.connect(paths.DB_PATH) as con:
+        rows = {
+            mid: con.execute(
+                "SELECT category, processed_at, local_classified, "
+                "importance_score, importance_reason FROM emails "
+                "WHERE message_id = ?", (mid,)
+            ).fetchone()
+            for mid in ("<noai@x>", "<local@x>", "<failed@x>")
+        }
+    cat_a, proc_a, lc_a, score_a, reason_a = rows["<noai@x>"]
+    assert (cat_a, proc_a, lc_a, score_a, reason_a) == ("pending", None, 0, 1, "")
+
+    # Emails B and C are untouched.
+    assert rows["<local@x>"][0] == "newsletter"
+    assert rows["<local@x>"][1] is not None
+    assert rows["<failed@x>"][0] == "other"
+    assert rows["<failed@x>"][1] is not None
