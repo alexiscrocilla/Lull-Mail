@@ -16,6 +16,13 @@ from src.notifier import send
 logger = logging.getLogger(__name__)
 
 
+# Importance_reason value written by the no-AI fallback below. Used as the
+# match key by db.requeue_emails_by_reason so a later AI-on sync can
+# re-queue these emails for real analysis. Keep in sync with the literal
+# in the fabricated result dict.
+NO_AI_FALLBACK_REASON = "Non classé (mode sans IA)"
+
+
 def _is_too_old(date_str: str, max_age_days: int) -> bool:
     if not date_str or max_age_days <= 0:
         return False
@@ -51,6 +58,16 @@ def run_sync():
         ai_on = bool(api_key)
         if ai_on:
             init_client(api_key)
+            # Re-queue any emails that were classified by the no-AI
+            # fallback during a prior run. They were marked as 'other'
+            # to keep them visible in the inbox, but the user has now
+            # enabled AI — give them a real classification.
+            requeued = db.requeue_emails_by_reason(NO_AI_FALLBACK_REASON)
+            if requeued:
+                logger.info(
+                    f"{requeued} email(s) classés en mode sans IA "
+                    "remis en file pour analyse IA"
+                )
 
         accounts = [a for a in conf.get("accounts", []) if a.get("enabled", True)]
         limit = conf.get("polling", {}).get("initial_fetch_count", 500)
@@ -186,7 +203,7 @@ def run_sync():
                 result = {
                     "category": "other",
                     "importance_score": 5,
-                    "importance_reason": "Non classé (mode sans IA)",
+                    "importance_reason": NO_AI_FALLBACK_REASON,
                     "summary": "",
                     "needs_reply": False,
                     "draft_response": None,

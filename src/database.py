@@ -459,6 +459,32 @@ def skip_pending_emails() -> int:
         return cur.rowcount
 
 
+def requeue_emails_by_reason(reason: str) -> int:
+    """Reset emails matching `reason` back to the pending queue so the next
+    sync re-processes them. Used when AI gets re-enabled and we want to
+    re-analyze emails that previously got the no-AI fallback.
+
+    `processed_at` is cleared so the throughput counters don't double-count
+    once the real AI pass runs. The filter is intentionally narrow (exact
+    string match) so unrelated classifications — age-skip, AI-failed,
+    manual drain, local-rule hits — are left untouched."""
+    with _conn() as con:
+        cur = con.execute(
+            "UPDATE emails SET "
+            "  category = 'pending', "
+            "  processed_at = NULL, "
+            "  local_classified = 0, "
+            "  importance_score = 1, "
+            "  importance_reason = '', "
+            "  summary = '', "
+            "  draft_response = NULL, "
+            "  ai_attempts = 0 "
+            "WHERE importance_reason = ?",
+            (reason,),
+        )
+        return cur.rowcount
+
+
 def mark_read(message_id: str):
     with _conn() as con:
         con.execute("UPDATE emails SET is_read = 1 WHERE message_id = ?", (message_id,))
