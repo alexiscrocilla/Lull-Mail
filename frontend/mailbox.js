@@ -1218,7 +1218,7 @@ export async function mountMailbox(host, _opts) {
           ? `<span class="mb-acc-badge error" title="${escapeHtml(stats.sync_error || 'Erreur de synchronisation')}">!</span>`
           : `<span class="mb-acc-badge ${isOn ? 'on-active' : ''}">${unread}</span>`;
         return `
-          <button class="mb-folder mb-acc-item ${isOn ? 'active' : ''}"${hideStyle} data-acc="${escapeHtml(a.email)}">
+          <button class="mb-folder mb-acc-item ${isOn ? 'active' : ''}"${hideStyle} data-acc="${escapeHtml(a.email)}" title="Clic = ne voir que ce compte · Cmd/Ctrl/Maj+clic = ajouter à la sélection">
             <span class="mb-acc-av" style="background:${col}">${escapeHtml(ini)}</span>
             <span class="lab">${escapeHtml(a.name || a.email)}</span>
             ${badgeHtml}
@@ -1252,14 +1252,26 @@ export async function mountMailbox(host, _opts) {
     `;
 
     section.querySelectorAll('[data-acc]').forEach((b) => {
-      b.addEventListener('click', () => {
+      b.addEventListener('click', (e) => {
         const acc = b.dataset.acc;
+        const additive = e.shiftKey || e.metaKey || e.ctrlKey;
         if (acc === '') {
+          // "Tous les comptes" — always clears, never additive.
           state.accountFilters.clear();
-        } else if (state.accountFilters.has(acc)) {
-          state.accountFilters.delete(acc);
+        } else if (additive) {
+          // Cmd/Ctrl/Shift+clic = toggle for multi-selection (legacy).
+          if (state.accountFilters.has(acc)) {
+            state.accountFilters.delete(acc);
+          } else {
+            state.accountFilters.add(acc);
+          }
         } else {
-          state.accountFilters.add(acc);
+          // Plain clic = solo this account. Re-clic on the solo account
+          // clears (same affordance as "Tous les comptes" — toggle off).
+          const isOnlyThis = state.accountFilters.size === 1
+                          && state.accountFilters.has(acc);
+          state.accountFilters.clear();
+          if (!isOnlyThis) state.accountFilters.add(acc);
         }
         // Sync active states in-place — no DOM rebuild, no flicker.
         _syncAccountActive(section);
