@@ -16,6 +16,7 @@ import { rewriteRemoteImages, senderDomain } from '/static/image-blocker.js';
 // `forceShowImages` skips the blocker just for this render — used by the
 // "Charger pour ce mail" button without touching the DB.
 function buildHtmlBodyBlock(em, forceShowImages = false) {
+  const _t = window.t || ((k) => k);
   // The image-blocker styles render any <img data-blocked-src=…> as a
   // soft grey rectangle with a tiny "image" icon in the centre. The
   // image keeps whatever dimensions the email designer set (so a
@@ -111,19 +112,17 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
   if (!blockedCount) return iframe;
 
   const domain = em.sender_domain || senderDomain(em.sender) || '';
-  const label = blockedCount === 1
-    ? '1 image distante bloquée'
-    : `${blockedCount} images distantes bloquées`;
+  const label = _t('mb.img.blocked_count', { n: blockedCount });
   const banner = `
     <div class="mb-img-banner" data-int-id="${escapeHtml(String(em.int_id))}" data-sender-domain="${escapeHtml(domain)}">
       <i data-lucide="image-off" class="w-4 h-4"></i>
       <span class="mb-img-banner-label">${label}</span>
       <span class="mb-img-banner-spacer"></span>
       <button class="mb-img-banner-btn" data-act="show-once" type="button">
-        Charger pour ce mail
+        ${_t('mb.img.load_once')}
       </button>
       <button class="mb-img-banner-btn mb-img-banner-btn-trust" data-act="trust-sender" type="button" ${domain ? '' : 'disabled'}>
-        Toujours pour ${domain ? escapeHtml(domain) : 'cet expéditeur'}
+        ${domain ? _t('mb.img.always_for', { domain: escapeHtml(domain) }) : _t('mb.img.always_for_sender')}
       </button>
     </div>`;
   return banner + iframe;
@@ -134,6 +133,7 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
 // from the same place that mounts the read pane. The closure keeps a
 // reference to `em` so we can re-render on demand.
 function attachImageBlockerHandlers(em) {
+  const _t = window.t || ((k) => k);
   const banner = document.querySelector('#read-pane .mb-img-banner');
   if (!banner) return;
 
@@ -176,9 +176,9 @@ function attachImageBlockerHandlers(em) {
       if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
       em.sender_images_trusted = true;
       reRender(false);  // forceShow=false but trusted=true → blocker skipped
-      window.toast?.(`Images activées pour ${domain}`, 2500);
+      window.toast?.(_t('mb.img.trusted', { domain }), 2500);
     } catch (e) {
-      window.toast?.('Erreur : ' + e.message, 3500);
+      window.toast?.(_t('mb.toast.error', { msg: e.message }), 3500);
     }
   });
 }
@@ -192,6 +192,7 @@ function attachImageBlockerHandlers(em) {
 //   red     → at least one fail / softfail / policy
 //   grey    → no Authentication-Results header
 function authBadgeHtml(authJson) {
+  const _t = window.t || ((k) => k);
   let data = null;
   try { data = authJson ? JSON.parse(authJson) : null; } catch (_) {}
   const verdicts = data ? Object.entries(data).filter(([_, v]) => v) : [];
@@ -199,28 +200,28 @@ function authBadgeHtml(authJson) {
   if (!verdicts.length) {
     kind = 'unknown';
     icon = 'help-circle';
-    label = 'non vérifié';
-    tooltip = "L'origine de ce mail n'a pas pu être vérifiée par ton fournisseur.";
+    label = _t('mb.auth.unknown');
+    tooltip = _t('mb.auth.unknown_tip');
   } else {
     const allPass = verdicts.every(([_, v]) => v === 'pass');
     const anyBad = verdicts.some(([_, v]) => v === 'fail' || v === 'softfail' || v === 'policy');
     if (anyBad) {
       kind = 'fail';
       icon = 'shield-x';
-      label = 'authentification échouée';
-      tooltip = "Ce mail pourrait être falsifié — vérifie l'expéditeur avant d'agir.";
+      label = _t('mb.auth.fail');
+      tooltip = _t('mb.auth.fail_tip');
     } else if (allPass) {
       kind = 'pass';
       icon = 'shield-check';
-      label = 'authentifié';
+      label = _t('mb.auth.pass');
       // No tooltip — the label already says it. Adding "DKIM: pass" etc.
       // is jargon that doesn't help a non-technical reader.
       tooltip = '';
     } else {
       kind = 'warn';
       icon = 'shield-alert';
-      label = 'authentification partielle';
-      tooltip = "Une partie des contrôles d'origine n'a pas abouti.";
+      label = _t('mb.auth.partial');
+      tooltip = _t('mb.auth.partial_tip');
     }
   }
   const titleAttr = tooltip ? ` title="${escapeHtml(tooltip)}"` : '';
@@ -237,6 +238,7 @@ function authBadgeHtml(authJson) {
 // so external CSS would never apply — we set inline style + a title for the
 // hover tooltip. Same heuristic as on plain-text bodies via linkify.
 function markSuspiciousLinksInHtml(html) {
+  const _t = window.t || ((k) => k);
   if (!html) return html;
   let doc;
   try {
@@ -273,20 +275,18 @@ function markSuspiciousLinksInHtml(html) {
     );
     const prevTitle = a.getAttribute('title');
     if (!prevTitle) {
-      a.setAttribute('title',
-        'Domaine suspect — un avertissement s\'affichera avant l\'ouverture'
-      );
+      a.setAttribute('title', _t('mb.link.suspicious_title'));
     }
   });
   return flagged > 0 ? doc.documentElement.outerHTML : html;
 }
 
 const FOLDERS = [
-  { id: 'inbox',     label: 'Inbox',     icon: 'inbox' },
-  { id: 'sent',      label: 'Envoyés',   icon: 'send' },
-  { id: 'favourite', label: 'Favoris',   icon: 'star' },
-  { id: 'draft',     label: 'Brouillons',icon: 'pencil' },
-  { id: 'deleted',   label: 'Supprimés', icon: 'trash-2' },
+  { id: 'inbox',     labelKey: 'mb.folder.inbox',     icon: 'inbox' },
+  { id: 'sent',      labelKey: 'mb.folder.sent',      icon: 'send' },
+  { id: 'favourite', labelKey: 'mb.folder.favourite', icon: 'star' },
+  { id: 'draft',     labelKey: 'mb.folder.draft',     icon: 'pencil' },
+  { id: 'deleted',   labelKey: 'mb.folder.deleted',   icon: 'trash-2' },
 ];
 
 // Returns a setter that flips the send button between three visual
@@ -296,7 +296,9 @@ const FOLDERS = [
 //   idle    : original label restored, button enabled
 //   loading : spinner via .loading + "Envoi en cours…", disabled
 //   sent    : green pulse via .is-sent + "Envoyé", disabled
-function sendButtonStateFactory(btn, idleLabel = 'Envoyer') {
+function sendButtonStateFactory(btn, idleLabel = null) {
+  const _t = window.t || ((k) => k);
+  if (idleLabel == null) idleLabel = _t('mb.send');
   if (!btn) return () => {};
   // Cache the original label markup once so we can restore it cleanly
   // (the inner <i>+text gets replaced when we change state).
@@ -306,10 +308,10 @@ function sendButtonStateFactory(btn, idleLabel = 'Envoyer') {
     btn.disabled = state !== 'idle';
     if (state === 'loading') {
       btn.classList.add('loading');
-      btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4"></i>Envoi…';
+      btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4"></i>${_t('mb.send.sending')}`;
     } else if (state === 'sent') {
       btn.classList.add('is-sent');
-      btn.innerHTML = '<i data-lucide="check" class="w-4 h-4"></i>Envoyé';
+      btn.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i>${_t('mb.send.sent')}`;
     } else {
       btn.innerHTML = originalHtml;
     }
@@ -326,6 +328,7 @@ function sendButtonStateFactory(btn, idleLabel = 'Envoyer') {
 // menu shares the look of the inbox's sort-select. A hidden input
 // `#mbc-from` exposes the selected email to existing form-reading code.
 function buildComposerMetaHtml({ mode, accounts, defaultAccount, to = '', subject = '' }) {
+  const _t = window.t || ((k) => k);
   const chevron = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
   const accs = Array.isArray(accounts) ? accounts.filter((a) => a && a.email) : [];
   const fallback = (defaultAccount || (accs[0] && accs[0].email) || '').toLowerCase();
@@ -352,7 +355,7 @@ function buildComposerMetaHtml({ mode, accounts, defaultAccount, to = '', subjec
   const selectedValue = selectedAcc ? selectedAcc.email : (defaultAccount || '');
   const selectedRow = selectedAcc
     ? renderRow(selectedAcc)
-    : `<span class="acc-select-text"><span class="acc-select-email">${escapeHtml(defaultAccount || '(aucun compte)')}</span></span>`;
+    : `<span class="acc-select-text"><span class="acc-select-email">${escapeHtml(defaultAccount || _t('mb.composer.no_account'))}</span></span>`;
 
   const opts = accs.length
     ? accs.map((a) => {
@@ -364,25 +367,25 @@ function buildComposerMetaHtml({ mode, accounts, defaultAccount, to = '', subjec
   return `
     <div class="mb-composer-meta" data-mode="${escapeHtml(mode || 'reply')}">
       <div class="mbc-row mbc-row-from">
-        <span class="mbc-key">De</span>
+        <span class="mbc-key">${_t('mb.composer.from')}</span>
         <div class="mbc-select">
           <button class="mbc-select-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
             <span class="mbc-select-label">${selectedRow}</span>
             ${chevron}
           </button>
-          <div class="mbc-select-drop" role="listbox" aria-label="Compte expéditeur">
+          <div class="mbc-select-drop" role="listbox" aria-label="${_t('mb.composer.from_aria')}">
             ${opts}
           </div>
           <input type="hidden" id="mbc-from" value="${escapeHtml(selectedValue)}">
         </div>
       </div>
       <label class="mbc-row">
-        <span class="mbc-key">À</span>
-        <input id="mbc-to" class="mbc-input" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(to)}" placeholder="destinataire@exemple.com">
+        <span class="mbc-key">${_t('mb.composer.to')}</span>
+        <input id="mbc-to" class="mbc-input" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(to)}" placeholder="${_t('mb.composer.to_ph')}">
       </label>
       <label class="mbc-row">
-        <span class="mbc-key">Objet</span>
-        <input id="mbc-subject" class="mbc-input" type="text" value="${escapeHtml(subject)}" placeholder="(sans objet)">
+        <span class="mbc-key">${_t('mb.composer.subject')}</span>
+        <input id="mbc-subject" class="mbc-input" type="text" value="${escapeHtml(subject)}" placeholder="${_t('mb.no_subject')}">
       </label>
     </div>
   `;
@@ -458,26 +461,28 @@ const ACCOUNT_TYPE_META = {
 const ACCOUNT_TYPE_ORDER = ['proton', 'gmail', 'orange', 'ovh', 'other'];
 
 export async function mountMailbox(host, _opts) {
+  const t = window.t || ((k) => k);
+  const FOLDERS_L = FOLDERS.map((f) => ({ ...f, label: t(f.labelKey) }));
   host.innerHTML = `
-    <section class="mailbox no-selection" aria-label="Boîte de réception">
-      <aside class="mb-side" aria-label="Navigation latérale">
+    <section class="mailbox no-selection" aria-label="${t('mb.aria.mailbox')}">
+      <aside class="mb-side" aria-label="${t('mb.aria.sidebar')}">
         <div class="mb-side-head">
-          <h1>Boîte mail</h1>
-          <button class="icon-btn" id="btn-sync" aria-label="Synchroniser" title="Synchroniser">
+          <h1>${t('mb.title')}</h1>
+          <button class="icon-btn" id="btn-sync" aria-label="${t('mb.sync')}" title="${t('mb.sync')}">
             <i data-lucide="refresh-cw" class="w-4 h-4"></i>
           </button>
         </div>
         <button class="mb-cta" id="cta-compose">
           <i data-lucide="mail-plus" class="w-4 h-4"></i>
-          <span>Nouveau message</span>
+          <span>${t('mb.compose')}</span>
         </button>
 
         <div class="mb-side-scroll">
 
         <div class="mb-section-title" id="title-folders">
-          <span>Dossiers</span>
+          <span>${t('mb.sidebar.folders')}</span>
           <div style="display:flex;align-items:center;gap:4px">
-            <button class="icon-btn" id="btn-add-folder" style="width:24px;height:24px" aria-label="Créer un dossier" onclick="event.stopPropagation()">
+            <button class="icon-btn" id="btn-add-folder" style="width:24px;height:24px" aria-label="${t('mb.folder.create')}" onclick="event.stopPropagation()">
               <i data-lucide="plus" class="w-4 h-4"></i>
             </button>
             <svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
@@ -490,7 +495,7 @@ export async function mountMailbox(host, _opts) {
         </div>
 
         <div class="mb-section-title" id="title-labels">
-          <span>Catégories</span>
+          <span>${t('mb.sidebar.categories')}</span>
           <svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
         <div class="mb-collapsible" id="wrap-labels">
@@ -500,9 +505,9 @@ export async function mountMailbox(host, _opts) {
         </div>
 
         <div class="mb-section-title" id="title-userlabels">
-          <span>Étiquettes</span>
+          <span>${t('mb.sidebar.labels')}</span>
           <div style="display:flex;align-items:center;gap:4px">
-            <button class="icon-btn" id="btn-add-label" style="width:24px;height:24px" aria-label="Ajouter une étiquette" onclick="event.stopPropagation()">
+            <button class="icon-btn" id="btn-add-label" style="width:24px;height:24px" aria-label="${t('mb.label.add')}" onclick="event.stopPropagation()">
               <i data-lucide="plus" class="w-4 h-4"></i>
             </button>
             <svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
@@ -523,37 +528,37 @@ export async function mountMailbox(host, _opts) {
         <div class="mb-search">
           <div class="mb-search-input">
             <i data-lucide="search" class="icn w-4 h-4"></i>
-            <input type="text" id="search" data-role="search" placeholder="Rechercher dans les mails…" aria-label="Recherche" />
+            <input type="text" id="search" data-role="search" placeholder="${t('mb.search.placeholder')}" aria-label="${t('mb.search.label')}" />
           </div>
           <div class="mb-chips" id="filter-chips"></div>
           <div class="sort-select" id="sort-select-wrap"></div>
         </div>
         <div class="mb-sel-bar" id="sel-bar" hidden>
           <div class="sel-left">
-            <button class="sel-btn" data-act="clear" title="Annuler la sélection" aria-label="Annuler la sélection">
+            <button class="sel-btn" data-act="clear" title="${t('mb.sel.clear')}" aria-label="${t('mb.sel.clear')}">
               <i data-lucide="x" class="w-4 h-4"></i>
             </button>
-            <span class="sel-count"><strong id="sel-count-num">0</strong> sélectionné(s)</span>
-            <button class="sel-btn sel-btn-all" id="sel-all-btn" data-act="select-all" title="Tout sélectionner" aria-label="Tout sélectionner">
+            <span class="sel-count"><strong id="sel-count-num">0</strong> ${t('mb.sel.count_label')}</span>
+            <button class="sel-btn sel-btn-all" id="sel-all-btn" data-act="select-all" title="${t('mb.sel.all')}" aria-label="${t('mb.sel.all')}">
               <i data-lucide="check-square" class="w-4 h-4"></i>
-              <span id="sel-all-label">Tout</span>
+              <span id="sel-all-label">${t('mb.sel.all_short')}</span>
             </button>
           </div>
           <div class="sel-actions">
-            <button class="sel-btn" id="sel-btn-read" data-act="read" title="Marquer comme lu" aria-label="Marquer comme lu">
+            <button class="sel-btn" id="sel-btn-read" data-act="read" title="${t('mb.action.mark_read')}" aria-label="${t('mb.action.mark_read')}">
               <i data-lucide="mail-open" class="w-4 h-4"></i>
             </button>
-            <button class="sel-btn" data-act="tag" title="Étiqueter" aria-label="Étiqueter">
+            <button class="sel-btn" data-act="tag" title="${t('mb.action.tag')}" aria-label="${t('mb.action.tag')}">
               <i data-lucide="tag" class="w-4 h-4"></i>
             </button>
-            <button class="sel-btn" data-act="move" title="Déplacer" aria-label="Déplacer">
+            <button class="sel-btn" data-act="move" title="${t('mb.action.move')}" aria-label="${t('mb.action.move')}">
               <i data-lucide="folder-input" class="w-4 h-4"></i>
             </button>
-            <button class="sel-btn" data-act="ai" title="Analyser avec l'IA" aria-label="Analyser avec l'IA">
+            <button class="sel-btn" data-act="ai" title="${t('mb.action.ai_analyze')}" aria-label="${t('mb.action.ai_analyze')}">
               <i data-lucide="sparkles" class="w-4 h-4"></i>
             </button>
             <div class="sel-sep"></div>
-            <button class="sel-btn danger" data-act="delete" title="Supprimer" aria-label="Supprimer">
+            <button class="sel-btn danger" data-act="delete" title="${t('mb.action.delete')}" aria-label="${t('mb.action.delete')}">
               <i data-lucide="trash-2" class="w-4 h-4"></i>
             </button>
           </div>
@@ -566,10 +571,10 @@ export async function mountMailbox(host, _opts) {
   `;
 
   const SORT_OPTIONS = [
-    { value: 'date-desc', label: 'Plus récent',   short: 'Récent ↓' },
-    { value: 'date-asc',  label: 'Plus ancien',   short: 'Ancien ↑' },
-    { value: 'score',     label: 'Par importance', short: 'Importance' },
-    { value: 'sender',    label: 'Expéditeur A–Z', short: 'Expéditeur' },
+    { value: 'date-desc', label: t('mb.sort.date_desc'),  short: t('mb.sort.date_desc_short') },
+    { value: 'date-asc',  label: t('mb.sort.date_asc'),   short: t('mb.sort.date_asc_short') },
+    { value: 'score',     label: t('mb.sort.score'),      short: t('mb.sort.score_short') },
+    { value: 'sender',    label: t('mb.sort.sender'),     short: t('mb.sort.sender_short') },
   ];
 
   const state = {
@@ -720,7 +725,7 @@ export async function mountMailbox(host, _opts) {
   // ── Render: folders + labels ──────────────────────────────
   function renderFolders() {
     const cont = $('#mb-folders');
-    const builtins = FOLDERS.map((f) => {
+    const builtins = FOLDERS_L.map((f) => {
       const badgeId = f.id === 'inbox' ? 'badge-inbox'
                     : f.id === 'favourite' ? 'badge-favourite'
                     : f.id === 'draft' ? 'badge-draft'
@@ -741,7 +746,7 @@ export async function mountMailbox(host, _opts) {
       <button class="mb-folder ${state.folder === f.name ? 'active' : ''}" data-folder="${escapeHtml(f.name)}" data-folder-id="${f.id}">
         <i data-lucide="folder" class="w-4 h-4"></i>
         <span class="lab">${escapeHtml(f.name)}</span>
-        <button class="mb-folder-edit" data-edit-folder="${f.id}" title="Renommer / supprimer" aria-label="Modifier">
+        <button class="mb-folder-edit" data-edit-folder="${f.id}" title="${t('mb.folder.edit_title')}" aria-label="${t('mb.edit')}">
           <i data-lucide="more-horizontal" class="w-3 h-3"></i>
         </button>
       </button>
@@ -811,20 +816,20 @@ export async function mountMailbox(host, _opts) {
     const cont = $('#mb-userlabels');
     if (!cont) return;
     if (!state.userLabels.length) {
-      cont.innerHTML = `<div class="mb-userlabel-empty">Aucune étiquette</div>`;
+      cont.innerHTML = `<div class="mb-userlabel-empty">${t('mb.label.empty')}</div>`;
       return;
     }
     const allRow = `
       <button class="mb-label ${state.labelFilter == null ? 'active' : ''}" data-label-id="">
         <i data-lucide="tags" class="cat-icon" style="color:var(--muted-2)"></i>
-        <span class="lab">Toutes</span>
+        <span class="lab">${t('mb.label.all')}</span>
       </button>
     `;
     cont.innerHTML = allRow + state.userLabels.map((l) => `
       <button class="mb-label ${state.labelFilter === l.id ? 'active' : ''}" data-label-id="${l.id}" title="${escapeHtml(l.name)}">
         <span class="mb-userlabel-dot" style="background:${escapeHtml(l.color)}"></span>
         <span class="lab">${escapeHtml(l.name)}</span>
-        <button class="mb-userlabel-edit" data-edit-label="${l.id}" title="Modifier" aria-label="Modifier">
+        <button class="mb-userlabel-edit" data-edit-label="${l.id}" title="${t('mb.edit')}" aria-label="${t('mb.edit')}">
           <i data-lucide="more-horizontal" class="w-3 h-3"></i>
         </button>
       </button>
@@ -893,33 +898,33 @@ export async function mountMailbox(host, _opts) {
     backdrop.innerHTML = `
       <div class="mb-label-modal-card">
         <div class="mb-label-modal-head">
-          <h3>${isEdit ? 'Modifier l\'étiquette' : 'Nouvelle étiquette'}</h3>
-          <button class="icon-btn mb-label-modal-close" aria-label="Fermer"><i data-lucide="x" class="w-4 h-4"></i></button>
+          <h3>${isEdit ? t('mb.label.modal.edit_title') : t('mb.label.modal.new_title')}</h3>
+          <button class="icon-btn mb-label-modal-close" aria-label="${t('mb.close')}"><i data-lucide="x" class="w-4 h-4"></i></button>
         </div>
         <div class="mb-label-modal-body">
           <label class="mb-label-modal-field">
-            <span>Nom</span>
-            <input type="text" id="mb-label-name" maxlength="60" value="${escapeHtml(startName)}" placeholder="Travail, Famille, Urgent…" autocomplete="off">
+            <span>${t('mb.label.modal.name')}</span>
+            <input type="text" id="mb-label-name" maxlength="60" value="${escapeHtml(startName)}" placeholder="${t('mb.label.modal.name_ph')}" autocomplete="off">
           </label>
           <div class="mb-label-modal-field">
-            <span>Couleur</span>
+            <span>${t('mb.label.modal.color')}</span>
             <div class="mb-label-palette">
               ${LABEL_PALETTE.map((c) => `<button type="button" class="mb-label-swatch ${c.toLowerCase() === startColor.toLowerCase() ? 'is-active' : ''}" style="background:${c}" data-color="${c}" aria-label="${c}"></button>`).join('')}
             </div>
           </div>
           <div class="mb-label-modal-preview">
-            <span>Aperçu</span>
+            <span>${t('mb.label.modal.preview')}</span>
             <span class="mb-label-chip" id="mb-label-preview-chip" style="background:${startColor}33;color:${startColor}">
               <span class="mb-label-chip-dot" style="background:${startColor}"></span>
-              <span id="mb-label-preview-text">${escapeHtml(startName || 'Étiquette')}</span>
+              <span id="mb-label-preview-text">${escapeHtml(startName || t('mb.label.modal.preview_fallback'))}</span>
             </span>
           </div>
         </div>
         <div class="mb-label-modal-footer">
-          ${isEdit ? '<button class="mb-label-modal-delete" id="mb-label-modal-delete" type="button">Supprimer</button>' : ''}
+          ${isEdit ? `<button class="mb-label-modal-delete" id="mb-label-modal-delete" type="button">${t('mb.delete')}</button>` : ''}
           <span style="flex:1"></span>
-          <button class="mb-label-modal-cancel" type="button">Annuler</button>
-          <button class="mb-label-modal-save" type="button" id="mb-label-modal-save">${isEdit ? 'Enregistrer' : 'Créer'}</button>
+          <button class="mb-label-modal-cancel" type="button">${t('mb.cancel')}</button>
+          <button class="mb-label-modal-save" type="button" id="mb-label-modal-save">${isEdit ? t('mb.save') : t('mb.create')}</button>
         </div>
       </div>
     `;
@@ -942,7 +947,7 @@ export async function mountMailbox(host, _opts) {
       chipEl.style.background = `${currentColor}33`;
       chipEl.style.color = currentColor;
       chipDot.style.background = currentColor;
-      chipText.textContent = nameEl.value.trim() || 'Étiquette';
+      chipText.textContent = nameEl.value.trim() || t('mb.label.modal.preview_fallback');
     };
 
     nameEl.addEventListener('input', repaintPreview);
@@ -957,7 +962,7 @@ export async function mountMailbox(host, _opts) {
 
     backdrop.querySelector('#mb-label-modal-save').addEventListener('click', async () => {
       const name = nameEl.value.trim();
-      if (!name) { window.toast('Nom requis.'); nameEl.focus(); return; }
+      if (!name) { window.toast(t('mb.label.toast.name_required')); nameEl.focus(); return; }
       try {
         if (isEdit) {
           await api.updateLabel(existing.id, { name, color: currentColor });
@@ -979,24 +984,24 @@ export async function mountMailbox(host, _opts) {
               try { renderEmail(em); } catch (_) {}
             }
           }
-          window.toast('Étiquette mise à jour');
+          window.toast(t('mb.label.toast.updated'));
         } else {
           await api.createLabel({ name, color: currentColor });
-          window.toast('Étiquette créée');
+          window.toast(t('mb.label.toast.created'));
         }
         close();
         await loadUserLabels();
       } catch (err) {
-        window.toast(err?.message || 'Échec.');
+        window.toast(err?.message || t('mb.toast.fail'));
       }
     });
 
     if (isEdit) {
       backdrop.querySelector('#mb-label-modal-delete').addEventListener('click', async () => {
-        if (!confirm(`Supprimer l'étiquette « ${existing.name} » ?\n(Elle disparaîtra de tous les mails associés.)`)) return;
+        if (!confirm(t('mb.label.confirm.delete', { name: existing.name }))) return;
         try {
           await api.deleteLabel(existing.id);
-          window.toast('Étiquette supprimée');
+          window.toast(t('mb.label.toast.deleted'));
           close();
           // If the user was filtered on this label, drop the filter.
           if (state.labelFilter === existing.id) state.labelFilter = null;
@@ -1015,7 +1020,7 @@ export async function mountMailbox(host, _opts) {
           }
           await loadUserLabels();
         } catch (err) {
-          window.toast(err?.message || 'Échec suppression.');
+          window.toast(err?.message || t('mb.toast.fail_delete'));
         }
       });
     }
@@ -1042,24 +1047,23 @@ export async function mountMailbox(host, _opts) {
     backdrop.innerHTML = `
       <div class="mb-label-modal-card">
         <div class="mb-label-modal-head">
-          <h3>${isEdit ? 'Renommer le dossier' : 'Nouveau dossier'}</h3>
-          <button class="icon-btn mb-label-modal-close" aria-label="Fermer"><i data-lucide="x" class="w-4 h-4"></i></button>
+          <h3>${isEdit ? t('mb.folder.modal.edit_title') : t('mb.folder.modal.new_title')}</h3>
+          <button class="icon-btn mb-label-modal-close" aria-label="${t('mb.close')}"><i data-lucide="x" class="w-4 h-4"></i></button>
         </div>
         <div class="mb-label-modal-body">
           <label class="mb-label-modal-field">
-            <span>Nom du dossier</span>
-            <input type="text" id="mb-folder-name" maxlength="40" value="${escapeHtml(startName)}" placeholder="Factures, Clients, Archive…" autocomplete="off">
+            <span>${t('mb.folder.modal.name')}</span>
+            <input type="text" id="mb-folder-name" maxlength="40" value="${escapeHtml(startName)}" placeholder="${t('mb.folder.modal.name_ph')}" autocomplete="off">
           </label>
           <div class="mb-folder-modal-hint" style="font-size:11.5px;color:var(--muted);line-height:1.4">
-            Lettres, chiffres, espace, tiret et underscore. 40 caractères max.
-            Les noms réservés (inbox, sent, draft, deleted) sont interdits.
+            ${t('mb.folder.modal.hint')}
           </div>
         </div>
         <div class="mb-label-modal-footer">
-          ${isEdit ? '<button class="mb-label-modal-delete" id="mb-folder-modal-delete" type="button">Supprimer</button>' : ''}
+          ${isEdit ? `<button class="mb-label-modal-delete" id="mb-folder-modal-delete" type="button">${t('mb.delete')}</button>` : ''}
           <span style="flex:1"></span>
-          <button class="mb-label-modal-cancel" type="button">Annuler</button>
-          <button class="mb-label-modal-save" type="button" id="mb-folder-modal-save">${isEdit ? 'Enregistrer' : 'Créer'}</button>
+          <button class="mb-label-modal-cancel" type="button">${t('mb.cancel')}</button>
+          <button class="mb-label-modal-save" type="button" id="mb-folder-modal-save">${isEdit ? t('mb.save') : t('mb.create')}</button>
         </div>
       </div>
     `;
@@ -1075,38 +1079,38 @@ export async function mountMailbox(host, _opts) {
 
     backdrop.querySelector('#mb-folder-modal-save').addEventListener('click', async () => {
       const name = nameEl.value.trim();
-      if (!name) { window.toast('Nom requis.'); nameEl.focus(); return; }
+      if (!name) { window.toast(t('mb.folder.toast.name_required')); nameEl.focus(); return; }
       try {
         if (isEdit) {
           await api.updateFolder(existing.id, { name });
           // If the user was viewing this folder, follow the rename.
           if (state.folder === existing.name) state.folder = name;
-          window.toast('Dossier renommé');
+          window.toast(t('mb.folder.toast.renamed'));
         } else {
           await api.createFolder(name);
-          window.toast('Dossier créé');
+          window.toast(t('mb.folder.toast.created'));
         }
         close();
         await loadCustomFolders();
         loadEmails();
       } catch (err) {
-        window.toast(err?.message || 'Échec.');
+        window.toast(err?.message || t('mb.toast.fail'));
       }
     });
 
     if (isEdit) {
       backdrop.querySelector('#mb-folder-modal-delete').addEventListener('click', async () => {
-        if (!confirm(`Supprimer le dossier « ${existing.name} » ?\n(Les mails seront déplacés dans la boîte de réception.)`)) return;
+        if (!confirm(t('mb.folder.confirm.delete', { name: existing.name }))) return;
         try {
           await api.deleteFolder(existing.id);
-          window.toast('Dossier supprimé');
+          window.toast(t('mb.folder.toast.deleted'));
           close();
           // Drop the filter if the user was on the deleted folder.
           if (state.folder === existing.name) state.folder = 'inbox';
           await loadCustomFolders();
           loadEmails();
         } catch (err) {
-          window.toast(err?.message || 'Échec suppression.');
+          window.toast(err?.message || t('mb.toast.fail_delete'));
         }
       });
     }
@@ -1213,10 +1217,10 @@ export async function mountMailbox(host, _opts) {
         const unread = stats?.unread ?? 0;
         const hasError = Boolean(stats?.sync_error);
         const badgeHtml = hasError
-          ? `<span class="mb-acc-badge error" title="${escapeHtml(stats.sync_error || 'Erreur de synchronisation')}">!</span>`
+          ? `<span class="mb-acc-badge error" title="${escapeHtml(stats.sync_error || t('mb.sync.error', { msg: '' }))}">!</span>`
           : `<span class="mb-acc-badge ${isOn ? 'on-active' : ''}">${unread}</span>`;
         return `
-          <button class="mb-folder mb-acc-item ${isOn ? 'active' : ''}" data-acc="${escapeHtml(a.email)}" title="Clic = ne voir que ce compte · Cmd/Ctrl/Maj+clic = ajouter à la sélection">
+          <button class="mb-folder mb-acc-item ${isOn ? 'active' : ''}" data-acc="${escapeHtml(a.email)}" title="${t('mb.sidebar.acc_toggle_title')}">
             <span class="mb-acc-av" style="background:${col}">${escapeHtml(ini)}</span>
             <span class="lab">${escapeHtml(a.name || a.email)}</span>
             ${badgeHtml}
@@ -1225,7 +1229,7 @@ export async function mountMailbox(host, _opts) {
 
       return `
         <div class="mb-acc-group" data-type="${escapeHtml(type)}">
-          <div class="mb-subsection-title ${collapsed ? 'is-collapsed' : ''} ${anySelected ? 'has-active' : ''} ${allInGroup ? 'all-active' : ''}" data-sub-toggle="${escapeHtml(subKey)}" data-sub-type="${escapeHtml(type)}" title="Replier / déplier · Maj+clic pour ne garder que ce groupe">
+          <div class="mb-subsection-title ${collapsed ? 'is-collapsed' : ''} ${anySelected ? 'has-active' : ''} ${allInGroup ? 'all-active' : ''}" data-sub-toggle="${escapeHtml(subKey)}" data-sub-type="${escapeHtml(type)}" title="${t('mb.sidebar.subsection_title')}">
             <span class="mb-acc-type-dot" style="background:${meta.color}"></span>
             <span class="mb-acc-type-lab">${escapeHtml(meta.label)}</span>
             ${groupUnread > 0 ? `<span class="mb-acc-type-count">${groupUnread}</span>` : ''}
@@ -1244,7 +1248,7 @@ export async function mountMailbox(host, _opts) {
     section.innerHTML = `
       <button class="mb-folder ${allSelected ? 'active' : ''}" data-acc="">
         <i data-lucide="users" class="w-4 h-4"></i>
-        <span class="lab">Tous les comptes</span>
+        <span class="lab">${t('mb.sidebar.all_accounts')}</span>
       </button>
       ${groupsHtml}
     `;
@@ -1318,10 +1322,10 @@ export async function mountMailbox(host, _opts) {
 
     const wrap = $('#sort-select-wrap');
     wrap.innerHTML = `
-      <button class="sort-select-btn" id="sort-select-btn" type="button" aria-haspopup="listbox" aria-expanded="false" title="Trier les mails">
+      <button class="sort-select-btn" id="sort-select-btn" type="button" aria-haspopup="listbox" aria-expanded="false" title="${t('mb.sort.title')}">
         ${sortIcon}<span>${escapeHtml(curSort.short)}</span>${chevron}
       </button>
-      <div class="sort-select-drop" id="sort-select-drop" role="listbox" aria-label="Trier par">
+      <div class="sort-select-drop" id="sort-select-drop" role="listbox" aria-label="${t('mb.sort.by_aria')}">
         ${visibleOptions.map((opt) => `
           <div class="acc-select-opt ${state.sortMode === opt.value ? 'active' : ''}"
                data-sort="${escapeHtml(opt.value)}" role="option"
@@ -1377,9 +1381,9 @@ export async function mountMailbox(host, _opts) {
     // First render — create buttons and attach listeners.
     const noQuick = !state.onlyUnread && !state.onlyReply;
     el.innerHTML = `
-      <button class="mb-chip ${noQuick ? 'active' : ''}" data-quick="all">Tous</button>
-      <button class="mb-chip ${state.onlyUnread ? 'active' : ''}" data-quick="unread">Non lus</button>
-      <button class="mb-chip ${state.onlyReply ? 'active' : ''}" data-quick="reply">À répondre</button>
+      <button class="mb-chip ${noQuick ? 'active' : ''}" data-quick="all">${t('mb.chip.all')}</button>
+      <button class="mb-chip ${state.onlyUnread ? 'active' : ''}" data-quick="unread">${t('mb.chip.unread')}</button>
+      <button class="mb-chip ${state.onlyReply ? 'active' : ''}" data-quick="reply">${t('mb.chip.reply')}</button>
     `;
     el.querySelectorAll('[data-quick]').forEach((b) => {
       b.addEventListener('click', () => {
@@ -1622,8 +1626,8 @@ export async function mountMailbox(host, _opts) {
           <div class="ill" style="margin:0 auto 14px;width:56px;height:56px;border-radius:16px;background:var(--surface);display:grid;place-items:center;color:var(--muted-2)">
             <i data-lucide="inbox" class="w-6 h-6"></i>
           </div>
-          <div style="font-weight:600;color:var(--text);margin-bottom:4px">Aucun mail</div>
-          <div style="font-size:13px">Aucun mail ne correspond à ces filtres.</div>
+          <div style="font-weight:600;color:var(--text);margin-bottom:4px">${t('mb.list.empty_title')}</div>
+          <div style="font-size:13px">${t('mb.list.empty_filter')}</div>
         </div>`;
       window.lucide?.createIcons();
       return;
@@ -1666,7 +1670,7 @@ export async function mountMailbox(host, _opts) {
 
     return `
       <article class="mb-card${animClass} ${isUnread ? 'unread' : ''} ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''}" data-id="${em.int_id}" role="listitem" tabindex="0"${animStyle}>
-        <div class="mb-avatar" style="background:${col}" role="checkbox" aria-checked="${isChecked}" aria-label="Sélectionner ce message" tabindex="0">
+        <div class="mb-avatar" style="background:${col}" role="checkbox" aria-checked="${isChecked}" aria-label="${t('mb.list.select_aria')}" tabindex="0">
           <span class="av-text">${escapeHtml(ini)}</span>
           ${logoImg}
           <span class="av-check"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
@@ -1674,11 +1678,11 @@ export async function mountMailbox(host, _opts) {
         <div class="mb-card-body">
           <div class="mb-card-row">
             <div class="mb-row-left">
-              <span class="mb-sender">${escapeHtml(sName || sEmail || 'Inconnu')}</span>
+              <span class="mb-sender">${escapeHtml(sName || sEmail || t('mb.unknown_sender'))}</span>
               ${Array.isArray(em.labels) && em.labels.length ? `
                 <span class="mb-card-labels">
                   ${em.labels.slice(0, 3).map((l) => `<span class="mb-label-chip mb-label-chip-sm" style="background:${escapeHtml(l.color)}33;color:${escapeHtml(l.color)}" title="${escapeHtml(l.name)}"><span class="mb-label-chip-dot" style="background:${escapeHtml(l.color)}"></span>${escapeHtml(l.name)}</span>`).join('')}
-                  ${em.labels.length > 3 ? `<span class="mb-label-chip mb-label-chip-sm mb-label-chip-more" title="${em.labels.length - 3} étiquette(s) de plus">+${em.labels.length - 3}</span>` : ''}
+                  ${em.labels.length > 3 ? `<span class="mb-label-chip mb-label-chip-sm mb-label-chip-more" title="${t('mb.label.more', { n: em.labels.length - 3 })}">+${em.labels.length - 3}</span>` : ''}
                 </span>
               ` : ''}
               ${(() => {
@@ -1688,24 +1692,24 @@ export async function mountMailbox(host, _opts) {
                 // spots dangerous PJ at a glance.
                 const a = em.attachments || { total: 0, dangerous: 0, suspicious: 0 };
                 if (!a.total) return '';
-                if (a.dangerous)  return `<i data-lucide="shield-alert" class="w-3.5 h-3.5 mb-att-warn" title="Pièce jointe dangereuse"></i>`;
-                if (a.suspicious) return `<i data-lucide="paperclip" class="w-3.5 h-3.5 mb-att-warn" title="Pièce jointe à vérifier"></i>`;
-                return `<i data-lucide="paperclip" class="w-3.5 h-3.5 mb-att-icon" title="${a.total} pièce${a.total>1?'s':''} jointe${a.total>1?'s':''}"></i>`;
+                if (a.dangerous)  return `<i data-lucide="shield-alert" class="w-3.5 h-3.5 mb-att-warn" title="${t('mb.att.dangerous')}"></i>`;
+                if (a.suspicious) return `<i data-lucide="paperclip" class="w-3.5 h-3.5 mb-att-warn" title="${t('mb.att.suspicious')}"></i>`;
+                return `<i data-lucide="paperclip" class="w-3.5 h-3.5 mb-att-icon" title="${t('mb.att.count', { n: a.total })}"></i>`;
               })()}
-              ${aiOn && em.needs_reply ? `<i data-lucide="reply" class="w-3.5 h-3.5 mb-reply-inline" title="Réponse attendue"></i>` : ''}
-              ${aiOn && em.draft_response ? `<i data-lucide="pencil-line" class="w-3.5 h-3.5 mb-draft-inline" title="Brouillon IA prêt"></i>` : ''}
+              ${aiOn && em.needs_reply ? `<i data-lucide="reply" class="w-3.5 h-3.5 mb-reply-inline" title="${t('mb.ai.needs_reply')}"></i>` : ''}
+              ${aiOn && em.draft_response ? `<i data-lucide="pencil-line" class="w-3.5 h-3.5 mb-draft-inline" title="${t('mb.ai.draft_ready')}"></i>` : ''}
             </div>
             ${em.category && em.category !== 'pending' ? `<i data-lucide="${CATEGORY_ICON[em.category] || 'tag'}" class="mb-cat-icon" style="color:${CATEGORY_COLOR[em.category] || 'var(--muted-2)'}" title="${escapeHtml(CATEGORY_LABEL[em.category] || em.category)}"></i>` : ''}
             <span class="mb-date">${escapeHtml(shortDate(em.date_received))}</span>
           </div>
           <div class="mb-subj">
-            <span>${escapeHtml(em.subject || '(sans objet)')}</span>
+            <span>${escapeHtml(em.subject || t('mb.no_subject'))}</span>
           </div>
           ${showSummary ? `<div class="mb-summary">${escapeHtml(em.summary)}</div>` : ''}
         </div>
         <div class="mb-card-meta">
-          ${score > 0 ? `<span class="score-pill ${scoreClass(score)}" title="Score ${score}/10">${score}</span>` : '<span></span>'}
-          ${em.is_favourite ? `<span class="mb-fav-star" title="Favori"><i data-lucide="star" class="w-3.5 h-3.5"></i></span>` : ''}
+          ${score > 0 ? `<span class="score-pill ${scoreClass(score)}" title="${t('mb.score.title', { n: score })}">${score}</span>` : '<span></span>'}
+          ${em.is_favourite ? `<span class="mb-fav-star" title="${t('mb.favorite')}"><i data-lucide="star" class="w-3.5 h-3.5"></i></span>` : ''}
           ${accAvatar}
         </div>
       </article>
@@ -1807,8 +1811,8 @@ export async function mountMailbox(host, _opts) {
       const total = state.filteredIds.length;
       const allSelected = total > 0 && state.selectedIds.size >= total
         && state.filteredIds.every((id) => state.selectedIds.has(id));
-      allLabel.textContent = allSelected ? 'Aucun' : 'Tout';
-      allBtn.title = allSelected ? 'Tout désélectionner' : 'Tout sélectionner';
+      allLabel.textContent = allSelected ? t('mb.sel.none_short') : t('mb.sel.all_short');
+      allBtn.title = allSelected ? t('mb.sel.deselect_all') : t('mb.sel.all');
       allBtn.setAttribute('aria-label', allBtn.title);
       allBtn.classList.toggle('active', allSelected);
     }
@@ -1855,9 +1859,9 @@ export async function mountMailbox(host, _opts) {
     updateBadge();
     clearSelection();
     if (updated) {
-      window.toast(`${updated} message(s) marqué(s) comme ${target ? 'lu' : 'non lu'}`);
+      window.toast(target ? t('mb.toast.marked_read', { n: updated }) : t('mb.toast.marked_unread', { n: updated }));
     } else {
-      window.toast(target ? 'Déjà lus' : 'Déjà non lus');
+      window.toast(target ? t('mb.toast.already_read') : t('mb.toast.already_unread'));
     }
   }
 
@@ -1878,7 +1882,7 @@ export async function mountMailbox(host, _opts) {
     if (!ids.length) return;
     await animateCardLeave(ids);
     await Promise.all(ids.map((id) => api.patchEmail(id, { category }).catch(() => {})));
-    window.toast(`${ids.length} message(s) étiqueté(s)`);
+    window.toast(t('mb.toast.categorized', { n: ids.length }));
     clearSelection();
     await loadEmails();
   }
@@ -1891,20 +1895,20 @@ export async function mountMailbox(host, _opts) {
       const p = { is_favourite: true };
       // Restoring from trash and starring at the same time is the natural intent.
       if (currentFolder === 'deleted') p.folder = 'inbox';
-      return { patch: p, verb: 'mis en favori', leavesView: currentFolder !== 'inbox' };
+      return { patch: p, verb: t('mb.verb.starred'), leavesView: currentFolder !== 'inbox' };
     }
     if (target === 'deleted') {
-      return { patch: { folder: 'deleted' }, verb: 'supprimé(s)', leavesView: currentFolder !== 'deleted' };
+      return { patch: { folder: 'deleted' }, verb: t('mb.verb.deleted'), leavesView: currentFolder !== 'deleted' };
     }
     if (target === 'inbox') {
       // From the Favourites view, "back to inbox" means unstar — the mail is
       // already in inbox so the only state change is dropping the flag.
       if (currentFolder === 'favourite') {
-        return { patch: { is_favourite: false }, verb: 'retiré(s) des favoris', leavesView: true };
+        return { patch: { is_favourite: false }, verb: t('mb.verb.unstarred'), leavesView: true };
       }
       // From Trash, restore the folder; keep the favourite flag if any.
       if (currentFolder === 'deleted') {
-        return { patch: { folder: 'inbox' }, verb: 'restauré(s) dans la boîte', leavesView: true };
+        return { patch: { folder: 'inbox' }, verb: t('mb.verb.restored'), leavesView: true };
       }
       // Already in inbox — no-op (the popover hides this option in that case).
       return null;
@@ -1917,7 +1921,7 @@ export async function mountMailbox(host, _opts) {
     if (custom) {
       return {
         patch: { folder: custom.name },
-        verb: `déplacé(s) vers « ${custom.name} »`,
+        verb: t('mb.verb.moved_to', { name: custom.name }),
         leavesView: currentFolder !== custom.name,
       };
     }
@@ -1972,7 +1976,7 @@ export async function mountMailbox(host, _opts) {
     }
     await Promise.all(tasks);
 
-    window.toast(`${ids.length} message(s) ${plan.verb}`);
+    window.toast(t('mb.toast.bulk_done', { n: ids.length, verb: plan.verb }));
     // If the open email left the current view, close the read pane.
     if (state.selectedId != null && ids.includes(state.selectedId) && plan.leavesView) {
       renderEmpty();
@@ -1987,9 +1991,9 @@ export async function mountMailbox(host, _opts) {
     const openId = state.selectedId;
     let done = 0, failed = 0;
     const total = ids.length;
-    const t = window.toast({
+    const toastCtrl = window.toast({
       variant: 'loading',
-      message: `Analyse IA 0/${total}`,
+      message: t('mb.ai.bulk.progress', { done: 0, total }),
       progress: 0,
       duration: 0,
     });
@@ -2003,8 +2007,8 @@ export async function mountMailbox(host, _opts) {
         failed++;
       }
       const completed = done + failed;
-      t?.update({
-        message: `Analyse IA ${completed}/${total}`,
+      toastCtrl?.update({
+        message: t('mb.ai.bulk.progress', { done: completed, total }),
         progress: Math.round((completed / total) * 100),
       });
     }
@@ -2018,8 +2022,8 @@ export async function mountMailbox(host, _opts) {
         renderEmail(fresh);
       } catch (_) {}
     }
-    if (failed) t?.error(`Analyse IA terminée : ${done} ok, ${failed} échec(s)`);
-    else        t?.success(`Analyse IA terminée (${done}/${total})`);
+    if (failed) toastCtrl?.error(t('mb.ai.bulk.partial', { done, fail: failed }));
+    else        toastCtrl?.success(t('mb.ai.bulk.done', { done, total }));
   }
 
   // ── Popover (Move + Tag dropdowns) ────────────────────────
@@ -2095,7 +2099,7 @@ export async function mountMailbox(host, _opts) {
     closePopover();
 
     if (!state.userLabels.length) {
-      window.toast('Créez d\'abord une étiquette via la sidebar.');
+      window.toast(t('mb.label.toast.create_first'));
       return;
     }
 
@@ -2125,7 +2129,7 @@ export async function mountMailbox(host, _opts) {
     pop.className = 'sel-popover mb-tag-popover';
     pop.setAttribute('role', 'menu');
     pop.innerHTML = `
-      <div class="mb-tag-popover-head">${ids.length} mail(s)</div>
+      <div class="mb-tag-popover-head">${t('mb.tag_pop.head', { n: ids.length })}</div>
       <div class="mb-tag-popover-list">
         ${state.userLabels.map((l) => `
           <label class="mb-tag-popover-opt">
@@ -2136,8 +2140,8 @@ export async function mountMailbox(host, _opts) {
         `).join('')}
       </div>
       <div class="mb-tag-popover-footer">
-        <button class="mb-tag-popover-cancel" type="button">Annuler</button>
-        <button class="mb-tag-popover-apply"  type="button">Appliquer</button>
+        <button class="mb-tag-popover-cancel" type="button">${t('mb.cancel')}</button>
+        <button class="mb-tag-popover-apply"  type="button">${t('mb.apply')}</button>
       </div>
     `;
     document.body.appendChild(pop);
@@ -2183,9 +2187,9 @@ export async function mountMailbox(host, _opts) {
         if (typeof opts.onUpdated === 'function') {
           opts.onUpdated(labelsArr);
         }
-        window.toast(`${ids.length} mail(s) étiqueté(s)`);
+        window.toast(t('mb.toast.tagged', { n: ids.length }));
       } catch (err) {
-        window.toast(err?.message || 'Échec étiquetage.');
+        window.toast(err?.message || t('mb.toast.fail_tag'));
       }
     });
   }
@@ -2194,13 +2198,13 @@ export async function mountMailbox(host, _opts) {
     const cur = state.folder || 'inbox';
     // Tailor the labels so they match what the action will actually do from
     // the current view (e.g. "back to inbox" from Favourites means unstar).
-    const labelInbox = cur === 'favourite' ? 'Retirer des favoris'
-      : cur === 'deleted' ? 'Restaurer dans la boîte'
-      : 'Boîte de réception';
+    const labelInbox = cur === 'favourite' ? t('mb.move.unstar')
+      : cur === 'deleted' ? t('mb.move.restore')
+      : t('mb.move.inbox');
     const builtins = [
-      { value: 'inbox',     label: labelInbox, icon: 'inbox' },
-      { value: 'favourite', label: 'Favoris',  icon: 'star' },
-      { value: 'deleted',   label: 'Supprimés', icon: 'trash-2' },
+      { value: 'inbox',     label: labelInbox,              icon: 'inbox' },
+      { value: 'favourite', label: t('mb.folder.favourite'), icon: 'star' },
+      { value: 'deleted',   label: t('mb.folder.deleted'),   icon: 'trash-2' },
     ].filter((it) => {
       if (it.value === 'inbox' && cur === 'inbox') return false;       // already there
       if (it.value === 'favourite' && cur === 'favourite') return false; // already starred-view
@@ -2324,9 +2328,9 @@ export async function mountMailbox(host, _opts) {
   }
 
   function attBadge(level) {
-    if (level === 'dangerous') return `<span class="att-badge att-danger" title="Fichier potentiellement dangereux"><i data-lucide="shield-alert" class="w-3 h-3"></i>Dangereux</span>`;
-    if (level === 'blocked')   return `<span class="att-badge att-blocked" title="Fichier bloqué par la politique de sécurité"><i data-lucide="ban" class="w-3 h-3"></i>Bloqué</span>`;
-    if (level === 'suspicious')return `<span class="att-badge att-warn" title="Fichier nécessitant prudence (macros, archive, script…)"><i data-lucide="alert-triangle" class="w-3 h-3"></i>À vérifier</span>`;
+    if (level === 'dangerous') return `<span class="att-badge att-danger" title="${t('mb.att.badge.dangerous_tip')}"><i data-lucide="shield-alert" class="w-3 h-3"></i>${t('mb.att.badge.dangerous')}</span>`;
+    if (level === 'blocked')   return `<span class="att-badge att-blocked" title="${t('mb.att.badge.blocked_tip')}"><i data-lucide="ban" class="w-3 h-3"></i>${t('mb.att.badge.blocked')}</span>`;
+    if (level === 'suspicious')return `<span class="att-badge att-warn" title="${t('mb.att.badge.suspicious_tip')}"><i data-lucide="alert-triangle" class="w-3 h-3"></i>${t('mb.att.badge.suspicious')}</span>`;
     return '';
   }
 
@@ -2340,8 +2344,8 @@ export async function mountMailbox(host, _opts) {
         <div class="mb-attachments mb-att-pending">
           <div class="att-pending-row">
             <i data-lucide="loader" class="w-4 h-4"></i>
-            <span>Recherche de pièces jointes en cours…</span>
-            <button class="att-rescan" id="btn-rescan-one" data-id="${em.int_id}">Réessayer</button>
+            <span>${t('mb.att.scanning')}</span>
+            <button class="att-rescan" id="btn-rescan-one" data-id="${em.int_id}">${t('mb.att.retry')}</button>
           </div>
         </div>
       `;
@@ -2355,16 +2359,16 @@ export async function mountMailbox(host, _opts) {
       const reasons = (a.threat_reasons || []).map(escapeHtml).join(' · ');
       const titleAttr = reasons ? `title="${escapeHtml(reasons)}"` : '';
       const action = isUnavailable
-        ? `<span class="att-unavail">Stockage refusé</span>`
-        : `<button class="att-download" data-id="${a.id}" data-level="${escapeHtml(a.threat_level)}" data-name="${escapeHtml(a.filename)}" data-reasons="${escapeHtml(reasons)}" aria-label="Télécharger ${escapeHtml(a.filename)}">
+        ? `<span class="att-unavail">${t('mb.att.unavailable')}</span>`
+        : `<button class="att-download" data-id="${a.id}" data-level="${escapeHtml(a.threat_level)}" data-name="${escapeHtml(a.filename)}" data-reasons="${escapeHtml(reasons)}" aria-label="${t('mb.att.download_aria', { name: escapeHtml(a.filename) })}">
              <i data-lucide="${isDangerous ? 'shield-alert' : 'download'}" class="w-4 h-4"></i>
-             <span>Télécharger</span>
+             <span>${t('mb.att.download')}</span>
            </button>`;
       return `
         <div class="att-row att-${escapeHtml(a.threat_level)}" ${titleAttr}>
           <div class="att-icon"><i data-lucide="${icon}" class="w-5 h-5"></i></div>
           <div class="att-meta">
-            <div class="att-name">${escapeHtml(a.filename)}${a.is_inline ? '<span class="att-inline-tag" title="Image affichée dans le corps du mail">incorporée</span>' : ''}</div>
+            <div class="att-name">${escapeHtml(a.filename)}${a.is_inline ? `<span class="att-inline-tag" title="${t('mb.att.inline_tip')}">${t('mb.att.inline')}</span>` : ''}</div>
             <div class="att-sub">
               <span>${fmtBytes(a.size)}</span>
               ${a.content_type ? `<span>· ${escapeHtml(a.content_type)}</span>` : ''}
@@ -2377,8 +2381,8 @@ export async function mountMailbox(host, _opts) {
     }).join('');
     const totals = list.length;
     const dangerCount = list.filter((a) => a.threat_level === 'dangerous' || a.threat_level === 'blocked').length;
-    const headLabel = `${totals} pièce${totals > 1 ? 's' : ''} jointe${totals > 1 ? 's' : ''}`
-      + (dangerCount ? ` <span class="att-head-warn">· ${dangerCount} à risque</span>` : '');
+    const headLabel = t('mb.att.head', { n: totals })
+      + (dangerCount ? ` <span class="att-head-warn">· ${t('mb.att.at_risk', { n: dangerCount })}</span>` : '');
     return `
       <details class="mb-attachments">
         <summary>
@@ -2402,12 +2406,7 @@ export async function mountMailbox(host, _opts) {
           // a flagged file. Server also enforces ?confirm=1 so a manual
           // URL hit isn't enough.
           const ok = window.confirm(
-            `⚠ Pièce jointe potentiellement dangereuse :\n\n` +
-            `« ${name} »\n\n` +
-            (reasons ? `Motifs : ${reasons}\n\n` : '') +
-            `Le fichier sera téléchargé en .bin (pas d'exécution automatique). ` +
-            `Ne l'ouvrez QUE si vous attendez ce fichier de cet expéditeur précis. ` +
-            `Continuer ?`
+            t('mb.att.danger_confirm', { name, reasons: reasons ? t('mb.att.danger_reasons', { r: reasons }) : '' })
           );
           if (!ok) return;
           window.location.href = api.attachmentDownloadUrl(id, { confirm: true });
@@ -2423,7 +2422,7 @@ export async function mountMailbox(host, _opts) {
     if (rescan && em) {
       rescan.addEventListener('click', async () => {
         rescan.disabled = true;
-        rescan.textContent = 'Scan en cours…';
+        rescan.textContent = t('mb.att.scanning_short');
         // Re-fetch the email after a short wait — this triggers a fresh
         // lazy-scan task on the backend if needed.
         setTimeout(async () => {
@@ -2447,7 +2446,7 @@ export async function mountMailbox(host, _opts) {
         <div class="ai-body">
           <div class="ai-title">
             <div class="ai-icon"><i data-lucide="sparkles" class="w-4 h-4"></i></div>
-            <span>Analyse IA</span>
+            <span>${t('mb.ai.analysis_title')}</span>
             <span class="score-pill ${scoreClass(em.importance_score || 0)}">${em.importance_score || 0}</span>
           </div>
           <div class="ai-summary">${escapeHtml(em.summary)}</div>
@@ -2473,12 +2472,12 @@ export async function mountMailbox(host, _opts) {
         <div class="dh">
           <div class="dh-label">
             <i data-lucide="sparkles" class="w-4 h-4" id="mb-draft-icon"></i>
-            <span id="mb-draft-source-label">Réponse suggérée par l'IA</span>
+            <span id="mb-draft-source-label">${t('mb.draft.ai_suggestion')}</span>
           </div>
           <div class="da">
-            <button class="ghost" id="btn-draft-discard" title="Supprimer ce brouillon"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
-            <button id="btn-draft-edit"><i data-lucide="pencil" class="w-4 h-4"></i>Modifier</button>
-            <button class="primary" id="btn-draft-send"><i data-lucide="send" class="w-4 h-4"></i>Envoyer</button>
+            <button class="ghost" id="btn-draft-discard" title="${t('mb.draft.discard_title')}"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+            <button id="btn-draft-edit"><i data-lucide="pencil" class="w-4 h-4"></i>${t('mb.draft.edit')}</button>
+            <button class="primary" id="btn-draft-send"><i data-lucide="send" class="w-4 h-4"></i>${t('mb.send')}</button>
           </div>
         </div>
         <div class="dt" id="mb-draft-text">${hasInitialDraft ? escapeHtml(initialAiBody) : ''}</div>
@@ -2504,7 +2503,7 @@ export async function mountMailbox(host, _opts) {
       ? `<div class="mb-body-text">${linkify(em.body_text)}</div>`
       : (em.body_html
          ? buildHtmlBodyBlock(em)
-         : `<div style="color:var(--muted);font-style:italic">(corps du mail vide)</div>`);
+         : `<div style="color:var(--muted);font-style:italic">${t('mb.read.empty_body')}</div>`);
 
     $('#read-pane').innerHTML = `
       <div class="mb-read-inner">
@@ -2518,20 +2517,20 @@ export async function mountMailbox(host, _opts) {
           </span>
         `).join('') : ''}
         <div class="mb-read-actions">
-          <button class="icon-btn ${em.is_favourite ? 'is-fav' : ''}" id="btn-fav-toggle" title="${em.is_favourite ? 'Retirer des favoris' : 'Marquer favori'}" aria-pressed="${em.is_favourite ? 'true' : 'false'}">
+          <button class="icon-btn ${em.is_favourite ? 'is-fav' : ''}" id="btn-fav-toggle" title="${em.is_favourite ? t('mb.action.unstar') : t('mb.action.star')}" aria-pressed="${em.is_favourite ? 'true' : 'false'}">
             <i data-lucide="star" class="w-4 h-4"></i>
           </button>
-          <button class="icon-btn" id="btn-tag" title="Étiqueter"><i data-lucide="tag" class="w-4 h-4"></i></button>
-          <button class="icon-btn" id="btn-print" title="Imprimer"><i data-lucide="printer" class="w-4 h-4"></i></button>
-          <button class="icon-btn" id="btn-more" title="Plus d'actions"><i data-lucide="more-vertical" class="w-4 h-4"></i></button>
+          <button class="icon-btn" id="btn-tag" title="${t('mb.action.tag')}"><i data-lucide="tag" class="w-4 h-4"></i></button>
+          <button class="icon-btn" id="btn-print" title="${t('mb.action.print')}"><i data-lucide="printer" class="w-4 h-4"></i></button>
+          <button class="icon-btn" id="btn-more" title="${t('mb.action.more')}"><i data-lucide="more-vertical" class="w-4 h-4"></i></button>
           <div class="mb-read-sep"></div>
-          <button class="icon-btn" id="btn-close-read" title="Fermer"><i data-lucide="x" class="w-4 h-4"></i></button>
+          <button class="icon-btn" id="btn-close-read" title="${t('mb.close')}"><i data-lucide="x" class="w-4 h-4"></i></button>
         </div>
       </div>
       <div class="mb-read-body">
         <div class="mb-read-meta">
           <div class="mb-read-date">${escapeHtml(longDate(em.date_received))}</div>
-          <h1 class="mb-read-subject">${escapeHtml(em.subject || '(sans objet)')}</h1>
+          <h1 class="mb-read-subject">${escapeHtml(em.subject || t('mb.no_subject'))}</h1>
 
           <div class="mb-thread-item">
             <div class="mb-avatar" style="width:36px;height:36px;font-size:12px;background:${col}">
@@ -2539,7 +2538,7 @@ export async function mountMailbox(host, _opts) {
               ${logoImg}
             </div>
             <div>
-              <div class="name">${escapeHtml(sName || 'Inconnu')}${authBadgeHtml(em.auth_results)}</div>
+              <div class="name">${escapeHtml(sName || t('mb.unknown_sender'))}${authBadgeHtml(em.auth_results)}</div>
               <div class="meta meta-route">
                 <i data-lucide="send" class="w-3 h-3 meta-icon"></i><span class="meta-addr">${escapeHtml(sEmail)}</span>
                 <i data-lucide="arrow-right" class="w-3 h-3 meta-arrow"></i>
@@ -2549,20 +2548,20 @@ export async function mountMailbox(host, _opts) {
             <div class="mb-thread-actions">
               <div class="meta">${escapeHtml(shortDate(em.date_received))}</div>
               <!-- Group 1 — gestion : marquer lu / supprimer -->
-              <button class="read-action-btn read-action-btn-muted" id="btn-read-toggle" title="${em.is_read ? 'Marquer comme non lu' : 'Marquer comme lu'}">
+              <button class="read-action-btn read-action-btn-muted" id="btn-read-toggle" title="${em.is_read ? t('mb.action.mark_unread') : t('mb.action.mark_read')}">
                 <i data-lucide="${em.is_read ? 'mail' : 'mail-open'}" class="w-4 h-4"></i>
               </button>
-              <button class="read-action-btn read-action-btn-danger" id="btn-trash" title="Supprimer">
+              <button class="read-action-btn read-action-btn-danger" id="btn-trash" title="${t('mb.action.delete')}">
                 <i data-lucide="trash-2" class="w-4 h-4"></i>
               </button>
               <span class="mb-thread-actions-sep" aria-hidden="true"></span>
               <!-- Group 2 — engagement : analyser IA / répondre.
                    The analyse-IA button is hidden in no-AI mode — clicking
                    it would just hit the 409 from /reanalyze. -->
-              ${aiOn ? `<button class="read-action-btn read-action-btn-ai ${em.summary ? 'has-analysis' : ''}" id="btn-analyze" title="${em.summary ? 'Ré-analyser avec l\'IA' : 'Analyser avec l\'IA'}">
+              ${aiOn ? `<button class="read-action-btn read-action-btn-ai ${em.summary ? 'has-analysis' : ''}" id="btn-analyze" title="${em.summary ? t('mb.action.reanalyze') : t('mb.action.analyze')}">
                 <i data-lucide="sparkles" class="w-4 h-4"></i>
               </button>` : ''}
-              <button class="read-action-btn" id="btn-reply-toggle" title="Répondre">
+              <button class="read-action-btn" id="btn-reply-toggle" title="${t('mb.action.reply')}">
                 <i data-lucide="reply" class="w-4 h-4"></i>
               </button>
             </div>
@@ -2586,7 +2585,7 @@ export async function mountMailbox(host, _opts) {
              keeps its own internal scroll, so the user can still read
              every line of the email while typing. -->
         <div class="mb-composer" id="mb-composer" style="display:none">
-          <div class="mb-composer-handle" id="mb-composer-handle" role="separator" aria-orientation="horizontal" aria-label="Redimensionner la zone de saisie" title="Glisser pour redimensionner">
+          <div class="mb-composer-handle" id="mb-composer-handle" role="separator" aria-orientation="horizontal" aria-label="${t('mb.composer.handle_aria')}" title="${t('mb.composer.handle_title')}">
             <span class="mb-composer-handle-grip"></span>
           </div>
           ${buildComposerMetaHtml({
@@ -2596,25 +2595,25 @@ export async function mountMailbox(host, _opts) {
             to: senderEmail(em.sender),
             subject: em.subject ? (em.subject.toLowerCase().startsWith('re:') ? em.subject : `Re: ${em.subject}`) : '',
           })}
-          <textarea placeholder="Écrire un message…" aria-label="Composer"></textarea>
+          <textarea placeholder="${t('mb.composer.placeholder')}" aria-label="${t('mb.composer.aria')}"></textarea>
           <div class="mb-attach-strip" id="mb-attach-strip" data-empty="1"></div>
           <input type="file" id="mb-file-input" multiple style="display:none">
           <input type="file" id="mb-image-input" accept="image/*" multiple style="display:none">
           <div class="mb-composer-bar">
             <div style="display:flex;gap:4px;color:var(--muted)">
-              <button class="icon-btn" id="btn-attach-file" title="Joindre un fichier" aria-label="Joindre un fichier"><i data-lucide="paperclip" class="w-4 h-4"></i></button>
-              <button class="icon-btn" id="btn-attach-image" title="Insérer une image" aria-label="Insérer une image"><i data-lucide="image" class="w-4 h-4"></i></button>
+              <button class="icon-btn" id="btn-attach-file" title="${t('mb.composer.attach_file')}" aria-label="${t('mb.composer.attach_file')}"><i data-lucide="paperclip" class="w-4 h-4"></i></button>
+              <button class="icon-btn" id="btn-attach-image" title="${t('mb.composer.attach_image')}" aria-label="${t('mb.composer.attach_image')}"><i data-lucide="image" class="w-4 h-4"></i></button>
             </div>
             <div style="display:flex;gap:8px;align-items:center;margin-left:auto">
-              ${aiOn ? `<button class="mb-ai-draft-btn" id="btn-ai-draft" title="Suggérer une réponse avec l'IA">
+              ${aiOn ? `<button class="mb-ai-draft-btn" id="btn-ai-draft" title="${t('mb.ai.draft_btn_title')}">
                 <i data-lucide="sparkles" class="w-4 h-4"></i>
-                Brouillon IA
+                ${t('mb.ai.draft_btn')}
               </button>` : ''}
               <button class="send" id="btn-composer-send">
                 <i data-lucide="send" class="w-4 h-4"></i>
-                Envoyer
+                ${t('mb.send')}
               </button>
-              <button class="icon-btn mb-composer-close" id="btn-composer-close" title="Fermer" aria-label="Fermer le composer">
+              <button class="icon-btn mb-composer-close" id="btn-composer-close" title="${t('mb.close')}" aria-label="${t('mb.composer.close_aria')}">
                 <i data-lucide="x" class="w-4 h-4"></i>
               </button>
             </div>
@@ -2687,11 +2686,11 @@ export async function mountMailbox(host, _opts) {
       if (idx >= 0) state.emails[idx].is_favourite = target ? 1 : 0;
       const btn = $('#btn-fav-toggle');
       btn.classList.toggle('is-fav', target);
-      btn.title = target ? 'Retirer des favoris' : 'Marquer favori';
+      btn.title = target ? t('mb.action.unstar') : t('mb.action.star');
       btn.setAttribute('aria-pressed', target ? 'true' : 'false');
       try { await api.patchEmail(em.int_id, { is_favourite: target }); } catch (_) {}
       await loadEmails();
-      window.toast(target ? 'Ajouté aux favoris' : 'Retiré des favoris');
+      window.toast(target ? t('mb.toast.starred') : t('mb.toast.unstarred'));
     });
 
     $('#btn-read-toggle').addEventListener('click', async () => {
@@ -2704,17 +2703,17 @@ export async function mountMailbox(host, _opts) {
       });
       updateBadge();
       const btn = $('#btn-read-toggle');
-      btn.title = target ? 'Marquer comme non lu' : 'Marquer comme lu';
+      btn.title = target ? t('mb.action.mark_unread') : t('mb.action.mark_read');
       btn.innerHTML = `<i data-lucide="${target ? 'mail' : 'mail-open'}" class="w-4 h-4"></i>`;
       window.lucide?.createIcons();
       try { await api.patchEmail(em.int_id, { is_read: target }); } catch (_) {}
-      window.toast(target ? 'Marqué comme lu' : 'Marqué comme non lu');
+      window.toast(target ? t('mb.toast.read') : t('mb.toast.unread'));
     });
 
     $('#btn-trash').addEventListener('click', async () => {
       await animateCardLeave(em.int_id);
       try { await api.patchEmail(em.int_id, { folder: 'deleted' }); } catch (_) {}
-      window.toast('Message supprimé');
+      window.toast(t('mb.toast.deleted'));
       renderEmpty();
       await loadEmails();
     });
@@ -2722,27 +2721,27 @@ export async function mountMailbox(host, _opts) {
     $('#btn-more').addEventListener('click', () => {
       const anchor = $('#btn-more');
       const cur = state.folder || 'inbox';
-      const moveLabel = cur === 'deleted' ? 'Restaurer dans la boîte' : 'Déplacer dans la corbeille';
+      const moveLabel = cur === 'deleted' ? t('mb.move.restore') : t('mb.move.to_trash');
       const items = [
-        { value: 'ai',     label: 'Ré-analyser avec l’IA', icon: 'sparkles' },
-        { value: 'move',   label: moveLabel,            icon: cur === 'deleted' ? 'inbox' : 'folder-input' },
+        { value: 'ai',     label: t('mb.action.reanalyze'), icon: 'sparkles' },
+        { value: 'move',   label: moveLabel,                icon: cur === 'deleted' ? 'inbox' : 'folder-input' },
       ];
       openPopover(anchor, items, async (action) => {
         if (action === 'ai') {
-          const t = window.toast({ variant: 'loading', message: 'Analyse IA en cours', duration: 0 });
+          const toastCtrl = window.toast({ variant: 'loading', message: t('mb.ai.analyzing'), duration: 0 });
           try {
             const fresh = await api.reanalyzeEmail(em.int_id);
             renderEmail(fresh);
             await loadEmails();
-            t?.success('Analyse IA terminée');
+            toastCtrl?.success(t('mb.ai.done'));
           } catch (_) {
-            t?.error('Échec de l’analyse IA');
+            toastCtrl?.error(t('mb.ai.fail'));
           }
         } else if (action === 'move') {
           const target = cur === 'deleted' ? 'inbox' : 'deleted';
           await animateCardLeave(em.int_id);
           try { await api.patchEmail(em.int_id, { folder: target }); } catch (_) {}
-          window.toast(target === 'deleted' ? 'Déplacé dans la corbeille' : 'Restauré dans la boîte');
+          window.toast(target === 'deleted' ? t('mb.toast.moved_trash') : t('mb.toast.restored'));
           renderEmpty();
           await loadEmails();
         }
@@ -2862,8 +2861,8 @@ export async function mountMailbox(host, _opts) {
       if (txtEl) txtEl.innerText = body;
       if (labEl) {
         labEl.textContent = source === 'user'
-          ? 'Brouillon en cours'
-          : "Réponse suggérée par l'IA";
+          ? t('mb.draft.user_label')
+          : t('mb.draft.ai_suggestion');
       }
       if (iconEl) {
         // lucide icons are inlined as <svg> after createIcons(); swap
@@ -3093,7 +3092,7 @@ export async function mountMailbox(host, _opts) {
           <i data-lucide="${a.kind === 'inline' ? 'image' : 'paperclip'}" class="w-3 h-3"></i>
           <span class="mb-attach-name" title="${escapeHtml(a.filename)}">${escapeHtml(a.filename)}</span>
           <span class="mb-attach-size">${fmtBytes(a.size)}</span>
-          <button type="button" class="mb-attach-remove" data-idx="${i}" title="Retirer" aria-label="Retirer">
+          <button type="button" class="mb-attach-remove" data-idx="${i}" title="${t('mb.att.remove')}" aria-label="${t('mb.att.remove')}">
             <i data-lucide="x" class="w-3 h-3"></i>
           </button>
         </span>
@@ -3130,7 +3129,7 @@ export async function mountMailbox(host, _opts) {
           const idx = stagedAttachments.indexOf(tmp);
           if (idx >= 0) stagedAttachments.splice(idx, 1);
           renderAttachStrip();
-          window.toast(err?.message || 'Échec de l\'upload', 5000);
+          window.toast(err?.message || t('mb.toast.upload_fail'), 5000);
         }
       }
     }
@@ -3158,19 +3157,19 @@ export async function mountMailbox(host, _opts) {
       const subject = (subjInp?.value || '').trim();
       const body    = (bodyOverride != null ? bodyOverride : (ta?.value || '')).trim();
 
-      if (!fromAcc) { window.toast('Compte expéditeur requis.'); return; }
-      if (!toRaw)   { window.toast('Destinataire requis.'); toInp?.focus(); return; }
-      if (!body)    { window.toast('Le message est vide.'); ta?.focus(); return; }
+      if (!fromAcc) { window.toast(t('mb.toast.from_required')); return; }
+      if (!toRaw)   { window.toast(t('mb.toast.to_required')); toInp?.focus(); return; }
+      if (!body)    { window.toast(t('mb.toast.body_empty')); ta?.focus(); return; }
       // Refuse sending while uploads are still in flight.
       if (stagedAttachments.some((a) => a.uploading)) {
-        window.toast('Téléversement en cours, patientez…'); return;
+        window.toast(t('mb.toast.uploading')); return;
       }
 
       const toList = toRaw.split(',').map((s) => s.trim()).filter(Boolean);
       const attachIds = stagedAttachments.filter((a) => a.kind === 'attachment' && a.upload_id).map((a) => a.upload_id);
       const inlineIds = stagedAttachments.filter((a) => a.kind === 'inline'     && a.upload_id).map((a) => a.upload_id);
       const btn = trigger || $('#btn-composer-send');
-      const setSending = sendButtonStateFactory(btn, 'Envoyer');
+      const setSending = sendButtonStateFactory(btn, t('mb.send'));
       setSending('loading');
       try {
         await api.sendEmail({
@@ -3183,7 +3182,7 @@ export async function mountMailbox(host, _opts) {
           inline_images: inlineIds,
         });
         setSending('sent');
-        window.toast('Message envoyé');
+        window.toast(t('mb.toast.sent'));
         // The user-typed draft (if any) is now stale — drop it so it
         // doesn't reappear in Brouillons. The AI suggestion in
         // emails.draft_response stays untouched: it's the LLM's
@@ -3203,7 +3202,7 @@ export async function mountMailbox(host, _opts) {
         setSending('idle');
       } catch (err) {
         setSending('idle');
-        const msg = (err && err.message) || "Échec de l'envoi";
+        const msg = (err && err.message) || t('mb.toast.send_fail');
         window.toast(msg, 6000);
       }
     }
@@ -3252,8 +3251,8 @@ export async function mountMailbox(host, _opts) {
     $('#btn-draft-discard')?.addEventListener('click', async () => {
       const sourceWasUser = $('#mb-draft')?.dataset?.source === 'user';
       const confirmMsg = sourceWasUser
-        ? 'Supprimer ce brouillon ?'
-        : 'Supprimer la suggestion de réponse ?';
+        ? t('mb.draft.confirm.delete_draft')
+        : t('mb.draft.confirm.delete_suggestion');
       if (!confirm(confirmMsg)) return;
       const ta = $('#mb-composer textarea');
       if (ta) ta.value = '';
@@ -3262,7 +3261,7 @@ export async function mountMailbox(host, _opts) {
       if (composer && composer.style.display !== 'none') {
         closeComposer({ skipDraftSync: true });
       }
-      window.toast('Brouillon supprimé');
+      window.toast(t('mb.toast.draft_deleted'));
     });
 
     // Attach `input` listeners on the four composer fields exactly
@@ -3393,14 +3392,14 @@ export async function mountMailbox(host, _opts) {
       if (!btn || btn.disabled) return;
       btn.disabled = true;
       btn.classList.add('loading');
-      const t = window.toast({ variant: 'loading', message: 'Analyse IA en cours', duration: 0 });
+      const toastCtrl = window.toast({ variant: 'loading', message: t('mb.ai.analyzing'), duration: 0 });
       try {
         const fresh = await api.reanalyzeEmail(em.int_id);
         renderEmail(fresh);
         await loadEmails();
-        t?.success('Analyse IA terminée');
+        toastCtrl?.success(t('mb.ai.done'));
       } catch (_) {
-        t?.error("Échec de l'analyse IA");
+        toastCtrl?.error(t('mb.ai.fail'));
       } finally {
         // renderEmail rebuilt the DOM, so the local btn ref is stale —
         // safe to no-op if it was replaced.
@@ -3424,7 +3423,7 @@ export async function mountMailbox(host, _opts) {
         const res = await api.generateDraft(em.int_id);
         const text = res.draft_response || '';
         if (!text) {
-          window.toast('Impossible de générer une réponse.');
+          window.toast(t('mb.ai.draft_fail'));
           return;
         }
         ta.value = text;
@@ -3442,7 +3441,7 @@ export async function mountMailbox(host, _opts) {
         _patchCardReplyIcon(em.int_id, true);
         _patchCardDraftIcon(em.int_id, true);
       } catch (_) {
-        window.toast('Erreur lors de la génération du brouillon.');
+        window.toast(t('mb.ai.draft_error'));
       } finally {
         btn.disabled = false;
         btn.classList.remove('loading');
@@ -3511,7 +3510,7 @@ export async function mountMailbox(host, _opts) {
         }
       }
     } catch (err) {
-      $('#read-pane').innerHTML = `<div class="mb-read-empty">Erreur de chargement: ${escapeHtml(err.message)}</div>`;
+      $('#read-pane').innerHTML = `<div class="mb-read-empty">${t('mb.read.error_load', { msg: escapeHtml(err.message) })}</div>`;
     }
   }
 
@@ -3540,17 +3539,17 @@ export async function mountMailbox(host, _opts) {
       icon = document.createElement('i');
       icon.setAttribute('data-lucide', 'shield-alert');
       icon.className = 'w-3.5 h-3.5 mb-att-warn';
-      icon.title = 'Pièce jointe dangereuse';
+      icon.title = t('mb.att.dangerous');
     } else if (suspicious) {
       icon = document.createElement('i');
       icon.setAttribute('data-lucide', 'paperclip');
       icon.className = 'w-3.5 h-3.5 mb-att-warn';
-      icon.title = 'Pièce jointe à vérifier';
+      icon.title = t('mb.att.suspicious');
     } else if (total > 0) {
       icon = document.createElement('i');
       icon.setAttribute('data-lucide', 'paperclip');
       icon.className = 'w-3.5 h-3.5 mb-att-icon';
-      icon.title = `${total} pièce${total > 1 ? 's' : ''} jointe${total > 1 ? 's' : ''}`;
+      icon.title = t('mb.att.count', { n: total });
     }
     if (icon) {
       const reply = rowLeft.querySelector('.mb-reply-inline');
@@ -3584,7 +3583,7 @@ export async function mountMailbox(host, _opts) {
     rowLeft.appendChild(_buildLucideSvg(
       'reply',
       'mb-reply-inline',
-      'Réponse attendue',
+      t('mb.ai.needs_reply'),
       '<polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/>',
     ));
   }
@@ -3610,7 +3609,7 @@ export async function mountMailbox(host, _opts) {
     rowLeft.appendChild(_buildLucideSvg(
       'pencil-line',
       'mb-draft-inline',
-      'Brouillon IA prêt',
+      t('mb.ai.draft_ready'),
       '<path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/>',
     ));
   }
@@ -3743,8 +3742,8 @@ export async function mountMailbox(host, _opts) {
           int_id: -Math.abs(d.id),
           message_id: `draft:${d.id}`,
           account_email: d.account_email,
-          subject: d.subject || '(brouillon sans objet)',
-          sender: d.account_email || 'Brouillon',
+          subject: d.subject || t('mb.draft.no_subject'),
+          sender: d.account_email || t('mb.draft.sender_fallback'),
           recipient: d.to || '',
           date_received: d.updated_at || d.created_at || '',
           body_text: d.body_text || '',
@@ -3807,7 +3806,7 @@ export async function mountMailbox(host, _opts) {
       // must never close a mail the user is currently reading.
     } catch (err) {
       if (myToken !== _loadEmailsToken) return;  // stale → drop (don't paint old error)
-      $('#email-list').innerHTML = `<div style="padding:24px;color:var(--danger)">Erreur: ${escapeHtml(err.message)}</div>`;
+      $('#email-list').innerHTML = `<div style="padding:24px;color:var(--danger)">${t('mb.list.error', { msg: escapeHtml(err.message) })}</div>`;
     }
   }
 
@@ -3823,7 +3822,7 @@ export async function mountMailbox(host, _opts) {
       const r = await api.triggerSync();
       window.toast({
         variant: r.ok ? 'loading' : 'info',
-        message: r.message || (r.ok ? 'Synchronisation lancée' : 'Sync déjà en cours'),
+        message: r.message || (r.ok ? t('mb.sync.started') : t('mb.sync.already_running')),
         duration: 2400,
       });
       _syncWasRunning = true;
@@ -3837,7 +3836,7 @@ export async function mountMailbox(host, _opts) {
         const wait = Math.max(3, err.retryAfter || 10);
         window.toast({
           variant: 'warning',
-          message: err.message || `Patientez ${wait}s avant de relancer.`,
+          message: err.message || t('mb.sync.wait', { n: wait }),
           duration: wait * 1000,
         });
         if (btn) {
@@ -3849,7 +3848,7 @@ export async function mountMailbox(host, _opts) {
           }, wait * 1000);
         }
       } else {
-        window.toast({ variant: 'error', message: 'Erreur sync : ' + (err.message || '') });
+        window.toast({ variant: 'error', message: t('mb.sync.error', { msg: err.message || '' }) });
       }
     }
   }
@@ -3952,11 +3951,11 @@ export async function mountMailbox(host, _opts) {
         <div class="mb-read-head">
           <h1 class="mb-compose-title">
             <i data-lucide="mail-plus" class="w-5 h-5"></i>
-            <span>${opts.draft ? 'Brouillon' : 'Nouveau message'}</span>
+            <span>${opts.draft ? t('mb.draft.title') : t('mb.compose')}</span>
           </h1>
           <div class="mb-read-actions">
-            ${opts.draft ? `<button class="icon-btn" id="btn-delete-draft" title="Supprimer ce brouillon"><i data-lucide="trash-2" class="w-4 h-4"></i></button>` : ''}
-            <button class="icon-btn" id="btn-close-compose" title="Fermer"><i data-lucide="x" class="w-4 h-4"></i></button>
+            ${opts.draft ? `<button class="icon-btn" id="btn-delete-draft" title="${t('mb.draft.delete_title')}"><i data-lucide="trash-2" class="w-4 h-4"></i></button>` : ''}
+            <button class="icon-btn" id="btn-close-compose" title="${t('mb.close')}"><i data-lucide="x" class="w-4 h-4"></i></button>
           </div>
         </div>
         <div class="mb-read-body">
@@ -3969,20 +3968,20 @@ export async function mountMailbox(host, _opts) {
               to: initialTo,
               subject: initialSubject,
             })}
-            <textarea placeholder="Écrire un message…" aria-label="Composer">${escapeHtml(initialBody)}</textarea>
+            <textarea placeholder="${t('mb.composer.placeholder')}" aria-label="${t('mb.composer.aria')}">${escapeHtml(initialBody)}</textarea>
             <div class="mb-attach-strip" id="mb-attach-strip-new" data-empty="1"></div>
             <input type="file" id="mb-file-input-new" multiple style="display:none">
             <input type="file" id="mb-image-input-new" accept="image/*" multiple style="display:none">
             <div class="mb-composer-bar">
               <div style="display:flex;gap:4px;color:var(--muted)">
-                <button class="icon-btn" id="btn-attach-file-new" title="Joindre un fichier" aria-label="Joindre un fichier"><i data-lucide="paperclip" class="w-4 h-4"></i></button>
-                <button class="icon-btn" id="btn-attach-image-new" title="Insérer une image" aria-label="Insérer une image"><i data-lucide="image" class="w-4 h-4"></i></button>
+                <button class="icon-btn" id="btn-attach-file-new" title="${t('mb.composer.attach_file')}" aria-label="${t('mb.composer.attach_file')}"><i data-lucide="paperclip" class="w-4 h-4"></i></button>
+                <button class="icon-btn" id="btn-attach-image-new" title="${t('mb.composer.attach_image')}" aria-label="${t('mb.composer.attach_image')}"><i data-lucide="image" class="w-4 h-4"></i></button>
               </div>
               <div style="display:flex;gap:8px;align-items:center;margin-left:auto">
                 <span class="mb-compose-savetag" id="mb-compose-savetag" aria-live="polite"></span>
                 <button class="send" id="btn-compose-send-new">
                   <i data-lucide="send" class="w-4 h-4"></i>
-                  Envoyer
+                  ${t('mb.send')}
                 </button>
               </div>
             </div>
@@ -4010,7 +4009,7 @@ export async function mountMailbox(host, _opts) {
           <i data-lucide="${a.kind === 'inline' ? 'image' : 'paperclip'}" class="w-3 h-3"></i>
           <span class="mb-attach-name" title="${escapeHtml(a.filename)}">${escapeHtml(a.filename)}</span>
           <span class="mb-attach-size">${fmtBytes(a.size)}</span>
-          <button type="button" class="mb-attach-remove" data-idx="${i}" title="Retirer" aria-label="Retirer">
+          <button type="button" class="mb-attach-remove" data-idx="${i}" title="${t('mb.att.remove')}" aria-label="${t('mb.att.remove')}">
             <i data-lucide="x" class="w-3 h-3"></i>
           </button>
         </span>
@@ -4046,7 +4045,7 @@ export async function mountMailbox(host, _opts) {
           const idx = stagedAttachmentsNew.indexOf(tmp);
           if (idx >= 0) stagedAttachmentsNew.splice(idx, 1);
           renderAttachStripNew();
-          window.toast(err?.message || 'Échec de l\'upload', 5000);
+          window.toast(err?.message || t('mb.toast.upload_fail'), 5000);
         }
       }
     }
@@ -4086,7 +4085,7 @@ export async function mountMailbox(host, _opts) {
       const snap = JSON.stringify({ from: v.from_account, to: v.to, subject: v.subject, body: v.body_text });
       if (snap === lastSnapshot) return draftId;
       if (isEmpty && !draftId) return null;
-      flagSaving('Enregistrement…');
+      flagSaving(t('mb.draft.saving'));
       try {
         if (draftId == null) {
           const created = await api.createDraft(v);
@@ -4095,11 +4094,11 @@ export async function mountMailbox(host, _opts) {
           await api.updateDraft(draftId, v);
         }
         lastSnapshot = snap;
-        flagSaving('Brouillon enregistré');
+        flagSaving(t('mb.draft.saved'));
         // Brief auto-clear so the tag doesn't permanently squat the bar.
-        setTimeout(() => { if (tagEl && tagEl.textContent === 'Brouillon enregistré') tagEl.textContent = ''; }, 2000);
+        setTimeout(() => { if (tagEl && tagEl.textContent === t('mb.draft.saved')) tagEl.textContent = ''; }, 2000);
       } catch (err) {
-        flagSaving('Échec enregistrement');
+        flagSaving(t('mb.draft.save_fail'));
       }
       return draftId;
     }
@@ -4123,17 +4122,17 @@ export async function mountMailbox(host, _opts) {
 
     pane.querySelector('#btn-delete-draft')?.addEventListener('click', async () => {
       if (draftId == null) { renderEmpty(); return; }
-      if (!confirm('Supprimer ce brouillon ?')) return;
+      if (!confirm(t('mb.draft.confirm.delete_draft'))) return;
       pendingDelete = true;
       if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
       try {
         await api.deleteDraft(draftId);
-        window.toast('Brouillon supprimé');
+        window.toast(t('mb.toast.draft_deleted'));
         renderEmpty();
         if (state.folder === 'draft') loadEmails();
       } catch (err) {
         pendingDelete = false;
-        window.toast('Échec suppression : ' + (err.message || ''));
+        window.toast(t('mb.toast.fail_delete') + ': ' + (err.message || ''));
       }
     });
 
@@ -4148,16 +4147,16 @@ export async function mountMailbox(host, _opts) {
 
     pane.querySelector('#btn-compose-send-new')?.addEventListener('click', async (e) => {
       const v = collect();
-      if (!v.from_account) { window.toast('Compte expéditeur requis.'); return; }
-      if (!v.to)   { window.toast('Destinataire requis.'); return; }
-      if (!v.body_text.trim()) { window.toast('Le message est vide.'); return; }
+      if (!v.from_account) { window.toast(t('mb.toast.from_required')); return; }
+      if (!v.to)   { window.toast(t('mb.toast.to_required')); return; }
+      if (!v.body_text.trim()) { window.toast(t('mb.toast.body_empty')); return; }
       if (stagedAttachmentsNew.some((a) => a.uploading)) {
-        window.toast('Téléversement en cours, patientez…'); return;
+        window.toast(t('mb.toast.uploading')); return;
       }
       const toList = v.to.split(',').map((s) => s.trim()).filter(Boolean);
       const attachIds = stagedAttachmentsNew.filter((a) => a.kind === 'attachment' && a.upload_id).map((a) => a.upload_id);
       const inlineIds = stagedAttachmentsNew.filter((a) => a.kind === 'inline'     && a.upload_id).map((a) => a.upload_id);
-      const setSending = sendButtonStateFactory(e.currentTarget, 'Envoyer');
+      const setSending = sendButtonStateFactory(e.currentTarget, t('mb.send'));
       // Cancel pending autosave — the message is about to leave anyway.
       if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
       setSending('loading');
@@ -4171,7 +4170,7 @@ export async function mountMailbox(host, _opts) {
           inline_images: inlineIds,
         });
         setSending('sent');
-        window.toast('Message envoyé');
+        window.toast(t('mb.toast.sent'));
         // Drop the on-disk draft (if any) — the message has been sent
         // and a stale draft would re-appear in Brouillons next visit.
         if (draftId != null) {
@@ -4184,7 +4183,7 @@ export async function mountMailbox(host, _opts) {
         if (state.folder === 'draft') loadEmails();
       } catch (err) {
         setSending('idle');
-        const msg = (err && err.message) || "Échec de l'envoi";
+        const msg = (err && err.message) || t('mb.toast.send_fail');
         window.toast(msg, 6000);
       }
     });

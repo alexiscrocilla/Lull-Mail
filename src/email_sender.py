@@ -452,6 +452,9 @@ def send_message(
             ) from e
         except smtplib.SMTPDataError as e:
             raise SendError(
+                # TODO: locale — SendError is raised deep in the SMTP layer with
+                # no request context available. The string is re-surfaced by
+                # api.py's send_email handler; pass locale there if needed.
                 "Le serveur SMTP a refusé le contenu du message.",
                 stage="data",
                 detail=str(e),

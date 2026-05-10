@@ -662,13 +662,17 @@ export function linkify(text) {
   );
 }
 
+// Populated from i18n at module load. i18n.js runs as a classic script
+// before this module evaluates, so `window.t` is guaranteed available.
+// Locale is fixed for the session, so a single read is enough.
+const _t = window.t || ((k) => k);
 export const CATEGORY_LABEL = {
-  important: 'Important',
-  newsletter: 'Newsletter',
-  transactional: 'Transactionnel',
-  spam: 'Spam',
-  other: 'Autre',
-  pending: 'En attente',
+  important:     _t('cat.important'),
+  newsletter:    _t('cat.newsletter'),
+  transactional: _t('cat.transactional'),
+  spam:          _t('cat.spam'),
+  other:         _t('cat.other'),
+  pending:       _t('cat.pending'),
 };
 
 export const CATEGORY_COLOR = {

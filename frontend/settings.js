@@ -75,11 +75,12 @@ function setBusy(el, busy, label) {
 }
 
 export async function mountSettings(host, opts = {}) {
+  const t = window.t || ((k) => k);
   host.innerHTML = `
     <div class="dash">
       <div class="dash-head">
         <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
-          <h1>Réglages</h1>
+          <h1>${t('set.title')}</h1>
         </div>
       </div>
 
@@ -90,14 +91,14 @@ export async function mountSettings(host, opts = {}) {
         <section class="card col-12">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
-              <i data-lucide="at-sign" class="w-4 h-4"></i>Boîtes mail
+              <i data-lucide="at-sign" class="w-4 h-4"></i>${t('set.accounts.title')}
             </span>
             <button class="mb-cta" style="margin:0;padding:7px 12px;font-size:13px" id="btn-add-acc">
-              <i data-lucide="plus" class="w-4 h-4"></i><span>Ajouter une boîte</span>
+              <i data-lucide="plus" class="w-4 h-4"></i><span>${t('set.accounts.add_btn')}</span>
             </button>
           </h3>
           <div id="accounts-list" class="set-list">
-            <div class="sub" style="font-style:italic">Chargement…</div>
+            <div class="sub" style="font-style:italic">${t('set.loading')}</div>
           </div>
         </section>
 
@@ -105,25 +106,25 @@ export async function mountSettings(host, opts = {}) {
         <section class="card col-6">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
-              <i data-lucide="sparkles" class="w-4 h-4"></i>Intelligence artificielle
+              <i data-lucide="sparkles" class="w-4 h-4"></i>${t('set.ai.title')}
             </span>
             <label class="set-toggle">
               <input id="ai-enabled" type="checkbox" />
-              <span>Activer l'IA</span>
+              <span>${t('set.ai.toggle')}</span>
             </label>
           </h3>
           <div id="ai-disabled-msg" class="sub hidden" style="margin-top:8px">
-            L'IA est désactivée. Activez-la pour bénéficier du tri intelligent, des résumés et des brouillons générés.
+            ${t('set.ai.disabled_msg')}
           </div>
           <div id="ai-fields" style="display:flex;align-items:center;gap:16px;margin-top:10px">
             <div class="set-grid" style="flex:1">
               <label class="set-field">
-                <span class="set-label">Clé d'accès OpenAI</span>
-                <input id="openai-key" type="password" class="set-input mono" placeholder="Saisissez une nouvelle clé pour la remplacer" autocomplete="new-password" />
-                <span class="set-hint">Laissez vide pour conserver la clé actuelle.</span>
+                <span class="set-label">${t('set.ai.key_label')}</span>
+                <input id="openai-key" type="password" class="set-input mono" placeholder="${t('set.ai.key_ph_empty')}" autocomplete="new-password" />
+                <span class="set-hint">${t('set.ai.key_hint')}</span>
               </label>
               <label class="set-field">
-                <span class="set-label">Modèle</span>
+                <span class="set-label">${t('set.ai.model_label')}</span>
                 <input type="hidden" id="openai-model" value="gpt-4o-mini" />
                 <div class="set-drop-wrap" id="openai-model-wrap">
                   <button class="set-drop-btn" id="openai-model-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
@@ -139,7 +140,7 @@ export async function mountSettings(host, opts = {}) {
               </label>
             </div>
             <div class="set-actions" style="margin-top:0;padding-top:0;border-top:none;border-left:1px solid var(--border-2);padding-left:16px;flex-shrink:0">
-              <button class="mb-cta set-btn" id="btn-save-openai">Enregistrer</button>
+              <button class="mb-cta set-btn" id="btn-save-openai">${t('set.save')}</button>
             </div>
           </div>
         </section>
@@ -148,28 +149,28 @@ export async function mountSettings(host, opts = {}) {
         <section class="card col-6">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
-              <i data-lucide="bell" class="w-4 h-4"></i>Notifications sur votre téléphone
+              <i data-lucide="bell" class="w-4 h-4"></i>${t('set.notif.title')}
             </span>
             <label class="set-toggle">
               <input id="ntfy-enabled" type="checkbox" />
-              <span>M'avertir des emails importants</span>
+              <span>${t('set.notif.toggle')}</span>
             </label>
           </h3>
           <div style="display:flex;align-items:center;gap:16px;margin-top:10px">
             <div class="set-grid" style="flex:1">
               <label class="set-field">
-                <span class="set-label">Code secret de notification</span>
+                <span class="set-label">${t('set.notif.topic_label')}</span>
                 <input id="ntfy-topic" class="set-input mono" placeholder="lullmail-vous-x7k2p" />
-                <span class="set-hint">À saisir dans l'application ntfy sur votre téléphone.</span>
+                <span class="set-hint">${t('set.notif.topic_hint')}</span>
               </label>
               <label class="set-field">
-                <span class="set-label">Importance minimum</span>
+                <span class="set-label">${t('set.notif.min_label')}</span>
                 <input id="ntfy-min" type="number" min="1" max="10" class="set-input" />
-                <span class="set-hint">De 1 (tout) à 10 (uniquement urgent).</span>
+                <span class="set-hint">${t('set.notif.min_hint')}</span>
               </label>
             </div>
             <div class="set-actions" style="margin-top:0;padding-top:0;border-top:none;border-left:1px solid var(--border-2);padding-left:16px;flex-shrink:0">
-              <button class="mb-cta set-btn" id="btn-save-ntfy">Enregistrer</button>
+              <button class="mb-cta set-btn" id="btn-save-ntfy">${t('set.save')}</button>
             </div>
           </div>
         </section>
@@ -178,26 +179,26 @@ export async function mountSettings(host, opts = {}) {
         <section class="card col-6">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
-              <i data-lucide="refresh-cw" class="w-4 h-4"></i>Vérification automatique
+              <i data-lucide="refresh-cw" class="w-4 h-4"></i>${t('set.polling.title')}
             </span>
           </h3>
           <div style="display:flex;align-items:center;gap:16px">
             <div class="set-grid" style="flex:1">
               <label class="set-field">
-                <span class="set-label">Vérifier les nouveaux emails toutes les</span>
+                <span class="set-label">${t('set.polling.interval_label')}</span>
                 <div style="display:flex;align-items:center;gap:8px">
                   <input id="general-interval" type="number" min="1" max="1440" class="set-input" style="max-width:72px" />
                   <span style="color:var(--muted);font-size:13px">minutes</span>
                 </div>
-                <span class="set-hint">Plus court = plus réactif, mais consomme un peu plus.</span>
+                <span class="set-hint">${t('set.polling.interval_hint')}</span>
               </label>
               <div class="set-field">
-                <span class="set-label">État</span>
+                <span class="set-label">${t('set.polling.status_label')}</span>
                 <div id="set-services" class="set-status">…</div>
               </div>
             </div>
             <div class="set-actions" style="margin-top:0;padding-top:0;border-top:none;border-left:1px solid var(--border-2);padding-left:16px;flex-shrink:0">
-              <button class="mb-cta set-btn" id="btn-save-general">Enregistrer</button>
+              <button class="mb-cta set-btn" id="btn-save-general">${t('set.save')}</button>
             </div>
           </div>
         </section>
@@ -206,23 +207,23 @@ export async function mountSettings(host, opts = {}) {
         <section class="card col-6">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
-              <i data-lucide="hard-drive" class="w-4 h-4"></i>Stockage
+              <i data-lucide="hard-drive" class="w-4 h-4"></i>${t('set.storage.title')}
             </span>
           </h3>
           <div style="display:flex;align-items:center;gap:16px">
             <div class="set-field" style="flex:1;min-width:0">
-              <span class="set-label">Vos données sont enregistrées ici</span>
+              <span class="set-label">${t('set.storage.dir_label')}</span>
               <div id="set-data-dir" class="set-path mono">—</div>
-              <span class="set-hint">Configuration, base de données et pièces jointes.</span>
+              <span class="set-hint">${t('set.storage.dir_hint')}</span>
             </div>
             <div class="set-actions" style="margin-top:0;padding-top:0;border-top:none;border-left:1px solid var(--border-2);padding-left:16px;flex-shrink:0;flex-direction:column;align-items:stretch">
               <button class="mb-cta set-btn-ghost" id="btn-open-data" type="button">
                 <i data-lucide="folder-open" class="w-4 h-4"></i>
-                <span>Ouvrir dans l'explorateur</span>
+                <span>${t('set.storage.open_btn')}</span>
               </button>
               <button class="mb-cta set-btn-danger" id="btn-wipe-data" type="button">
                 <i data-lucide="trash-2" class="w-4 h-4"></i>
-                <span>Supprimer mes données</span>
+                <span>${t('set.storage.wipe_btn')}</span>
               </button>
             </div>
           </div>
@@ -236,9 +237,9 @@ export async function mountSettings(host, opts = {}) {
         <div class="set-modal-head">
           <h3 style="display:flex;align-items:center;gap:8px;color:var(--danger)">
             <i data-lucide="alert-triangle" class="w-4 h-4"></i>
-            Supprimer toutes vos données
+            ${t('set.wipe.title')}
           </h3>
-          <button class="set-icon-btn" id="wipe-close" aria-label="Fermer">
+          <button class="set-icon-btn" id="wipe-close" aria-label="${t('set.close')}">
             <i data-lucide="x" class="w-4 h-4"></i>
           </button>
         </div>
@@ -246,17 +247,17 @@ export async function mountSettings(host, opts = {}) {
         <div style="background:color-mix(in oklab,var(--danger) 10%,transparent);border:1px solid color-mix(in oklab,var(--danger) 28%,transparent);border-radius:10px;padding:12px 14px;display:flex;gap:10px;align-items:flex-start">
           <i data-lucide="triangle-alert" style="width:15px;height:15px;flex-shrink:0;color:var(--danger);margin-top:1px"></i>
           <p style="margin:0;font-size:13px;color:var(--danger);line-height:1.5">
-            Cette action est <strong>irréversible</strong>. Seront supprimés :
+            ${t('set.wipe.warning_html')}
           </p>
         </div>
 
         <!-- What gets deleted -->
         <div style="display:flex;flex-direction:column;gap:6px;padding:4px 0">
           ${[
-            ['key-round',   'Clé API OpenAI'],
-            ['mail',        'Boîtes mail et identifiants'],
-            ['sparkles',    'Emails analysés et résumés IA'],
-            ['paperclip',   'Pièces jointes téléchargées'],
+            ['key-round',   t('set.wipe.item_key')],
+            ['mail',        t('set.wipe.item_accounts')],
+            ['sparkles',    t('set.wipe.item_emails')],
+            ['paperclip',   t('set.wipe.item_attachments')],
           ].map(([icon, label]) => `
           <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--surface-2);border-radius:8px">
             <i data-lucide="${icon}" style="width:14px;height:14px;flex-shrink:0;color:var(--muted)"></i>
@@ -266,17 +267,17 @@ export async function mountSettings(host, opts = {}) {
 
         <!-- Confirm input -->
         <label class="set-field" style="margin-bottom:0">
-          <span class="set-label">Tapez <code class="mono" style="background:var(--surface-2);padding:1px 6px;border-radius:4px;font-size:11px">SUPPRIMER</code> pour confirmer</span>
+          <span class="set-label">${t('set.wipe.confirm_label')}</span>
           <input id="wipe-confirm-input" class="set-input mono" placeholder="SUPPRIMER" autocomplete="off" />
         </label>
         <div id="wipe-status" class="set-test-result" style="display:none;margin-top:4px"></div>
-        <p class="set-hint" style="margin-top:2px">L'application redémarre automatiquement comme à la première installation.</p>
+        <p class="set-hint" style="margin-top:2px">${t('set.wipe.hint')}</p>
 
         <div class="set-modal-actions">
-          <button class="mb-cta set-btn-ghost" id="wipe-cancel">Annuler</button>
+          <button class="mb-cta set-btn-ghost" id="wipe-cancel">${t('set.wipe.cancel')}</button>
           <button class="mb-cta set-btn-danger" id="wipe-confirm" disabled>
             <i data-lucide="trash-2" class="w-4 h-4"></i>
-            <span>Supprimer définitivement</span>
+            <span>${t('set.wipe.confirm_btn')}</span>
           </button>
         </div>
       </div>
@@ -286,14 +287,14 @@ export async function mountSettings(host, opts = {}) {
     <div id="set-modal" class="set-modal hidden">
       <div class="set-modal-card">
         <div class="set-modal-head">
-          <h3 id="m-title">Ajouter une boîte mail</h3>
-          <button class="set-icon-btn" id="m-close" aria-label="Fermer">
+          <h3 id="m-title">${t('set.modal.add_title')}</h3>
+          <button class="set-icon-btn" id="m-close" aria-label="${t('set.close')}">
             <i data-lucide="x" class="w-4 h-4"></i>
           </button>
         </div>
 
         <div class="set-field">
-          <span class="set-label">Choisissez votre fournisseur</span>
+          <span class="set-label">${t('set.modal.provider_label')}</span>
           <div id="m-providers" class="m-providers"></div>
         </div>
 
@@ -301,52 +302,52 @@ export async function mountSettings(host, opts = {}) {
 
         <div class="set-grid">
           <label class="set-field">
-            <span class="set-label">Nom de la boîte</span>
-            <input id="m-name" class="set-input" placeholder="Boulot, Perso, Asso…" />
+            <span class="set-label">${t('set.modal.name_label')}</span>
+            <input id="m-name" class="set-input" placeholder="${t('set.modal.name_ph')}" />
           </label>
           <label class="set-field">
-            <span class="set-label">Adresse email</span>
-            <input id="m-email" type="email" class="set-input" placeholder="vous@exemple.com" />
+            <span class="set-label">${t('set.modal.email_label')}</span>
+            <input id="m-email" type="email" class="set-input" placeholder="${t('set.modal.email_ph')}" />
           </label>
         </div>
 
         <label class="set-field">
           <div class="set-label-row">
-            <span class="set-label">Mot de passe</span>
+            <span class="set-label">${t('set.modal.pwd_label')}</span>
             <a id="m-app-pwd-link" class="set-quick-link hidden" target="_blank" rel="noopener" href="#">
               <i data-lucide="external-link" class="w-3 h-3"></i>
-              <span>Créer un mot de passe d'application</span>
+              <span>${t('set.modal.app_pwd_link')}</span>
             </a>
           </div>
-          <input id="m-password" type="password" class="set-input mono" autocomplete="new-password" placeholder="Votre mot de passe" />
+          <input id="m-password" type="password" class="set-input mono" autocomplete="new-password" placeholder="${t('set.modal.pwd_ph')}" />
         </label>
 
         <details class="set-advanced">
-          <summary>Réglages techniques (rarement nécessaires)</summary>
-          <div class="set-subhead">IMAP — Réception</div>
+          <summary>${t('set.modal.advanced')}</summary>
+          <div class="set-subhead">${t('set.modal.imap_head')}</div>
           <div class="set-grid set-grid-3">
             <label class="set-field" style="grid-column: span 2">
-              <span class="set-label">Serveur</span>
-              <input id="m-host" class="set-input" placeholder="imap.exemple.com" />
+              <span class="set-label">${t('set.modal.host_label')}</span>
+              <input id="m-host" class="set-input" placeholder="${t('set.imap.host_ph')}" />
             </label>
             <label class="set-field">
-              <span class="set-label">Port</span>
+              <span class="set-label">${t('set.modal.port_label')}</span>
               <input id="m-port" type="number" class="set-input" placeholder="993" />
             </label>
           </div>
           <div class="set-checks">
             <label><input id="m-ssl" type="checkbox" /> SSL</label>
             <label><input id="m-starttls" type="checkbox" /> STARTTLS</label>
-            <label><input id="m-verify" type="checkbox" /> Vérifier le certificat</label>
+            <label><input id="m-verify" type="checkbox" /> ${t('set.modal.verify')}</label>
           </div>
-          <div class="set-subhead">SMTP — Envoi</div>
+          <div class="set-subhead">${t('set.modal.smtp_head')}</div>
           <div class="set-grid set-grid-3">
             <label class="set-field" style="grid-column: span 2">
-              <span class="set-label">Serveur</span>
-              <input id="m-smtp-host" class="set-input" placeholder="smtp.exemple.com" />
+              <span class="set-label">${t('set.modal.host_label')}</span>
+              <input id="m-smtp-host" class="set-input" placeholder="${t('set.smtp.host_ph')}" />
             </label>
             <label class="set-field">
-              <span class="set-label">Port</span>
+              <span class="set-label">${t('set.modal.port_label')}</span>
               <input id="m-smtp-port" type="number" class="set-input" placeholder="587" />
             </label>
           </div>
@@ -359,9 +360,9 @@ export async function mountSettings(host, opts = {}) {
         <div id="m-test-result" class="set-test-result"></div>
 
         <div class="set-modal-actions">
-          <button class="mb-cta set-btn-ghost" id="m-cancel">Annuler</button>
-          <button class="mb-cta set-btn-ghost" id="m-test">Vérifier que ça fonctionne</button>
-          <button class="mb-cta set-btn" id="m-add">Ajouter</button>
+          <button class="mb-cta set-btn-ghost" id="m-cancel">${t('set.modal.cancel')}</button>
+          <button class="mb-cta set-btn-ghost" id="m-test">${t('set.modal.test')}</button>
+          <button class="mb-cta set-btn" id="m-add">${t('set.modal.add')}</button>
         </div>
       </div>
     </div>
@@ -497,13 +498,13 @@ export async function mountSettings(host, opts = {}) {
       els.banner.classList.remove('hidden');
       els.banner.dataset.tone = 'warn';
       els.banner.innerHTML = `<i data-lucide="alert-triangle" class="w-4 h-4"></i>
-        <span><strong>Pas encore prêt.</strong> Ajoutez au moins une boîte mail pour commencer.</span>`;
+        <span>${t('set.banner.not_ready')}</span>`;
     } else if (!state.status.services_running) {
       els.banner.classList.remove('hidden');
       els.banner.dataset.tone = 'warn';
       els.banner.innerHTML = `<i data-lucide="alert-triangle" class="w-4 h-4"></i>
-        <span><strong>La vérification automatique est en pause.</strong></span>
-        <button class="set-banner-btn" id="set-restart">Reprendre</button>`;
+        <span>${t('set.banner.paused')}</span>
+        <button class="set-banner-btn" id="set-restart">${t('set.restart_btn')}</button>`;
       els.banner.querySelector('#set-restart').onclick = restart;
     } else {
       els.banner.classList.add('hidden');
@@ -511,17 +512,17 @@ export async function mountSettings(host, opts = {}) {
 
     // Services status indicator
     if (state.status.services_running) {
-      els.services.innerHTML = `<span class="set-dot ok"></span>En cours`;
+      els.services.innerHTML = `<span class="set-dot ok"></span>${t('set.status.running')}`;
     } else if (state.status.configured) {
-      els.services.innerHTML = `<span class="set-dot warn"></span>En pause`;
+      els.services.innerHTML = `<span class="set-dot warn"></span>${t('set.status.paused')}`;
     } else {
-      els.services.innerHTML = `<span class="set-dot warn"></span>Pas encore prêt`;
+      els.services.innerHTML = `<span class="set-dot warn"></span>${t('set.status.not_ready')}`;
     }
 
     // Accounts
     const accounts = state.config.accounts || [];
     if (!accounts.length) {
-      els.accList.innerHTML = `<div class="sub" style="font-style:italic">Aucune boîte mail. Cliquez sur « Ajouter une boîte » pour commencer.</div>`;
+      els.accList.innerHTML = `<div class="sub" style="font-style:italic">${t('set.accounts.empty')}</div>`;
     } else {
       els.accList.innerHTML = accounts.map(a => {
         const isOn = a.enabled !== false;
@@ -531,19 +532,19 @@ export async function mountSettings(host, opts = {}) {
           <div class="set-acc-info">
             <div class="set-acc-name">
               ${escapeHtml(a.name || a.email)}
-              ${isOn ? '' : '<span class="set-badge warn">en pause</span>'}
+              ${isOn ? '' : `<span class="set-badge warn">${t('set.acc.paused_badge')}</span>`}
             </div>
             <div class="set-acc-sub">${escapeHtml(a.email)}</div>
           </div>
           <div class="set-acc-actions">
-            <button class="set-switch ${isOn ? 'is-on' : 'is-off'}" data-act="toggle-enabled" data-email="${escapeAttr(a.email)}" role="switch" aria-checked="${isOn}" title="${isOn ? 'Mettre en pause cette boîte' : 'Réactiver cette boîte'}">
+            <button class="set-switch ${isOn ? 'is-on' : 'is-off'}" data-act="toggle-enabled" data-email="${escapeAttr(a.email)}" role="switch" aria-checked="${isOn}" title="${isOn ? t('set.acc.pause') : t('set.acc.resume')}">
               <span class="set-switch-track"><span class="set-switch-thumb"></span></span>
             </button>
             ${testStatusIconHtml(a)}
-            <button class="set-icon-btn" data-act="edit" data-email="${escapeAttr(a.email)}" title="Modifier cette boîte">
+            <button class="set-icon-btn" data-act="edit" data-email="${escapeAttr(a.email)}" title="${t('set.acc.edit')}">
               <i data-lucide="pencil" class="w-4 h-4"></i>
             </button>
-            <button class="set-icon-btn danger" data-act="remove" data-email="${escapeAttr(a.email)}" title="Retirer cette boîte">
+            <button class="set-icon-btn danger" data-act="remove" data-email="${escapeAttr(a.email)}" title="${t('set.acc.remove')}">
               <i data-lucide="trash-2" class="w-4 h-4"></i>
             </button>
           </div>
@@ -571,7 +572,7 @@ export async function mountSettings(host, opts = {}) {
     els.aiFields.classList.toggle('hidden', !aiOn);
     els.aiDisabledMsg.classList.toggle('hidden', aiOn);
     els.openaiKey.value = '';
-    els.openaiKey.placeholder = aiOn ? '*** (laisser pour conserver)' : 'sk-…';
+    els.openaiKey.placeholder = aiOn ? t('set.ai.key_ph_set') : t('set.ai.key_ph_empty');
     els.openaiModel.value = oa.model || 'gpt-4o-mini';
     const _mWrap = host.querySelector('#openai-model-wrap');
     if (_mWrap && _mWrap._sync) _mWrap._sync(els.openaiModel.value);
@@ -621,16 +622,16 @@ export async function mountSettings(host, opts = {}) {
     } else {
       apiKey = MASK;
     }
-    setBusy(els.btnSaveOA, true, 'Enregistrement…');
+    setBusy(els.btnSaveOA, true, t('set.busy.saving'));
     try {
       await api('POST', '/api/setup/openai', { api_key: apiKey, model });
-      window.toast?.(enabled ? 'IA activée' : 'IA désactivée');
+      window.toast?.(enabled ? t('set.toast.ai_on') : t('set.toast.ai_off'));
       els.openaiKey.value = '';
       // Notify the rest of the SPA (mailbox / dashboard) so they re-render
       // their AI-conditional UI without a hard reload.
       window.dispatchEvent(new CustomEvent('ai-config-changed', { detail: { enabled } }));
       await loadAll();
-    } catch (e) { window.toast?.('Erreur : ' + e.message, 3500); }
+    } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
     finally { setBusy(els.btnSaveOA, false); }
   }
 
@@ -638,61 +639,62 @@ export async function mountSettings(host, opts = {}) {
     const enabled = els.ntfyEnabled.checked;
     const topic = els.ntfyTopic.value.trim();
     const min = parseInt(els.ntfyMin.value, 10) || 7;
-    setBusy(els.btnSaveNt, true, 'Enregistrement…');
+    setBusy(els.btnSaveNt, true, t('set.busy.saving'));
     try {
       await api('POST', '/api/setup/ntfy', {
         enabled, server: 'https://ntfy.sh', topic, min_importance: min,
       });
-      window.toast?.('Préférences enregistrées');
+      window.toast?.(t('set.toast.saved'));
       await loadAll();
-    } catch (e) { window.toast?.('Erreur : ' + e.message, 3500); }
+    } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
     finally { setBusy(els.btnSaveNt, false); }
   }
 
   async function saveGeneral() {
     const polling = parseInt(els.genInterval.value, 10) || 10;
-    setBusy(els.btnSaveGn, true, 'Enregistrement…');
+    setBusy(els.btnSaveGn, true, t('set.busy.saving'));
     try {
       await api('POST', '/api/setup/general', { polling_interval_minutes: polling });
-      window.toast?.('Préférences enregistrées');
+      window.toast?.(t('set.toast.saved'));
       await loadAll();
-    } catch (e) { window.toast?.('Erreur : ' + e.message, 3500); }
+    } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
     finally { setBusy(els.btnSaveGn, false); }
   }
 
   async function restart() {
     try {
       await api('POST', '/api/setup/finalize');
-      window.toast?.('Vérification reprise');
+      window.toast?.(t('set.toast.restarted'));
       await loadAll();
-    } catch (e) { window.toast?.('Erreur : ' + e.message, 3500); }
+    } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
   }
 
   // ── Account modal ──
   // Per-provider hints used to make the form fields self-explanatory.
   // Keyed on provider.type (matches setup_api.py PROVIDERS).
+  // Delegates to existing provider.* i18n keys.
   const PROVIDER_HINTS = {
-    gmail:   { email: 'vous@gmail.com',     password: 'xxxx xxxx xxxx xxxx (mot de passe d\'application)' },
-    outlook: { email: 'vous@outlook.com',   password: 'Mot de passe Microsoft ou mot de passe d\'application' },
-    yahoo:   { email: 'vous@yahoo.com',     password: 'Mot de passe d\'application Yahoo (16 caractères)' },
-    proton:  { email: 'vous@pm.me',         password: 'Mot de passe affiché par Proton Bridge' },
-    orange:  { email: 'vous@orange.fr',     password: 'Votre mot de passe Orange' },
-    ovh:     { email: 'vous@votre-domaine.fr', password: 'Mot de passe de votre boîte OVH' },
-    icloud:  { email: 'vous@icloud.com',    password: 'Mot de passe pour app Apple' },
-    free:    { email: 'vous@free.fr',       password: 'Votre mot de passe Free' },
-    imap:    { email: 'vous@exemple.com',   password: 'Votre mot de passe IMAP' },
+    gmail:   { email: t('provider.gmail.email_ph'),   password: t('provider.gmail.password_ph') },
+    outlook: { email: t('provider.outlook.email_ph'), password: t('provider.outlook.password_ph') },
+    yahoo:   { email: t('provider.yahoo.email_ph'),   password: t('provider.yahoo.password_ph') },
+    proton:  { email: t('provider.proton.email_ph'),  password: t('provider.proton.password_ph') },
+    orange:  { email: t('provider.orange.email_ph'),  password: t('provider.orange.password_ph') },
+    ovh:     { email: t('provider.ovh.email_ph'),     password: t('provider.ovh.password_ph') },
+    icloud:  { email: t('provider.icloud.email_ph'),  password: t('provider.icloud.password_ph') },
+    free:    { email: t('provider.free.email_ph'),    password: t('provider.free.password_ph') },
+    imap:    { email: t('provider.imap.email_ph'),    password: t('provider.imap.password_ph') },
   };
 
   function openModal() {
     state.editingEmail = null;
-    els.mTitle.textContent = 'Ajouter une boîte mail';
-    els.mAdd.textContent = 'Ajouter';
+    els.mTitle.textContent = t('set.modal.add_title');
+    els.mAdd.textContent = t('set.modal.add');
     els.mEmail.disabled = false;
     els.modal.classList.remove('hidden');
     els.mName.value = '';
     els.mEmail.value = '';
     els.mPwd.value = '';
-    els.mPwd.placeholder = 'Votre mot de passe';
+    els.mPwd.placeholder = t('set.modal.pwd_ph');
     els.mTestRes.innerHTML = '';
     state.selectedProviderId = null;
     if (state.providers.length) {
@@ -710,8 +712,8 @@ export async function mountSettings(host, opts = {}) {
     if (!acc) return;
     openModal();  // reset everything first
     state.editingEmail = acc.email;
-    els.mTitle.textContent = 'Modifier la boîte mail';
-    els.mAdd.textContent = 'Enregistrer';
+    els.mTitle.textContent = t('set.modal.edit_title');
+    els.mAdd.textContent = t('set.modal.save');
     els.mEmail.disabled = true;  // email is the primary key — can't change it
 
     // Pre-select the matching provider tile (by type)
@@ -722,7 +724,7 @@ export async function mountSettings(host, opts = {}) {
     els.mName.value = acc.name || '';
     els.mEmail.value = acc.email || '';
     els.mPwd.value = '';
-    els.mPwd.placeholder = '••• laisser vide pour conserver';
+    els.mPwd.placeholder = t('set.modal.pwd_ph_edit');
     els.mHost.value = acc.imap_host || '';
     els.mPort.value = acc.imap_port || 993;
     els.mSsl.checked = !!acc.ssl;
@@ -827,10 +829,10 @@ export async function mountSettings(host, opts = {}) {
   }
 
   function validateModal(acc) {
-    if (!acc.email || !acc.email.includes('@')) return 'Adresse email invalide.';
-    if (!acc.imap_host) return 'Serveur de réception manquant. Choisissez un fournisseur ou renseignez-le dans les réglages techniques.';
+    if (!acc.email || !acc.email.includes('@')) return t('set.err.invalid_email');
+    if (!acc.imap_host) return t('set.err.no_host');
     // In edit mode, MASK in `password` means "keep what's saved" — that's fine.
-    if (!acc.password) return 'Mot de passe requis.';
+    if (!acc.password) return t('set.err.no_pwd');
     return null;
   }
 
@@ -838,12 +840,12 @@ export async function mountSettings(host, opts = {}) {
     const acc = readModal();
     const err = validateModal(acc);
     if (err) { els.mTestRes.innerHTML = `<div class="set-err"><i data-lucide="x-circle" style="width:15px;height:15px;flex-shrink:0;margin-top:1px"></i><span>${err}</span></div>`; return; }
-    setBusy(els.mTest, true, 'Test…');
+    setBusy(els.mTest, true, t('set.busy.testing'));
     els.mTestRes.innerHTML = '';
     try {
       const r = await api('POST', '/api/setup/accounts/test', acc);
       els.mTestRes.innerHTML = r.ok
-        ? `<div class="set-ok"><i data-lucide="check-circle-2" style="width:15px;height:15px;flex-shrink:0;margin-top:1px"></i><span>Tout fonctionne${r.mailbox_count ? ` — ${r.mailbox_count} dossier${r.mailbox_count > 1 ? 's' : ''} détecté${r.mailbox_count > 1 ? 's' : ''}` : ''}</span></div>`
+        ? `<div class="set-ok"><i data-lucide="check-circle-2" style="width:15px;height:15px;flex-shrink:0;margin-top:1px"></i><span>${r.mailbox_count ? t('set.test.ok_count', { count: r.mailbox_count }) : t('set.test.ok')}</span></div>`
         : `<div class="set-err"><i data-lucide="x-circle" style="width:15px;height:15px;flex-shrink:0;margin-top:1px"></i><span>${escapeHtml(r.error)}${r.detail ? `<div class="sub">${escapeHtml(r.detail)}</div>` : ''}</span></div>`;
     } catch (e) {
       els.mTestRes.innerHTML = `<div class="set-err"><i data-lucide="x-circle" style="width:15px;height:15px;flex-shrink:0;margin-top:1px"></i><span>${escapeHtml(e.message)}</span></div>`;
@@ -857,8 +859,8 @@ export async function mountSettings(host, opts = {}) {
     const editing = !!state.editingEmail;
     // The save endpoint runs an IMAP login on the backend AFTER writing
     // config.yaml, so the response can take a few seconds. Communicate
-    // that to the user — "Test de connexion…" instead of "Ajout…".
-    setBusy(els.mAdd, true, editing ? 'Enregistrement & test…' : 'Ajout & test…');
+    // that to the user — "Enregistrement & test…" instead of "Ajout…".
+    setBusy(els.mAdd, true, editing ? t('set.busy.editing') : t('set.busy.adding'));
     try {
       let resp;
       if (editing) {
@@ -866,15 +868,17 @@ export async function mountSettings(host, opts = {}) {
       } else {
         resp = await api('POST', '/api/setup/accounts', acc);
       }
-      const t = resp?.test;
-      if (t && t.ok === false) {
+      const testRes = resp?.test;
+      if (testRes && testRes.ok === false) {
         // Save succeeded but test failed — surface the failure clearly.
-        const msg = `${t.error || 'Test échoué'}${t.detail ? ' — ' + t.detail : ''}`;
-        window.toast?.(`⚠ ${acc.email} enregistrée mais test KO : ${msg}`, 6000);
-      } else if (t && t.ok) {
-        window.toast?.(`✓ ${acc.email} ${editing ? 'mise à jour' : 'ajoutée'} et vérifiée`, 3000);
+        const msg = `${testRes.error || t('set.test.failed')}${testRes.detail ? ' — ' + testRes.detail : ''}`;
+        window.toast?.(t('set.toast.saved_test_fail', { email: acc.email, msg }), 6000);
+      } else if (testRes && testRes.ok) {
+        const verb = editing ? t('set.verb.updated') : t('set.verb.added');
+        window.toast?.(t('set.toast.saved_ok', { email: acc.email, verb }), 3000);
       } else {
-        window.toast?.(`${acc.email} ${editing ? 'mise à jour' : 'ajoutée'}`);
+        const verb = editing ? t('set.verb.updated') : t('set.verb.added');
+        window.toast?.(t('set.toast.saved_simple', { email: acc.email, verb }));
       }
       closeModal();
       await loadAll();
@@ -903,15 +907,15 @@ export async function mountSettings(host, opts = {}) {
     if (failed) {
       icon = 'x-circle';
       klass = 'set-icon-btn test-status test-fail';
-      title = `Échec du test : ${a.last_test_error}`;
+      title = t('set.test_status.fail', { error: a.last_test_error });
     } else if (ok) {
       icon = 'check-circle-2';
       klass = 'set-icon-btn test-status test-ok';
-      title = `Connexion vérifiée le ${a.last_test_at}`;
+      title = t('set.test_status.ok', { date: a.last_test_at });
     } else {
       icon = 'help-circle';
       klass = 'set-icon-btn test-status test-unknown';
-      title = 'Pas encore testé — cliquez pour vérifier';
+      title = t('set.test_status.unknown');
     }
     return `<button class="${klass}" data-act="test" data-email="${escapeAttr(a.email)}" title="${escapeAttr(title)}">
       <i data-lucide="${icon}" class="w-4 h-4"></i>
@@ -943,31 +947,31 @@ export async function mountSettings(host, opts = {}) {
   async function testExisting(email) {
     const acc = (state.config.accounts || []).find(a => a.email.toLowerCase() === email.toLowerCase());
     if (!acc) return;
-    setRowTestState(email, 'busy', 'Test en cours…');
+    setRowTestState(email, 'busy', t('set.test_status.busy'));
     try {
       // MASK in the password tells the backend to use the saved value.
       const payload = { ...acc, password: MASK };
       const r = await api('POST', '/api/setup/accounts/test', payload);
       if (r.ok) {
-        setRowTestState(email, 'ok', `Connexion vérifiée${r.mailbox_count ? ` (${r.mailbox_count} dossiers)` : ''}`);
+        setRowTestState(email, 'ok', t('set.test_status.ok', { date: new Date().toLocaleDateString() }));
         window.toast?.(`✓ ${email} fonctionne`, 2500);
       } else {
-        setRowTestState(email, 'fail', `Échec : ${r.error || ''}${r.detail ? ' — ' + r.detail : ''}`);
+        setRowTestState(email, 'fail', t('set.test_status.fail', { error: `${r.error || ''}${r.detail ? ' — ' + r.detail : ''}` }));
         window.toast?.(`✗ ${email} — ${r.error}`, 4000);
       }
     } catch (e) {
       setRowTestState(email, 'fail', e.message);
-      window.toast?.('Erreur : ' + e.message, 3500);
+      window.toast?.(t('set.toast.error', { msg: e.message }), 3500);
     }
   }
 
   async function removeAccount(email) {
-    if (!confirm(`Retirer la boîte ${email} ?\n(Les emails de cette boîte n'apparaîtront plus dans l'application.)`)) return;
+    if (!confirm(t('set.confirm.remove', { email }))) return;
     try {
       await api('DELETE', `/api/setup/accounts/${encodeURIComponent(email)}`);
-      window.toast?.(`${email} retirée`);
+      window.toast?.(t('set.toast.removed', { email }));
       await loadAll();
-    } catch (e) { window.toast?.('Erreur : ' + e.message, 3500); }
+    } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
   }
 
   // Flip the per-account `enabled` flag. The PUT endpoint requires a
@@ -998,9 +1002,9 @@ export async function mountSettings(host, opts = {}) {
     };
     try {
       await api('PUT', `/api/setup/accounts/${encodeURIComponent(email)}`, payload);
-      window.toast?.(next ? `${email} réactivée` : `${email} mise en pause`);
+      window.toast?.(next ? t('set.toast.enabled', { email }) : t('set.toast.disabled', { email }));
       await loadAll();
-    } catch (e) { window.toast?.('Erreur : ' + e.message, 3500); }
+    } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
   }
 
   // ── Wire events ──
@@ -1018,7 +1022,7 @@ export async function mountSettings(host, opts = {}) {
   host.querySelector('#btn-open-data')?.addEventListener('click', async () => {
     try {
       await api('POST', '/api/setup/open-data-dir');
-    } catch (e) { window.toast?.('Erreur : ' + e.message, 3500); }
+    } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
   });
 
   // ── Wipe data flow ─────────────────────────────────────────────────────────
@@ -1052,12 +1056,12 @@ export async function mountSettings(host, opts = {}) {
     wipeBtn.disabled = wipeInput.value.trim() !== 'SUPPRIMER';
   });
   wipeBtn?.addEventListener('click', async () => {
-    setBusy(wipeBtn, true, 'Suppression…');
+    setBusy(wipeBtn, true, t('set.busy.deleting'));
     setWipeStatus('');
     try {
       const r = await api('POST', '/api/setup/wipe', { confirm: 'SUPPRIMER' });
       if (r.failed && r.failed.length) {
-        setWipeStatus(`<span style="color:var(--warning)">⚠ Certains fichiers n'ont pas pu être supprimés : ${r.failed.map(escapeHtml).join(', ')}.</span>`);
+        setWipeStatus(`<span style="color:var(--warning)">${t('set.wipe.partial_fail', { files: r.failed.map(escapeHtml).join(', ') })}</span>`);
       }
       // Hard reload so the FastAPI redirect rule sends us to /onboarding.
       window.location.href = '/';
@@ -1073,7 +1077,7 @@ export async function mountSettings(host, opts = {}) {
   els.mAdd.addEventListener('click', modalAdd);
   els.modal.addEventListener('click', e => { if (e.target === els.modal) closeModal(); });
 
-  await loadAll().catch(e => window.toast?.('Chargement échoué : ' + e.message, 3500));
+  await loadAll().catch(e => window.toast?.(t('set.toast.load_failed', { msg: e.message }), 3500));
 
   // Cleanup callback for the router.
   return () => { /* no timers / listeners outside the host element */ };

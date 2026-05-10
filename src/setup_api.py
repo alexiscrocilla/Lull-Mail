@@ -21,12 +21,13 @@ import socket
 import ssl
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from src import config as cfg
 from src import lifecycle
 from src import paths
+from src.i18n import tr, get_locale
 from src.security.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
@@ -434,7 +435,7 @@ def list_providers() -> List[Dict[str, Any]]:
 
 
 @router.post("/openai")
-def save_openai(payload: OpenAIPayload) -> Dict[str, Any]:
+def save_openai(payload: OpenAIPayload, locale: str = Depends(get_locale)) -> Dict[str, Any]:
     data = _load_or_default()
     existing_key = (data.get("openai") or {}).get("api_key", "")
     from src import secrets_store
@@ -457,7 +458,7 @@ def save_openai(payload: OpenAIPayload) -> Dict[str, Any]:
         # "Change" / "Set" — fresh user input. Validate format then push
         # into the keyring and replace with the sentinel.
         if not (payload.api_key.startswith("sk-") or payload.api_key.startswith("sk_")):
-            raise HTTPException(400, "Format de clé OpenAI inattendu (devrait commencer par sk-).")
+            raise HTTPException(400, tr("setup.openai.bad_format", locale))
         new_key = _store_openai_secret(payload.api_key)
 
     data["openai"] = {"api_key": new_key, "model": payload.model or "gpt-4o-mini"}
@@ -466,7 +467,7 @@ def save_openai(payload: OpenAIPayload) -> Dict[str, Any]:
 
 
 @router.post("/ntfy")
-def save_ntfy(payload: NtfyPayload) -> Dict[str, Any]:
+def save_ntfy(payload: NtfyPayload, locale: str = Depends(get_locale)) -> Dict[str, Any]:
     data = _load_or_default()
     if not payload.enabled:
         # Empty topic disables the notifier without removing the section.
@@ -477,7 +478,7 @@ def save_ntfy(payload: NtfyPayload) -> Dict[str, Any]:
         }
     else:
         if not payload.topic.strip():
-            raise HTTPException(400, "Topic ntfy requis quand activé.")
+            raise HTTPException(400, tr("setup.ntfy.topic_required", locale))
         data["ntfy"] = {
             "server": payload.server or "https://ntfy.sh",
             "topic": payload.topic.strip(),
@@ -529,13 +530,14 @@ def _enforce_tls_safety(payload: AccountPayload) -> None:
 def add_account(
     request: Request,
     payload: AccountPayload = Body(...),
+    locale: str = Depends(get_locale),
 ) -> Dict[str, Any]:
     data = _load_or_default()
     accounts = data.get("accounts") or []
     if any(a.get("email", "").lower() == payload.email.lower() for a in accounts):
-        raise HTTPException(409, f"Un compte avec l'adresse {payload.email} existe déjà.")
+        raise HTTPException(409, tr("setup.account.exists", locale, email=payload.email))
     if payload.password == MASK or not payload.password:
-        raise HTTPException(400, "Mot de passe requis pour créer un compte.")
+        raise HTTPException(400, tr("setup.account.password_required", locale))
     _enforce_tls_safety(payload)
 
     # Push the password into the OS keyring before writing config.yaml,
@@ -554,7 +556,7 @@ def add_account(
     # outcome via record_test_result. Save always succeeds (the user's
     # input is preserved); a failed test surfaces in the Settings list
     # via the red status icon.
-    test = _safe_test_and_record(payload, real_password)
+    test = _safe_test_and_record(payload, real_password, locale)
     return {
         "ok": True,
         "account": _mask_account(acc_dict),
@@ -568,6 +570,7 @@ def update_account(
     request: Request,
     email: str,
     payload: AccountPayload = Body(...),
+    locale: str = Depends(get_locale),
 ) -> Dict[str, Any]:
     data = _load_or_default()
     accounts = data.get("accounts") or []
@@ -581,7 +584,7 @@ def update_account(
             # that existing value is a sentinel, not a plain password.
             resolved_or_sentinel = _unmask_password(new["password"], stored_pwd)
             if not resolved_or_sentinel:
-                raise HTTPException(400, "Mot de passe vide.")
+                raise HTTPException(400, tr("setup.account.password_empty", locale))
             _enforce_tls_safety(payload)
 
             if secrets_store.is_sentinel(resolved_or_sentinel):
@@ -598,23 +601,23 @@ def update_account(
             accounts[i] = new
             data["accounts"] = accounts
             _persist(data)
-            test = _safe_test_and_record(payload, actual_pwd_for_test)
+            test = _safe_test_and_record(payload, actual_pwd_for_test, locale)
             return {
                 "ok": True,
                 "account": _mask_account(new),
                 "test": test,
             }
-    raise HTTPException(404, f"Compte {email} introuvable.")
+    raise HTTPException(404, tr("setup.account.not_found_email", locale, email=email))
 
 
 @router.delete("/accounts/{email}")
 @limiter.limit("30/minute")
-def delete_account(request: Request, email: str) -> Dict[str, Any]:
+def delete_account(request: Request, email: str, locale: str = Depends(get_locale)) -> Dict[str, Any]:
     data = _load_or_default()
     accounts = data.get("accounts") or []
     new_list = [a for a in accounts if a.get("email", "").lower() != email.lower()]
     if len(new_list) == len(accounts):
-        raise HTTPException(404, f"Compte {email} introuvable.")
+        raise HTTPException(404, tr("setup.account.not_found_email", locale, email=email))
     data["accounts"] = new_list
     _persist(data)
     # Drop the test/sync state too so a re-add of the same email starts
@@ -654,7 +657,7 @@ def _resolve_password(payload: AccountPayload) -> str:
     return pwd or ""
 
 
-def _perform_imap_test(payload: AccountPayload, password: str) -> Dict[str, Any]:
+def _perform_imap_test(payload: AccountPayload, password: str, locale: str = "fr") -> Dict[str, Any]:
     """Open one IMAP connection, login, list mailboxes, log out. Returns a
     structured dict so callers (manual /test endpoint AND the auto-test
     that runs on save) can render or persist the result.
@@ -692,7 +695,7 @@ def _perform_imap_test(payload: AccountPayload, password: str) -> Dict[str, Any]
             return {
                 "ok": False,
                 "stage": "login",
-                "error": "Identifiants refusés par le serveur.",
+                "error": tr("setup.imap.login_rejected", locale),
                 "detail": str(e),
             }
 
@@ -728,7 +731,7 @@ def _perform_imap_test(payload: AccountPayload, password: str) -> Dict[str, Any]
         return {"ok": False, "stage": "unknown", "error": str(e), "detail": ""}
 
 
-def _safe_test_and_record(payload: AccountPayload, password: str) -> Dict[str, Any]:
+def _safe_test_and_record(payload: AccountPayload, password: str, locale: str = "fr") -> Dict[str, Any]:
     """Run the test for the auto-test path (after add/update) and record
     the outcome in `sync_state.last_test_*`. Never raises — returns a
     structured failure record for unexpected errors so the save flow
@@ -740,12 +743,12 @@ def _safe_test_and_record(payload: AccountPayload, password: str) -> Dict[str, A
         result = {
             "ok": False,
             "stage": "missing_password",
-            "error": "Aucun mot de passe disponible pour tester ce compte.",
+            "error": tr("setup.account.password_missing_test", locale),
             "detail": "",
         }
     else:
         try:
-            result = _perform_imap_test(payload, password)
+            result = _perform_imap_test(payload, password, locale)
         except HTTPException as e:
             # TLS gate rejected. Already caught at save-time too, so this
             # path is mostly defensive.
@@ -776,6 +779,7 @@ def _safe_test_and_record(payload: AccountPayload, password: str) -> Dict[str, A
 def test_account(
     request: Request,
     payload: AccountPayload = Body(...),
+    locale: str = Depends(get_locale),
 ) -> Dict[str, Any]:
     """Open an IMAP connection and authenticate. No mailbox state is
     altered. Used by the wizard's "Tester la connexion" button AND by
@@ -788,15 +792,15 @@ def test_account(
     """
     pwd = _resolve_password(payload)
     if not pwd:
-        raise HTTPException(400, "Mot de passe manquant pour le test.")
-    return _safe_test_and_record(payload, pwd)
+        raise HTTPException(400, tr("setup.account.password_missing_test", locale))
+    return _safe_test_and_record(payload, pwd, locale)
 
 
 # ── Finalize ─────────────────────────────────────────────────────────────────
 
 
 @router.post("/finalize")
-def finalize() -> Dict[str, Any]:
+def finalize(locale: str = Depends(get_locale)) -> Dict[str, Any]:
     """Boot (or reboot) the email subsystem after the wizard finishes.
 
     Returns 400 with the validation error if the saved config still
@@ -812,7 +816,7 @@ def finalize() -> Dict[str, Any]:
 
     started = lifecycle.start_email_services(restart=True)
     if not started:
-        raise HTTPException(500, "Démarrage des services email échoué — voir les logs.")
+        raise HTTPException(500, tr("setup.services.start_failed_logs", locale))
     return {"ok": True, "data_dir": str(paths.APP_DATA_DIR)}
 
 
@@ -820,7 +824,7 @@ def finalize() -> Dict[str, Any]:
 
 
 @router.post("/open-data-dir")
-def open_data_dir() -> Dict[str, Any]:
+def open_data_dir(locale: str = Depends(get_locale)) -> Dict[str, Any]:
     """Reveal the app's data directory in the OS file manager. Used by
     the Settings page so power users can see the SQLite DB / log file
     without hunting through %APPDATA%.
@@ -846,7 +850,7 @@ def open_data_dir() -> Dict[str, Any]:
             subprocess.Popen(["xdg-open", target])
     except Exception as e:
         logger.exception("open-data-dir failed")
-        raise HTTPException(500, f"Impossible d'ouvrir le dossier : {e}")
+        raise HTTPException(500, tr("setup.open_dir_failed", locale, msg=str(e)))
 
     return {"ok": True, "path": target}
 
@@ -863,6 +867,7 @@ class WipeConfirm(BaseModel):
 def wipe_data(
     request: Request,
     payload: WipeConfirm = Body(...),
+    locale: str = Depends(get_locale),
 ) -> Dict[str, Any]:
     """Erase config.yaml, the SQLite DB, attachments and logs.
 
@@ -877,7 +882,7 @@ def wipe_data(
     import shutil
 
     if payload.confirm != "SUPPRIMER":
-        raise HTTPException(400, "Confirmation manquante.")
+        raise HTTPException(400, tr("setup.confirm_missing", locale))
 
     # 1. Stop background workers — they hold file handles on the DB.
     try:

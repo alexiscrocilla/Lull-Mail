@@ -28,10 +28,11 @@ from dataclasses import dataclass
 from typing import List, Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from src.brands import BRANDS, BRAND_ROOTS, registrable, subdomain
+from src.i18n import tr, get_locale
 
 
 router = APIRouter()
@@ -241,38 +242,41 @@ def _visual_mono(text: str, *, size: str = "lg") -> str:
     )
 
 
-def _visual_userinfo(before: str, after: str) -> str:
+def _visual_userinfo(before: str, after: str, locale: str = "fr") -> str:
     """The `@` trick: emphasise that whatever is BEFORE the `@` is just
     decoration, the real host is what comes after."""
+    real_domain_label = tr("safe_link.visual.real_domain", locale)
     return (
         '<div class="visual visual-userinfo">'
         f'<div class="ui-row"><span class="ui-fake">{html.escape(before) or "…"}</span>'
         '<span class="ui-at">@</span></div>'
-        f'<div class="ui-real" title="Domaine réel">{html.escape(after) or "?"}</div>'
+        f'<div class="ui-real" title="{html.escape(real_domain_label)}">{html.escape(after) or "?"}</div>'
         '</div>'
     )
 
 
-def _visual_typosquat(fake: str, real: str) -> str:
+def _visual_typosquat(fake: str, real: str, locale: str = "fr") -> str:
     """Show the suspicious domain side-by-side with the brand it's
     trying to imitate. The diff is implicit: the user sees both at
     once and intuitively spots the swapped/missing/inserted char."""
+    imitates_label = tr("safe_link.visual.imitates", locale)
     return (
         '<div class="visual visual-typosquat">'
         f'<div class="ts-fake"><code>{html.escape(fake)}</code></div>'
         '<div class="ts-arrow" aria-hidden="true">↓</div>'
-        f'<div class="ts-label">imite</div>'
+        f'<div class="ts-label">{html.escape(imitates_label)}</div>'
         f'<div class="ts-real"><code>{html.escape(real)}</code></div>'
         '</div>'
     )
 
 
-def _visual_subdomain_spoof(host: str, brand_root: str) -> str:
+def _visual_subdomain_spoof(host: str, brand_root: str, locale: str = "fr") -> str:
     """Render the host with the brand label highlighted, then arrow
     down to the actual registrable domain. Makes "ah so the REAL host
     is at the end" obvious."""
     reg = registrable(host)
     sub = subdomain(host)
+    real_domain_label = tr("safe_link.visual.real_domain", locale)
     sub_html = ""
     for i, label in enumerate(sub.split(".")):
         sep = "." if i > 0 else ""
@@ -283,7 +287,7 @@ def _visual_subdomain_spoof(host: str, brand_root: str) -> str:
     return (
         '<div class="visual visual-subdomain">'
         f'<div class="ss-line"><code>{sub_html}.<span class="ss-real">{html.escape(reg)}</span></code></div>'
-        '<div class="ss-caption">domaine réel</div>'
+        f'<div class="ss-caption">{html.escape(real_domain_label)}</div>'
         '</div>'
     )
 
@@ -291,7 +295,7 @@ def _visual_subdomain_spoof(host: str, brand_root: str) -> str:
 # ── Analysis ─────────────────────────────────────────────────────────────────
 
 
-def analyze(url: str) -> List[Threat]:
+def analyze(url: str, locale: str = "fr") -> List[Threat]:
     """Return every red flag detected on `url`. Pure function, no I/O."""
     parsed = urlparse(url)
     host_raw = parsed.hostname or ""
@@ -302,15 +306,8 @@ def analyze(url: str) -> List[Threat]:
         threats.append(Threat(
             type="homoglyph",
             severity="danger",
-            title="Caractères trompeurs",
-            body=(
-                "Ce nom de domaine contient un ou plusieurs caractères "
-                "Cyrilliques ou Grecs visuellement identiques aux lettres "
-                "latines. C'est la technique d'attaque par homographe : "
-                "vous croyez aller sur paypal.com mais le navigateur "
-                "ouvre un domaine totalement différent appartenant à un "
-                "attaquant."
-            ),
+            title=tr("safe_link.threat.homoglyph.title", locale),
+            body=tr("safe_link.threat.homoglyph.body", locale),
             visual_html=_visual_glyphs(host_raw),
         ))
 
@@ -322,25 +319,14 @@ def analyze(url: str) -> List[Threat]:
     if _is_punycoded(host) or encoded:
         if _is_punycoded(host):
             shown = host
-            body = (
-                "Ce domaine est livré pré-encodé en punycode (préfixe "
-                "« xn-- »). Cet encodage est légitime pour les noms "
-                "internationalisés mais aussi très utilisé par les "
-                "attaques de phishing pour masquer un nom trompeur."
-            )
+            body = tr("safe_link.threat.punycode_pre.body", locale)
         else:
             shown = encoded or host
-            body = (
-                "Le navigateur convertira ce nom de domaine en sa forme "
-                "technique (préfixe « xn-- ») avant de résoudre. Cette "
-                "conversion automatique est l'un des mécanismes que les "
-                "attaquants exploitent pour faire passer un domaine "
-                "homographe pour le vrai site."
-            )
+            body = tr("safe_link.threat.punycode_enc.body", locale)
         threats.append(Threat(
             type="punycode",
             severity="warning",
-            title="Encodage IDN punycode",
+            title=tr("safe_link.threat.punycode.title", locale),
             body=body,
             visual_html=_visual_mono(shown, size="lg"),
         ))
@@ -352,29 +338,17 @@ def analyze(url: str) -> List[Threat]:
         threats.append(Threat(
             type="userinfo",
             severity="danger",
-            title="Astuce du « @ »",
-            body=(
-                "Tout ce qui est avant le « @ » dans une URL n'est pas "
-                "le domaine — c'est un identifiant ignoré par le serveur. "
-                "L'adresse réelle est celle qui suit le « @ ». Cette "
-                "technique est utilisée pour faire passer un domaine "
-                "malveillant pour un site connu."
-            ),
-            visual_html=_visual_userinfo(before, after),
+            title=tr("safe_link.threat.userinfo.title", locale),
+            body=tr("safe_link.threat.userinfo.body", locale),
+            visual_html=_visual_userinfo(before, after, locale),
         ))
 
     if _is_ip_host(host):
         threats.append(Threat(
             type="ip_host",
             severity="danger",
-            title="Adresse IP brute",
-            body=(
-                "Le lien pointe vers une adresse IP numérique au lieu "
-                "d'un nom de domaine. Les sites légitimes (banques, "
-                "services publics, e-commerce) utilisent toujours un "
-                "vrai domaine. Les liens vers une IP nue dans un email "
-                "sont presque systématiquement frauduleux."
-            ),
+            title=tr("safe_link.threat.ip_host.title", locale),
+            body=tr("safe_link.threat.ip_host.body", locale),
             visual_html=_visual_mono(host, size="lg"),
         ))
 
@@ -382,13 +356,8 @@ def analyze(url: str) -> List[Threat]:
         threats.append(Threat(
             type="shortener",
             severity="warning",
-            title="Lien raccourci",
-            body=(
-                "Ce service raccourcit les URLs et masque la destination "
-                "réelle. Tant que vous n'avez pas cliqué, impossible de "
-                "savoir où vous arrivez. À éviter quand le mail vient "
-                "d'un expéditeur inconnu."
-            ),
+            title=tr("safe_link.threat.shortener.title", locale),
+            body=tr("safe_link.threat.shortener.body", locale),
             visual_html=_visual_mono(host, size="lg"),
         ))
 
@@ -397,13 +366,8 @@ def analyze(url: str) -> List[Threat]:
         threats.append(Threat(
             type="suspicious_tld",
             severity="warning",
-            title=f"Extension à risque",
-            body=(
-                f"Le domaine se termine par « .{tld} », une extension "
-                "peu coûteuse fréquemment utilisée pour le spam et le "
-                "phishing. Les sites légitimes en .com/.fr/.org existent "
-                "bien plus rarement avec ces extensions."
-            ),
+            title=tr("safe_link.threat.suspicious_tld.title", locale),
+            body=tr("safe_link.threat.suspicious_tld.body", locale, tld=tld),
             visual_html=_visual_mono(f".{tld}", size="xl"),
         ))
 
@@ -412,16 +376,9 @@ def analyze(url: str) -> List[Threat]:
         threats.append(Threat(
             type="typosquat",
             severity="danger",
-            title="Imitation d'un domaine connu",
-            body=(
-                f"Le nom de domaine ressemble énormément à « {typo_brand} » "
-                "à un caractère près (substitution, ajout, suppression "
-                "ou inversion). C'est la signature classique du "
-                "typosquatting : un attaquant a enregistré un domaine "
-                "presque identique à une marque connue pour piéger les "
-                "fautes de frappe et les regards distraits."
-            ),
-            visual_html=_visual_typosquat(registrable(host), typo_brand),
+            title=tr("safe_link.threat.typosquat.title", locale),
+            body=tr("safe_link.threat.typosquat.body", locale, brand=typo_brand),
+            visual_html=_visual_typosquat(registrable(host), typo_brand, locale),
         ))
 
     spoof_brand = _detect_subdomain_spoof(host)
@@ -429,16 +386,10 @@ def analyze(url: str) -> List[Threat]:
         threats.append(Threat(
             type="subdomain_spoof",
             severity="danger",
-            title="Marque détournée en sous-domaine",
-            body=(
-                f"Ce lien contient « {spoof_brand} » au début mais le "
-                f"vrai domaine est « {registrable(host)} », qui n'a rien "
-                "à voir. Tout ce qui se trouve à gauche du dernier point "
-                "n'est qu'un sous-domaine que le propriétaire du domaine "
-                "réel peut nommer comme il veut — y compris pour vous "
-                "faire croire que vous arrivez sur un site de confiance."
-            ),
-            visual_html=_visual_subdomain_spoof(host, spoof_brand),
+            title=tr("safe_link.threat.subdomain_spoof.title", locale),
+            body=tr("safe_link.threat.subdomain_spoof.body", locale,
+                    brand=spoof_brand, registrable=registrable(host)),
+            visual_html=_visual_subdomain_spoof(host, spoof_brand, locale),
         ))
 
     return threats
@@ -472,11 +423,11 @@ def _render_threat_card(t: Threat) -> str:
     </article>"""
 
 
-def render_page(url: str) -> str:
+def render_page(url: str, locale: str = "fr") -> str:
     parsed = urlparse(url)
     host = parsed.hostname or ""
     host_html = _highlight_host_inline(host)
-    threats = analyze(url)
+    threats = analyze(url, locale)
 
     scheme_html = html.escape(parsed.scheme + "://")
     tail = parsed.path or ""
@@ -494,11 +445,11 @@ def render_page(url: str) -> str:
     cards_html = "\n".join(_render_threat_card(t) for t in threats)
 
     severity_top = "danger" if any(t.severity == "danger" for t in threats) else "warning"
-    title_text = (
-        "Lien dangereux" if severity_top == "danger" else "Lien à vérifier"
-    )
+    title_key = "safe_link.page.title_danger" if severity_top == "danger" else "safe_link.page.title_warning"
+    title_text = tr(title_key, locale)
 
     safe_url = html.escape(url, quote=True)
+    lang_attr = "en" if locale == "en" else "fr"
 
     return _PAGE_TEMPLATE.format(
         title_text=html.escape(title_text),
@@ -506,11 +457,16 @@ def render_page(url: str) -> str:
         url_pretty=url_pretty,
         cards_html=cards_html,
         safe_url=safe_url,
+        lang_attr=lang_attr,
+        lead_text=html.escape(tr("safe_link.page.lead", locale)),
+        btn_cancel=html.escape(tr("safe_link.page.btn_cancel", locale)),
+        btn_continue=html.escape(tr("safe_link.page.btn_continue", locale)),
+        footer_text=html.escape(tr("safe_link.page.footer", locale)),
     )
 
 
 _PAGE_TEMPLATE = """<!DOCTYPE html>
-<html lang="fr">
+<html lang="{lang_attr}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -752,11 +708,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
         </div>
         <h1 id="title">{title_text}</h1>
       </div>
-      <p class="lead">
-        Lull Mail a détecté plusieurs signaux qui suggèrent que ce lien
-        pourrait être trompeur. Consultez les détails ci-dessous avant
-        de continuer.
-      </p>
+      <p class="lead">{lead_text}</p>
 
       <div class="url-box">{url_pretty}</div>
 
@@ -764,18 +716,14 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
 
       <div class="actions">
         <button class="btn btn-cancel" onclick="window.history.length>1?window.history.back():window.close()">
-          Annuler
+          {btn_cancel}
         </button>
         <a class="btn btn-danger" href="{safe_url}" rel="noopener noreferrer">
-          Continuer quand même
+          {btn_continue}
         </a>
       </div>
 
-      <p class="footer">
-        Cet écran apparaît uniquement pour les liens identifiés comme
-        suspects. Les liens légitimes sont ouverts directement, sans
-        avertissement.
-      </p>
+      <p class="footer">{footer_text}</p>
     </section>
   </main>
 </body>
@@ -783,21 +731,21 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
 
 
 @router.get("/safe-link")
-def safe_link(url: str):
+def safe_link(url: str, locale: str = Depends(get_locale)):
     """Render the interstitial — but only when at least one threat is
     detected. If the URL is clean, we 302 to the destination directly:
     the user wanted to go there, and showing a fake warning would
     desensitize them to the real ones. Refuses anything that isn't
     http(s) up front."""
     if not url or len(url) > 4096:
-        raise HTTPException(400, "URL manquante ou trop longue")
+        raise HTTPException(400, tr("safe_link.url_missing", locale))
     parsed = urlparse(url)
     if parsed.scheme.lower() not in ("http", "https"):
-        raise HTTPException(400, f"Schéma non supporté : {parsed.scheme}")
+        raise HTTPException(400, tr("safe_link.scheme_unsupported", locale, scheme=parsed.scheme))
     if not parsed.hostname:
-        raise HTTPException(400, "URL malformée")
+        raise HTTPException(400, tr("safe_link.url_malformed", locale))
 
-    if not analyze(url):
+    if not analyze(url, locale):
         return RedirectResponse(url, status_code=302)
 
-    return HTMLResponse(render_page(url))
+    return HTMLResponse(render_page(url, locale))

@@ -94,6 +94,12 @@
         <button id="cheat-toggle" class="rail-btn" aria-label="Raccourcis clavier" title="Raccourcis clavier (?)">
           <i data-lucide="keyboard" class="w-5 h-5"></i>
         </button>
+        <button id="report-toggle" class="rail-btn"
+                data-i18n-aria-label="report.open_title" data-i18n-title="report.open_title"
+                aria-label="Signaler un bug ou suggérer une amélioration"
+                title="Signaler un bug ou suggérer une amélioration">
+          <i data-lucide="bug" class="w-5 h-5"></i>
+        </button>
         <!-- RailToast slot — replaces the legacy rail-avatar. The placeholder
              keeps the visual presence of the old avatar; an active toast
              overlays it. -->
@@ -151,6 +157,100 @@
         <li><kbd>/</kbd><span data-i18n="shortcuts.search">Rechercher</span></li>
         <li><kbd>?</kbd><span data-i18n="shortcuts.help">Afficher cette aide</span></li>
       </ul>
+    </div>
+  </div>
+
+  <!-- Bug / feedback report -->
+  <div id="report-overlay" class="cheat-overlay hidden" role="dialog"
+       data-i18n-aria-label="report.title" aria-label="Signaler un bug">
+    <div class="cheat-card report-card">
+      <div class="cheat-header">
+        <h2 data-i18n="report.title">Signaler un bug</h2>
+        <button class="cheat-close" id="report-close"
+                data-i18n-aria-label="shortcuts.close" aria-label="Fermer">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <p class="report-help" data-i18n="report.help">
+        Décrivez ce qui ne marche pas ou l'idée que vous avez.
+        Les infos techniques ci-dessous seront pré-remplies dans le formulaire GitHub.
+        Rien n'est envoyé tant que vous n'avez pas cliqué sur « Ouvrir sur GitHub ».
+      </p>
+
+      <div class="report-row">
+        <label class="report-radio">
+          <input type="radio" name="report-kind" value="bug" checked>
+          <span data-i18n="report.kind.bug">Bug</span>
+        </label>
+        <label class="report-radio">
+          <input type="radio" name="report-kind" value="idea">
+          <span data-i18n="report.kind.idea">Idée / amélioration</span>
+        </label>
+      </div>
+
+      <label class="report-field">
+        <span data-i18n="report.title_field">Titre</span>
+        <input id="report-title" type="text" maxlength="120"
+               data-i18n-placeholder="report.title_ph"
+               placeholder="Résumé en une ligne">
+      </label>
+
+      <div id="report-fields-bug" class="report-fields">
+        <label class="report-field">
+          <span data-i18n="report.what">Ce qui se passe</span>
+          <textarea id="report-what" rows="3"
+                    data-i18n-placeholder="report.what_ph"
+                    placeholder="Décrivez le bug en quelques phrases."></textarea>
+        </label>
+        <label class="report-field">
+          <span data-i18n="report.expected">Ce à quoi vous vous attendiez</span>
+          <textarea id="report-expected" rows="2"
+                    data-i18n-placeholder="report.expected_ph"
+                    placeholder="Le comportement attendu."></textarea>
+        </label>
+        <label class="report-field">
+          <span data-i18n="report.steps">Étapes pour reproduire</span>
+          <textarea id="report-steps" rows="3"
+                    data-i18n-placeholder="report.steps_ph"
+                    placeholder="1. …&#10;2. …&#10;3. …"></textarea>
+        </label>
+      </div>
+
+      <div id="report-fields-idea" class="report-fields hidden">
+        <label class="report-field">
+          <span data-i18n="report.problem">Quel problème ça résout ?</span>
+          <textarea id="report-problem" rows="3"
+                    data-i18n-placeholder="report.problem_ph"
+                    placeholder="La friction que vous rencontrez aujourd'hui."></textarea>
+        </label>
+        <label class="report-field">
+          <span data-i18n="report.solution">Ce que vous proposez (optionnel)</span>
+          <textarea id="report-solution" rows="2"
+                    data-i18n-placeholder="report.solution_ph"
+                    placeholder="Comment ça pourrait marcher, ou le résultat espéré."></textarea>
+        </label>
+      </div>
+
+      <label class="report-toggle">
+        <input type="checkbox" id="report-include-diag" checked>
+        <span data-i18n="report.include_diag">Inclure les infos de diagnostic (anonymisées)</span>
+      </label>
+
+      <details class="report-diag" id="report-diag-wrap">
+        <summary data-i18n="report.diag_preview">Aperçu des infos transmises</summary>
+        <pre id="report-diag-preview" class="report-diag-pre">…</pre>
+      </details>
+
+      <div class="report-actions">
+        <button type="button" class="report-btn-secondary" id="report-cancel"
+                data-i18n="report.cancel">Annuler</button>
+        <a id="report-open-gh" class="report-btn-primary" href="#"
+           target="_blank" rel="noopener noreferrer">
+          <i data-lucide="external-link" class="w-4 h-4"></i>
+          <span data-i18n="report.open_gh">Ouvrir sur GitHub</span>
+        </a>
+      </div>
     </div>
   </div>
 

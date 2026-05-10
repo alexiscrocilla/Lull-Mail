@@ -9,7 +9,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -18,6 +18,7 @@ from src import config as cfg
 from src import database as db
 from src import attachment_security as att_sec
 from src import paths as _paths
+from src.i18n import tr, get_locale
 from src.safe_link import router as _safe_link_router
 
 logger = logging.getLogger(__name__)
@@ -54,13 +55,11 @@ app.add_middleware(SlowAPIMiddleware)
 def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
     """Friendly 429 response — the default slowapi handler returns a
     text/plain body which the frontend can't surface usefully."""
+    locale = get_locale(request)
     return JSONResponse(
         {
             "error": "rate_limited",
-            "detail": (
-                "Trop de requêtes en peu de temps. Patientez quelques "
-                "secondes avant de réessayer."
-            ),
+            "detail": tr("rate_limited", locale),
             "retry_after": str(exc.detail),
         },
         status_code=429,
@@ -273,10 +272,10 @@ def list_emails(
 
 
 @app.get("/api/emails/{int_id}")
-def get_email(int_id: int, bg: BackgroundTasks):
+def get_email(int_id: int, bg: BackgroundTasks, locale: str = Depends(get_locale)):
     em = db.get_email_by_id(int_id)
     if not em:
-        raise HTTPException(404, "Email introuvable")
+        raise HTTPException(404, tr("email.not_found", locale))
     # Lazy attachment scan: if this row was ingested before the PJ
     # extraction was added, kick off a single-message IMAP fetch in the
     # background. The first read returns no attachments; on a refresh a
@@ -331,10 +330,10 @@ def _lazy_scan_one(int_id: int, account_email: str, uid: str, message_id: str):
 
 
 @app.patch("/api/emails/{int_id}")
-def patch_email(int_id: int, patch: EmailPatch, bg: BackgroundTasks):
+def patch_email(int_id: int, patch: EmailPatch, bg: BackgroundTasks, locale: str = Depends(get_locale)):
     em = db.get_email_by_id(int_id)
     if not em:
-        raise HTTPException(404, "Email introuvable")
+        raise HTTPException(404, tr("email.not_found", locale))
 
     if patch.is_read is True and not em.get("is_read"):
         db.mark_read(em["message_id"])
@@ -345,13 +344,13 @@ def patch_email(int_id: int, patch: EmailPatch, bg: BackgroundTasks):
 
     if patch.category is not None:
         if patch.category not in _VALID_CATEGORIES:
-            raise HTTPException(400, f"Catégorie invalide : {patch.category}")
+            raise HTTPException(400, tr("email.category_invalid", locale, category=patch.category))
         if patch.category != em.get("category"):
             db.update_email_category(em["message_id"], patch.category)
 
     if patch.folder is not None:
         if patch.folder not in _valid_folders():
-            raise HTTPException(400, f"Dossier invalide : {patch.folder}")
+            raise HTTPException(400, tr("email.folder_invalid", locale, folder=patch.folder))
         if patch.folder != em.get("folder"):
             db.update_email_folder(em["message_id"], patch.folder)
             bg.add_task(_imap_apply_folder, em["account_email"], em["uid"], patch.folder)
@@ -376,7 +375,7 @@ def patch_email(int_id: int, patch: EmailPatch, bg: BackgroundTasks):
 
 
 @app.post("/api/emails/{int_id}/draft")
-def generate_draft(int_id: int):
+def generate_draft(int_id: int, locale: str = Depends(get_locale)):
     """Generate an AI draft reply on demand for a specific email.
 
     When a draft already exists we return it verbatim (idempotent). On
@@ -389,7 +388,7 @@ def generate_draft(int_id: int):
     from src.ai_processor import enrich_draft, init_client
     em = db.get_email_by_id(int_id)
     if not em:
-        raise HTTPException(404, "Email introuvable")
+        raise HTTPException(404, tr("email.not_found", locale))
     if em.get("draft_response"):
         # Idempotent path. We still ensure needs_reply is set to 1 in case
         # an older row had a draft without the flag (legacy state).
@@ -400,7 +399,7 @@ def generate_draft(int_id: int):
             "needs_reply": True,
         }
     if not cfg.ai_enabled():
-        raise HTTPException(409, "IA désactivée. Activez-la dans Réglages > Intelligence artificielle pour générer des brouillons.")
+        raise HTTPException(409, tr("email.ai_disabled.draft", locale))
     conf = cfg.get()
     # Lazy init: covers the path where the user just toggled AI on via
     # Settings. The startup-time init in lifecycle.py was skipped (key
@@ -419,26 +418,26 @@ def generate_draft(int_id: int):
 
 
 @app.post("/api/emails/{int_id}/reanalyze")
-def reanalyze_email(int_id: int):
+def reanalyze_email(int_id: int, locale: str = Depends(get_locale)):
     from src.ai_processor import process_email, init_client
     em = db.get_email_by_id(int_id)
     if not em:
-        raise HTTPException(404, "Email introuvable")
+        raise HTTPException(404, tr("email.not_found", locale))
     if not cfg.ai_enabled():
-        raise HTTPException(409, "IA désactivée. Activez-la dans Réglages > Intelligence artificielle pour ré-analyser cet email.")
+        raise HTTPException(409, tr("email.ai_disabled.reanalyze", locale))
     conf = cfg.get()
     init_client(conf["openai"]["api_key"])
     model = conf.get("openai", {}).get("model", "gpt-4o-mini")
     result = process_email(em, model=model)
     if not result:
-        raise HTTPException(502, "Échec de la ré-analyse IA")
+        raise HTTPException(502, tr("email.reanalyze_failed", locale))
     db.update_email_ai(em["message_id"], result)
     return db.get_email_by_id(int_id)
 
 
 @app.post("/api/emails/send")
 @limiter.limit("30/minute")
-def send_email(request: Request, payload: SendRequest):
+def send_email(request: Request, payload: SendRequest, locale: str = Depends(get_locale)):
     """Deliver a message via the SMTP server tied to `from_account`.
 
     The request body is intentionally lean: when `reply_to_int_id` is
@@ -450,9 +449,9 @@ def send_email(request: Request, payload: SendRequest):
     from src import email_sender as sender
 
     if not payload.from_account.strip():
-        raise HTTPException(400, "Compte expéditeur requis.")
+        raise HTTPException(400, tr("email.send.from_required", locale))
     if not payload.to:
-        raise HTTPException(400, "Au moins un destinataire est requis.")
+        raise HTTPException(400, tr("email.send.to_required", locale))
 
     in_reply_to = (payload.in_reply_to or "").strip() or None
     references = (payload.references or "").strip() or None
@@ -514,7 +513,7 @@ def send_email(request: Request, payload: SendRequest):
     except Exception as e:
         logger.exception("send_email: unexpected exception")
         db.mark_outbox_failed(outbox_id, "unknown", str(e))
-        raise HTTPException(500, f"Erreur d'envoi inattendue : {e}")
+        raise HTTPException(500, tr("email.send.unexpected", locale, msg=str(e)))
 
     db.mark_outbox_sent(outbox_id, result["message_id"])
     return {
@@ -555,9 +554,9 @@ def list_drafts(
 
 
 @app.post("/api/drafts")
-def create_draft(payload: DraftCreate):
+def create_draft(payload: DraftCreate, locale: str = Depends(get_locale)):
     if not payload.from_account.strip():
-        raise HTTPException(400, "Compte expéditeur requis pour créer un brouillon.")
+        raise HTTPException(400, tr("draft.from_required", locale))
     draft_id = db.insert_draft(
         account_email=payload.from_account.strip(),
         to_addr=payload.to or "",
@@ -569,15 +568,15 @@ def create_draft(payload: DraftCreate):
     )
     row = db.get_draft(draft_id)
     if not row:
-        raise HTTPException(500, "Échec de l'insertion du brouillon.")
+        raise HTTPException(500, tr("draft.insert_failed", locale))
     return _draft_to_api(row)
 
 
 @app.patch("/api/drafts/{draft_id}")
-def patch_draft(draft_id: int, payload: DraftPatch):
+def patch_draft(draft_id: int, payload: DraftPatch, locale: str = Depends(get_locale)):
     existing = db.get_draft(draft_id)
     if not existing:
-        raise HTTPException(404, "Brouillon introuvable")
+        raise HTTPException(404, tr("draft.not_found", locale))
     db.update_draft(
         draft_id,
         account_email=(payload.from_account.strip() if payload.from_account is not None else None),
@@ -593,10 +592,10 @@ def patch_draft(draft_id: int, payload: DraftPatch):
 
 
 @app.delete("/api/drafts/{draft_id}")
-def remove_draft(draft_id: int):
+def remove_draft(draft_id: int, locale: str = Depends(get_locale)):
     existing = db.get_draft(draft_id)
     if not existing:
-        raise HTTPException(404, "Brouillon introuvable")
+        raise HTTPException(404, tr("draft.not_found", locale))
     db.delete_draft(draft_id)
     return {"ok": True}
 
@@ -622,27 +621,27 @@ def list_labels():
 
 
 @app.post("/api/labels")
-def create_label(payload: LabelCreate):
+def create_label(payload: LabelCreate, locale: str = Depends(get_locale)):
     name = (payload.name or "").strip()
     if not name:
-        raise HTTPException(400, "Nom d'étiquette requis.")
+        raise HTTPException(400, tr("label.name_required", locale))
     if len(name) > 60:
-        raise HTTPException(400, "Nom d'étiquette trop long (max 60 caractères).")
+        raise HTTPException(400, tr("label.name_too_long", locale))
     try:
         new_id = db.create_label(name, payload.color or "#94A3B8")
     except _sqlite3.IntegrityError:
-        raise HTTPException(409, f"Une étiquette nommée « {name} » existe déjà.")
+        raise HTTPException(409, tr("label.named_exists", locale, name=name))
     row = db.get_label(new_id)
     return _label_to_api(row) if row else {"id": new_id}
 
 
 @app.patch("/api/labels/{label_id}")
-def patch_label(label_id: int, payload: LabelPatch):
+def patch_label(label_id: int, payload: LabelPatch, locale: str = Depends(get_locale)):
     existing = db.get_label(label_id)
     if not existing:
-        raise HTTPException(404, "Étiquette introuvable")
+        raise HTTPException(404, tr("label.not_found", locale))
     if payload.name is not None and len(payload.name.strip()) > 60:
-        raise HTTPException(400, "Nom d'étiquette trop long (max 60 caractères).")
+        raise HTTPException(400, tr("label.name_too_long", locale))
     try:
         db.update_label(
             label_id,
@@ -651,7 +650,7 @@ def patch_label(label_id: int, payload: LabelPatch):
             position=payload.position,
         )
     except _sqlite3.IntegrityError:
-        raise HTTPException(409, "Une étiquette portant ce nom existe déjà.")
+        raise HTTPException(409, tr("label.exists", locale))
     except ValueError as e:
         raise HTTPException(400, str(e))
     row = db.get_label(label_id)
@@ -659,26 +658,26 @@ def patch_label(label_id: int, payload: LabelPatch):
 
 
 @app.delete("/api/labels/{label_id}")
-def remove_label(label_id: int):
+def remove_label(label_id: int, locale: str = Depends(get_locale)):
     existing = db.get_label(label_id)
     if not existing:
-        raise HTTPException(404, "Étiquette introuvable")
+        raise HTTPException(404, tr("label.not_found", locale))
     db.delete_label(label_id)
     return {"ok": True}
 
 
 @app.put("/api/emails/{int_id}/labels")
-def set_email_labels(int_id: int, payload: EmailLabelsSet):
+def set_email_labels(int_id: int, payload: EmailLabelsSet, locale: str = Depends(get_locale)):
     em = db.get_email_by_id(int_id)
     if not em:
-        raise HTTPException(404, "Email introuvable")
+        raise HTTPException(404, tr("email.not_found", locale))
     # Validate every requested label exists — partial assignment with
     # phantom ids would silently drop those. The frontend already
     # restricts the picker to known labels, but keep this defensive.
     if payload.label_ids:
         for lid in payload.label_ids:
             if not db.get_label(int(lid)):
-                raise HTTPException(400, f"Étiquette {lid} introuvable.")
+                raise HTTPException(400, tr("label.id_not_found", locale, id=lid))
     db.set_email_labels(int_id, payload.label_ids or [])
     labels = db.get_labels_for_email(int_id)
     return {"ok": True, "labels": [_label_to_api(l) for l in labels]}
@@ -698,18 +697,14 @@ def _folder_to_api(row: Dict) -> Dict:
     }
 
 
-def _validate_folder_name(name: str) -> str:
+def _validate_folder_name(name: str, locale: str = "fr") -> str:
     name = (name or "").strip()
     if not name:
-        raise HTTPException(400, "Nom de dossier requis.")
+        raise HTTPException(400, tr("folder.name_required", locale))
     if name.lower() in _BUILTIN_FOLDERS:
-        raise HTTPException(409, f"« {name} » est un nom réservé.")
+        raise HTTPException(409, tr("folder.name_reserved", locale, name=name))
     if not _FOLDER_NAME_RE.match(name):
-        raise HTTPException(
-            400,
-            "Caractères interdits dans le nom (lettres, chiffres, espaces, "
-            "tiret et underscore uniquement, max 40).",
-        )
+        raise HTTPException(400, tr("folder.name_invalid", locale))
     return name
 
 
@@ -719,32 +714,32 @@ def list_folders():
 
 
 @app.post("/api/folders")
-def create_folder(payload: FolderCreate):
-    name = _validate_folder_name(payload.name)
+def create_folder(payload: FolderCreate, locale: str = Depends(get_locale)):
+    name = _validate_folder_name(payload.name, locale)
     if db.get_folder_by_name(name):
-        raise HTTPException(409, f"Un dossier nommé « {name} » existe déjà.")
+        raise HTTPException(409, tr("folder.named_exists", locale, name=name))
     try:
         new_id = db.create_folder(name)
     except _sqlite3.IntegrityError:
-        raise HTTPException(409, f"Un dossier nommé « {name} » existe déjà.")
+        raise HTTPException(409, tr("folder.named_exists", locale, name=name))
     row = db.get_folder(new_id)
     return _folder_to_api(row) if row else {"id": new_id}
 
 
 @app.patch("/api/folders/{folder_id}")
-def patch_folder(folder_id: int, payload: FolderPatch):
+def patch_folder(folder_id: int, payload: FolderPatch, locale: str = Depends(get_locale)):
     existing = db.get_folder(folder_id)
     if not existing:
-        raise HTTPException(404, "Dossier introuvable")
+        raise HTTPException(404, tr("folder.not_found", locale))
     new_name: Optional[str] = None
     if payload.name is not None:
-        new_name = _validate_folder_name(payload.name)
+        new_name = _validate_folder_name(payload.name, locale)
         # Renaming: also update every email currently filed under the
         # old name so they stay in the renamed folder.
         if new_name != existing["name"]:
             other = db.get_folder_by_name(new_name)
             if other and other["id"] != folder_id:
-                raise HTTPException(409, f"Un dossier nommé « {new_name} » existe déjà.")
+                raise HTTPException(409, tr("folder.named_exists", locale, name=new_name))
             with db._conn() as con:
                 con.execute(
                     "UPDATE emails SET folder = ? WHERE folder = ?",
@@ -753,7 +748,7 @@ def patch_folder(folder_id: int, payload: FolderPatch):
     try:
         db.update_folder(folder_id, name=new_name, position=payload.position)
     except _sqlite3.IntegrityError:
-        raise HTTPException(409, "Un dossier portant ce nom existe déjà.")
+        raise HTTPException(409, tr("folder.exists", locale))
     except ValueError as e:
         raise HTTPException(400, str(e))
     row = db.get_folder(folder_id)
@@ -761,10 +756,10 @@ def patch_folder(folder_id: int, payload: FolderPatch):
 
 
 @app.delete("/api/folders/{folder_id}")
-def remove_folder(folder_id: int):
+def remove_folder(folder_id: int, locale: str = Depends(get_locale)):
     existing = db.get_folder(folder_id)
     if not existing:
-        raise HTTPException(404, "Dossier introuvable")
+        raise HTTPException(404, tr("folder.not_found", locale))
     db.delete_folder(folder_id, fallback_name="inbox")
     return {"ok": True}
 
@@ -856,6 +851,7 @@ def _guess_content_type(filename: str) -> str:
 async def upload_attachment(
     request: Request,
     file: UploadFile = File(...),
+    locale: str = Depends(get_locale),
 ):
     """Stage a file for inclusion in an outbound message. Stores the
     upload under `OUTBOX_ATTACHMENTS_DIR/<uuid>/<safe_filename>` and
@@ -864,16 +860,12 @@ async def upload_attachment(
     payload. Files that are never sent leak — call DELETE manually
     or wait for a future cleanup pass."""
     if not file.filename:
-        raise HTTPException(400, "Nom de fichier manquant.")
+        raise HTTPException(400, tr("upload.filename_missing", locale))
 
     safe_name = _safe_upload_filename(file.filename)
     ext = os.path.splitext(safe_name)[1].lower()
     if ext in _OUTBOX_BLOCKED_EXTS:
-        raise HTTPException(
-            400,
-            f"Type de fichier interdit pour l'envoi : {ext}. "
-            "Compressez-le dans une archive avant d'attacher.",
-        )
+        raise HTTPException(400, tr("upload.type_blocked", locale, ext=ext))
 
     # Read the file in chunks so a 25 MB upload doesn't blow up the
     # event loop. Stop and 413 as soon as the running tally crosses
@@ -886,6 +878,7 @@ async def upload_attachment(
     target = folder / safe_name
     total = 0
     chunk_size = 64 * 1024
+    max_mb = _OUTBOX_MAX_SIZE // (1024 * 1024)
     try:
         with open(target, "wb") as out:
             while True:
@@ -897,10 +890,7 @@ async def upload_attachment(
                     out.close()
                     target.unlink(missing_ok=True)
                     folder.rmdir()
-                    raise HTTPException(
-                        413,
-                        f"Fichier trop volumineux (max {_OUTBOX_MAX_SIZE // (1024 * 1024)} Mo).",
-                    )
+                    raise HTTPException(413, tr("upload.too_large", locale, max_mb=max_mb))
                 out.write(chunk)
     except HTTPException:
         raise
@@ -914,7 +904,7 @@ async def upload_attachment(
                 folder.rmdir()
         except Exception:
             pass
-        raise HTTPException(500, f"Échec de l'upload : {e}")
+        raise HTTPException(500, tr("upload.failed", locale, msg=str(e)))
 
     return {
         "upload_id": upload_id,
@@ -925,23 +915,23 @@ async def upload_attachment(
 
 
 @app.get("/api/uploads/{upload_id}")
-def get_upload(upload_id: str):
+def get_upload(upload_id: str, locale: str = Depends(get_locale)):
     meta = _read_upload_metadata(upload_id)
     if not meta:
-        raise HTTPException(404, "Upload introuvable")
+        raise HTTPException(404, tr("upload.not_found", locale))
     return meta
 
 
 @app.delete("/api/uploads/{upload_id}")
-def delete_upload(upload_id: str):
+def delete_upload(upload_id: str, locale: str = Depends(get_locale)):
     folder = _outbox_upload_path(upload_id)
     if not folder or not folder.is_dir():
-        raise HTTPException(404, "Upload introuvable")
+        raise HTTPException(404, tr("upload.not_found", locale))
     import shutil
     try:
         shutil.rmtree(folder)
     except Exception as e:
-        raise HTTPException(500, f"Suppression impossible : {e}")
+        raise HTTPException(500, tr("upload.delete_failed", locale, msg=str(e)))
     return {"ok": True}
 
 
@@ -980,10 +970,10 @@ def _attachment_summary(row: dict) -> dict:
 
 
 @app.get("/api/emails/{int_id}/attachments")
-def list_attachments(int_id: int):
+def list_attachments(int_id: int, locale: str = Depends(get_locale)):
     em = db.get_email_by_id(int_id)
     if not em:
-        raise HTTPException(404, "Email introuvable")
+        raise HTTPException(404, tr("email.not_found", locale))
     rows = db.get_attachments_for_message(em["message_id"])
     return [_attachment_summary(r) for r in rows]
 
@@ -994,6 +984,7 @@ def download_attachment(
     request: Request,
     att_id: int,
     confirm: int = Query(0, description="Set to 1 to override the dangerous-file gate"),
+    locale: str = Depends(get_locale),
 ):
     """Serve one attachment with hardened response headers.
 
@@ -1018,7 +1009,7 @@ def download_attachment(
     """
     row = db.get_attachment(att_id)
     if not row:
-        raise HTTPException(404, "Pièce jointe introuvable")
+        raise HTTPException(404, tr("attachment.not_found", locale))
 
     threat_level = row.get("threat_level") or att_sec.THREAT_SAFE
 
@@ -1026,11 +1017,7 @@ def download_attachment(
     # metadata via /list_attachments but refuse to serve bytes — there are
     # none to serve.
     if threat_level == att_sec.THREAT_BLOCKED or not row.get("storage_path"):
-        raise HTTPException(
-            410,
-            "Pièce jointe bloquée par la politique de sécurité — "
-            "aucune donnée stockée."
-        )
+        raise HTTPException(410, tr("attachment.blocked_policy", locale))
 
     # The dangerous-file gate. Without `?confirm=1` the UI shows a warning
     # modal first; with it, the request is allowed but still served as
@@ -1060,9 +1047,9 @@ def download_attachment(
         logger.error(
             f"attachment {att_id}: storage_path '{rel}' resolved outside root"
         )
-        raise HTTPException(404, "Pièce jointe introuvable")
+        raise HTTPException(404, tr("attachment.not_found", locale))
     if not candidate.is_file():
-        raise HTTPException(404, "Fichier physiquement absent")
+        raise HTTPException(404, tr("attachment.file_missing", locale))
 
     # Tamper detection. The stored SHA-256 was computed at ingest; if disk
     # contents have changed, refuse to serve and flag the row.
@@ -1074,13 +1061,13 @@ def download_attachment(
         actual = h.hexdigest()
     except OSError as e:
         logger.error(f"attachment {att_id}: read failed: {e}")
-        raise HTTPException(500, "Lecture impossible")
+        raise HTTPException(500, tr("attachment.read_error", locale))
     if actual != (row.get("sha256") or ""):
         logger.error(
             f"attachment {att_id}: SHA-256 mismatch "
             f"(stored={row.get('sha256')!r}, disk={actual!r}); refusing serve"
         )
-        raise HTTPException(409, "Empreinte de fichier altérée — accès refusé")
+        raise HTTPException(409, tr("attachment.fingerprint_mismatch", locale))
 
     headers = att_sec.hardened_response_headers(threat_level)
     headers["Content-Disposition"] = att_sec.safe_disposition_header(row["filename"])
@@ -1349,11 +1336,11 @@ def cleanup_sender(request: Request, req: CleanupSenderReq, bg: BackgroundTasks)
 
 
 @app.get("/api/cleanup/jobs/{job_id}")
-def get_cleanup_job(job_id: str):
+def get_cleanup_job(job_id: str, locale: str = Depends(get_locale)):
     with _jobs_lock:
         j = _jobs.get(job_id)
     if not j:
-        raise HTTPException(404, "Job introuvable")
+        raise HTTPException(404, tr("cleanup.job_not_found", locale))
     return j
 
 
@@ -1627,11 +1614,11 @@ def cleanup_unsubscribe_backfill(account: Optional[str] = None, bg: BackgroundTa
 
 @app.post("/api/cleanup/unsubscribe")
 @limiter.limit("10/minute")
-def cleanup_unsubscribe(request: Request, req: UnsubscribeReq, bg: BackgroundTasks):
+def cleanup_unsubscribe(request: Request, req: UnsubscribeReq, bg: BackgroundTasks, locale: str = Depends(get_locale)):
     """Single-sender unsubscribe with optional purge of existing messages."""
     target = db.unsubscribe_sender_target(req.sender, account=req.account)
     if not target:
-        raise HTTPException(404, "Aucun lien de désabonnement connu pour cet expéditeur")
+        raise HTTPException(404, tr("unsub.no_link", locale))
 
     # Idempotency gate (overridable). If the user already unsubscribed from
     # this sender we don't re-POST unless `force=True`.
@@ -1783,10 +1770,10 @@ def update_check():
 
 
 @app.post("/api/update/install")
-def update_install(bg: BackgroundTasks):
+def update_install(bg: BackgroundTasks, locale: str = Depends(get_locale)):
     from src.updater import download_and_install
     bg.add_task(download_and_install)
-    return {"ok": True, "message": "Téléchargement en cours…"}
+    return {"ok": True, "message": tr("update.downloading", locale)}
 
 
 # ── Stats & accounts ──────────────────────────────────────────────────────────
@@ -1822,12 +1809,12 @@ def get_accounts():
 
 @app.post("/api/sync")
 @limiter.limit("6/minute")
-def trigger_sync(request: Request, bg: BackgroundTasks):
+def trigger_sync(request: Request, bg: BackgroundTasks, locale: str = Depends(get_locale)):
     from src.scheduler import is_running, run_sync
     if is_running():
-        return {"ok": False, "message": "Sync déjà en cours"}
+        return {"ok": False, "message": tr("sync.already_running", locale)}
     bg.add_task(run_sync)
-    return {"ok": True, "message": "Synchronisation lancée"}
+    return {"ok": True, "message": tr("sync.started", locale)}
 
 
 @app.get("/api/sync/status")
@@ -1959,6 +1946,103 @@ def logs_tail(lines: int = 50, since: Optional[str] = None):
     return {"lines": parsed[-cap:]}
 
 
+# ── Diagnostics (used by the in-app "Report a bug" flow) ──────────────────────
+
+# Patterns we redact before exposing the log tail to the GitHub issue
+# pre-fill. Order matters: long-form secrets (sk-*, Bearer …) must run
+# before the catch-all email pattern.
+_SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"sk-[A-Za-z0-9_-]{16,}"),                 "sk-***"),
+    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._-]+"),        "Bearer ***"),
+    (re.compile(r"(?i)(api[_-]?key|token|password)\s*[:=]\s*[^\s,'\"]+"),
+                                                            r"\1=***"),
+    (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
+                                                            "***@***"),
+    # Windows user-profile path: C:\Users\<name>\... → C:\Users\<USER>\...
+    (re.compile(r"([A-Za-z]:\\Users\\)[^\\\s\"']+"),       r"\1<USER>"),
+    # POSIX home: /home/<name>/ or /Users/<name>/
+    (re.compile(r"(/(?:home|Users)/)[^/\s\"']+"),          r"\1<USER>"),
+]
+
+
+def _sanitize_log_text(text: str) -> str:
+    for pat, repl in _SECRET_PATTERNS:
+        text = pat.sub(repl, text)
+    return text
+
+
+@app.get("/api/diagnostics")
+def diagnostics():
+    """Sanitized snapshot of the runtime, used to pre-fill bug reports.
+
+    Never exposes email addresses, API keys, or absolute user paths. The
+    frontend shows the JSON to the user *before* opening the GitHub issue
+    URL, so anything that lands here ends up visible in their browser.
+    """
+    import platform
+    import sys as _sys
+    from src.updater import get_current_version
+
+    # The point of this endpoint is to help report bugs — including bugs
+    # that come from a broken config. So we never let cfg.get() crash the
+    # response: we degrade gracefully and the user still gets version/OS.
+    accounts: list = []
+    enabled_accounts: list = []
+    openai_conf: dict = {}
+    has_ntfy = False
+    config_error: Optional[str] = None
+    try:
+        conf = cfg.get()
+        accounts = conf.get("accounts") or []
+        enabled_accounts = [a for a in accounts if a.get("enabled", True)]
+        openai_conf = conf.get("openai") or {}
+        has_ntfy = bool((conf.get("ntfy") or {}).get("topic"))
+    except Exception as exc:
+        config_error = type(exc).__name__
+    has_openai = bool(openai_conf.get("api_key"))
+    model = openai_conf.get("model") if has_openai else None
+
+    try:
+        from src.scheduler import get_last_sync, is_running as sync_running
+        last_sync = get_last_sync()
+        sync_is_running = bool(sync_running())
+    except Exception:
+        last_sync = None
+        sync_is_running = False
+
+    log_tail_raw = _read_tail(_paths.LOG_PATH, max_bytes=16384)
+    log_lines = log_tail_raw.splitlines()[-30:] if log_tail_raw else []
+    log_tail = _sanitize_log_text("\n".join(log_lines)) if log_lines else ""
+
+    return {
+        "app": {
+            "name": "Lull Mail",
+            "version": get_current_version(),
+            "frozen": bool(getattr(_sys, "frozen", False)),
+        },
+        "os": {
+            "platform": platform.platform(),
+            "system": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+        },
+        "python": platform.python_version(),
+        "config": {
+            "accounts_total": len(accounts),
+            "accounts_enabled": len(enabled_accounts),
+            "ai_enabled": has_openai,
+            "ai_model": model,
+            "has_ntfy": has_ntfy,
+            "error": config_error,
+        },
+        "sync": {
+            "last_sync": last_sync,
+            "running": sync_is_running,
+        },
+        "log_tail": log_tail,
+    }
+
+
 # ── Custom cleanup rules ──────────────────────────────────────────────────────
 
 class CustomRuleBody(BaseModel):
@@ -2003,7 +2087,7 @@ def create_custom_rule(body: CustomRuleBody):
 
 
 @app.patch("/api/cleanup/custom-rules/{rule_id}")
-def patch_custom_rule(rule_id: int, body: CustomRulePatch):
+def patch_custom_rule(rule_id: int, body: CustomRulePatch, locale: str = Depends(get_locale)):
     fields: dict = {}
     if body.name is not None:
         fields["name"] = body.name.strip() or "Sans titre"
@@ -2022,7 +2106,7 @@ def patch_custom_rule(rule_id: int, body: CustomRulePatch):
     if body.position is not None:
         fields["position"] = body.position
     if not fields:
-        raise HTTPException(400, "Aucun champ à mettre à jour")
+        raise HTTPException(400, tr("cleanup.no_field_to_update", locale))
     db.update_custom_rule(rule_id, **fields)
     return {"ok": True}
 

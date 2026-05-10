@@ -6,11 +6,12 @@ import {
 } from '/static/api.js';
 
 export async function mountDashboard(host, opts) {
+  const t = window.t || ((k) => k);
   host.innerHTML = `
     <div class="dash">
       <div class="dash-head">
         <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
-          <h1>Tableau de bord</h1>
+          <h1>${t('dash.title')}</h1>
         </div>
         <div style="display:flex;gap:10px;align-items:center">
         </div>
@@ -21,7 +22,7 @@ export async function mountDashboard(host, opts) {
         <section class="card col-12">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
-              <i data-lucide="server" class="w-4 h-4"></i>Comptes synchronisés
+              <i data-lucide="server" class="w-4 h-4"></i>${t('dash.accounts.synced')}
             </span>
             <span class="sub" id="acc-summary">—</span>
           </h3>
@@ -32,11 +33,11 @@ export async function mountDashboard(host, opts) {
         <section class="card col-4">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
-              <i data-lucide="pie-chart" class="w-4 h-4"></i>Distribution par catégorie
+              <i data-lucide="pie-chart" class="w-4 h-4"></i>${t('dash.donut.title')}
             </span>
           </h3>
           <div class="donut-wrap">
-            <svg class="donut" id="donut" viewBox="0 0 100 100" aria-label="Donut catégories"></svg>
+            <svg class="donut" id="donut" viewBox="0 0 100 100" aria-label="${t('dash.donut.aria')}"></svg>
             <div class="donut-legend" id="donut-legend"></div>
           </div>
         </section>
@@ -45,7 +46,7 @@ export async function mountDashboard(host, opts) {
         <section class="card col-2 hm-card">
           <h3>
             <span style="display:flex;align-items:center;gap:6px">
-              <i data-lucide="clock" class="w-4 h-4"></i>Réception
+              <i data-lucide="clock" class="w-4 h-4"></i>${t('dash.heatmap.title')}
             </span>
             <span class="sub" id="hm-summary">—</span>
           </h3>
@@ -56,7 +57,7 @@ export async function mountDashboard(host, opts) {
         <section class="card col-6">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
-              <i data-lucide="zap" class="w-4 h-4"></i>À traiter maintenant
+              <i data-lucide="zap" class="w-4 h-4"></i>${t('dash.todo.title')}
             </span>
             <span class="sub" id="todo-count">—</span>
           </h3>
@@ -67,25 +68,25 @@ export async function mountDashboard(host, opts) {
         <section class="card col-6">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
-              <i data-lucide="cpu" class="w-4 h-4"></i>File d'analyse IA
+              <i data-lucide="cpu" class="w-4 h-4"></i>${t('dash.queue.title')}
             </span>
-            <button class="dash-link" id="btn-run-queue" title="Lancer l'analyse IA">
+            <button class="dash-link" id="btn-run-queue" title="${t('dash.queue.run_title')}">
               <i data-lucide="cpu" class="w-3.5 h-3.5" id="btn-run-queue-icon"></i>
-              <span id="btn-run-queue-label">Analyser</span>
+              <span id="btn-run-queue-label">${t('dash.queue.run_label')}</span>
             </button>
           </h3>
           <div style="display:flex;gap:16px;margin-bottom:10px;flex-wrap:wrap">
             <div class="kpi" style="flex:1;min-width:120px">
               <span class="num" id="kpi-pending">0</span>
-              <span class="lbl">en attente</span>
+              <span class="lbl">${t('dash.queue.pending')}</span>
             </div>
             <div class="kpi" style="flex:1;min-width:120px">
               <span class="num" id="kpi-cost">—</span>
-              <span class="lbl" id="kpi-cost-lbl">coût estimé / mois</span>
+              <span class="lbl" id="kpi-cost-lbl">${t('dash.queue.cost_estimated')}</span>
             </div>
           </div>
           <div class="spark-wrap">
-            <svg class="spark" id="spark" viewBox="0 0 600 100" preserveAspectRatio="none" aria-label="Emails analysés par jour sur 30 jours"></svg>
+            <svg class="spark" id="spark" viewBox="0 0 600 100" preserveAspectRatio="none" aria-label="${t('dash.queue.spark_aria')}"></svg>
             <div class="spark-tip" id="spark-tip"></div>
           </div>
           <div class="sub" style="margin-top:6px;display:flex;justify-content:space-between">
@@ -98,7 +99,7 @@ export async function mountDashboard(host, opts) {
         <section class="card col-6">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
-              <i data-lucide="inbox" class="w-4 h-4"></i>Activité par compte
+              <i data-lucide="inbox" class="w-4 h-4"></i>${t('dash.acc_bars.title')}
             </span>
             <span class="sub" id="acc-bar-sub"></span>
           </h3>
@@ -109,15 +110,15 @@ export async function mountDashboard(host, opts) {
         <section class="card col-7">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
-              <i data-lucide="user-round" class="w-4 h-4"></i>Expéditeurs les plus présents
+              <i data-lucide="user-round" class="w-4 h-4"></i>${t('dash.top.title')}
             </span>
-            <a href="#/cleanup?tab=senders" class="dash-link" id="dash-top-link" title="Tout voir dans Nettoyage">
-              <span>Tout voir</span>
+            <a href="#/cleanup?tab=senders" class="dash-link" id="dash-top-link" title="${t('dash.top.see_all_title')}">
+              <span>${t('dash.top.see_all')}</span>
               <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i>
             </a>
           </h3>
           <div class="top-senders" id="top-senders">
-            <div class="sub" style="font-style:italic">Chargement…</div>
+            <div class="sub" style="font-style:italic">${t('dash.loading')}</div>
           </div>
         </section>
 
@@ -125,12 +126,12 @@ export async function mountDashboard(host, opts) {
         <section class="card col-5">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
-              <i data-lucide="mail-x" class="w-4 h-4"></i>Désabonnement express
+              <i data-lucide="mail-x" class="w-4 h-4"></i>${t('dash.unsub.title')}
             </span>
             <span class="sub" id="unsub-sub">—</span>
           </h3>
           <div class="unsub-card" id="unsub-card">
-            <div class="sub" style="font-style:italic">Chargement…</div>
+            <div class="sub" style="font-style:italic">${t('dash.loading')}</div>
           </div>
         </section>
 
@@ -154,22 +155,27 @@ export async function mountDashboard(host, opts) {
     return 'cold';
   }
   function relativeShort(iso) {
-    if (!iso) return 'jamais';
+    if (!iso) return t('dash.accounts.never');
     const d = new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z'));
     const diff = (Date.now() - d.getTime()) / 1000;
-    if (diff < 60) return `${Math.floor(diff)}s`;
-    if (diff < 3600) return `${Math.floor(diff / 60)}m`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
-    return `${Math.floor(diff / 86400)}j`;
+    if (diff < 60)    return t('time.short.s', { n: Math.floor(diff) });
+    if (diff < 3600)  return t('time.short.m', { n: Math.floor(diff / 60) });
+    if (diff < 86400) return t('time.short.h', { n: Math.floor(diff / 3600) });
+    return t('time.short.d', { n: Math.floor(diff / 86400) });
   }
 
   function renderAccounts(s) {
-    $('#acc-summary').textContent = `${s.accounts.length} compte(s) • ${s.queue_pending} en attente`;
+    $('#acc-summary').textContent = t('dash.accounts.summary', {
+      count: s.accounts.length,
+      pending: s.queue_pending,
+    });
     $('#acc-strip').innerHTML = s.accounts.map((a) => {
       const ini = initials(a.email);
       const col = avatarColor(a.email);
       const bucket = ageBucket(a.last_sync);
-      const rel = a.last_sync ? `il y a ${relativeShort(a.last_sync)}` : 'jamais';
+      const rel = a.last_sync
+        ? t('dash.accounts.ago', { rel: relativeShort(a.last_sync) })
+        : t('dash.accounts.never');
       const badge = a.unread > 0 ? `<span class="b">${a.unread}</span>` : '';
       return `
         <span class="acc-chip ${bucket}" title="${escapeHtml(a.name)} · ${escapeHtml(a.email)} · sync ${rel}">
@@ -203,12 +209,12 @@ export async function mountDashboard(host, opts) {
       btn.disabled = true;
       icon.setAttribute('data-lucide', 'loader-2');
       icon.classList.add('icon-spin');
-      label.textContent = 'En cours…';
+      label.textContent = t('dash.queue.running');
     } else {
       btn.disabled = false;
       icon.setAttribute('data-lucide', 'cpu');
       icon.classList.remove('icon-spin');
-      label.textContent = 'Analyser';
+      label.textContent = t('dash.queue.run_label');
     }
     window.lucide?.createIcons({ nodes: [btn] });
 
@@ -217,8 +223,8 @@ export async function mountDashboard(host, opts) {
     const total30d = daily.reduce((a, b) => a + b, 0);
     const peakDay  = Math.max(0, ...daily);
 
-    $('#kpi-throughput').textContent = `${total30d} mails analysés / 30 j`;
-    $('#kpi-peak').textContent       = `Pic : ${peakDay} / jour`;
+    $('#kpi-throughput').textContent = t('dash.queue.throughput_30d', { total: total30d });
+    $('#kpi-peak').textContent       = t('dash.queue.peak_per_day',   { n: peakDay });
 
     // Cost: hidden in no-AI mode (nothing to bill), real if token data
     // exists, else placeholder dash.
@@ -230,7 +236,7 @@ export async function mountDashboard(host, opts) {
       const tokens  = s.tokens_30d || { tokens_in: 0, tokens_out: 0 };
       const hasReal = tokens.tokens_in > 0 || tokens.tokens_out > 0;
       $('#kpi-cost').textContent     = hasReal ? formatCostUsd(s.cost_30d_usd || 0) : '—';
-      $('#kpi-cost-lbl').textContent = 'coût réel / 30 j';
+      $('#kpi-cost-lbl').textContent = t('dash.queue.cost_real');
     }
 
     drawSpark(daily, 'day');
@@ -267,14 +273,15 @@ export async function mountDashboard(host, opts) {
       cursor.style.display = '';
 
       let label;
+      const localeBcp47 = (window.LULLMAIL_LOCALE || 'fr') === 'en' ? 'en-US' : 'fr-FR';
       if (unit === 'day') {
         const daysAgo = values.length - 1 - idx;
         const d = new Date(now);
         d.setDate(d.getDate() - daysAgo);
-        const dayStr = d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' });
-        label = `${dayStr} · ${values[idx]} mail${values[idx] !== 1 ? 's' : ''}`;
+        const dayStr = d.toLocaleDateString(localeBcp47, { day: '2-digit', month: 'short' });
+        label = t('dash.queue.tip_day', { date: dayStr, n: values[idx] });
       } else {
-        label = `min ${idx + 1} · ${values[idx]} mail${values[idx] !== 1 ? 's' : ''}`;
+        label = t('dash.queue.tip_min', { n: idx + 1, v: values[idx] });
       }
 
       tip.textContent = label;
@@ -301,7 +308,7 @@ export async function mountDashboard(host, opts) {
     const cx = 50, cy = 50, r = 38, sw = 14;
     if (!total) {
       svg.innerHTML = `<circle cx="50" cy="50" r="${r}" fill="none" stroke="var(--border)" stroke-width="${sw}"/>
-        <text x="50" y="48" text-anchor="middle" font-size="11" fill="var(--muted)">Aucune donnée</text>`;
+        <text x="50" y="48" text-anchor="middle" font-size="11" fill="var(--muted)">${t('dash.donut.empty')}</text>`;
       $('#donut-legend').innerHTML = '';
       return;
     }
@@ -322,7 +329,7 @@ export async function mountDashboard(host, opts) {
     svg.innerHTML = `
       ${segs}
       <text x="${cx}" y="${cy - 2}" text-anchor="middle" font-size="14" font-weight="800" fill="var(--text)">${total}</text>
-      <text x="${cx}" y="${cy + 12}" text-anchor="middle" font-size="8" fill="var(--muted)">mails</text>
+      <text x="${cx}" y="${cy + 12}" text-anchor="middle" font-size="8" fill="var(--muted)">${t('dash.donut.unit')}</text>
     `;
 
     $('#donut-legend').innerHTML = data.map((d) => `
@@ -340,7 +347,7 @@ export async function mountDashboard(host, opts) {
     const sorted = [...accounts].sort((a, b) => (b.unread || 0) - (a.unread || 0));
     const maxUnread = Math.max(1, ...sorted.map((a) => a.unread || 0));
     const totalUnread = sorted.reduce((s, a) => s + (a.unread || 0), 0);
-    $('#acc-bar-sub').textContent = `${totalUnread} non lus`;
+    $('#acc-bar-sub').textContent = t('dash.acc_bars.unread_total', { n: totalUnread });
 
     el.innerHTML = sorted.map((a) => {
       const col   = avatarColor(a.email);
@@ -363,15 +370,15 @@ export async function mountDashboard(host, opts) {
   const TODO_MAX = 3;
 
   function renderTodo(items) {
-    $('#todo-count').textContent = `${items.length} mail(s)`;
+    $('#todo-count').textContent = t('dash.todo.count', { n: items.length });
     if (!items.length) {
       $('#todo-list').innerHTML = `
         <div class="todo-empty">
           <div class="todo-empty-icon">
             <i data-lucide="check-check" class="w-5 h-5"></i>
           </div>
-          <div class="todo-empty-title">Boîte nette</div>
-          <div class="todo-empty-sub">Aucun mail non lu à traiter</div>
+          <div class="todo-empty-title">${t('dash.todo.empty_title')}</div>
+          <div class="todo-empty-sub">${t('dash.todo.empty_sub')}</div>
         </div>`;
       window.lucide?.createIcons();
       return;
@@ -382,7 +389,7 @@ export async function mountDashboard(host, opts) {
       <div class="todo-item todo-overflow" role="button" tabindex="0" data-overflow="1">
         <i data-lucide="inbox" class="w-4 h-4" style="color:var(--muted)"></i>
         <div class="ti-body">
-          <div class="ti-sender" style="color:var(--muted)">+${overflow} autre${overflow > 1 ? 's' : ''} à traiter</div>
+          <div class="ti-sender" style="color:var(--muted)">${t('dash.todo.overflow', { n: overflow })}</div>
         </div>
         <i data-lucide="arrow-right" class="w-4 h-4" style="color:var(--muted-2)"></i>
       </div>` : '';
@@ -394,7 +401,7 @@ export async function mountDashboard(host, opts) {
           <span class="score-pill ${scoreClass(em.importance_score || 0)}">${em.importance_score || 0}</span>
           <div class="ti-body">
             <div class="ti-sender">${escapeHtml(sName)} ${em.needs_reply ? '<i data-lucide="reply" class="w-3 h-3" style="color:var(--success);vertical-align:-1px"></i>' : ''}</div>
-            <div class="ti-subj">${escapeHtml(em.subject || '(sans objet)')}</div>
+            <div class="ti-subj">${escapeHtml(em.subject || t('dash.todo.no_subject'))}</div>
           </div>
           <i data-lucide="arrow-right" class="w-4 h-4" style="color:var(--muted-2)"></i>
         </div>
@@ -426,7 +433,8 @@ export async function mountDashboard(host, opts) {
     const localHours = Array.from({ length: 24 }, (_, h) => hours[(h - shift + 24) % 24]);
     const peakLocal = localHours.indexOf(Math.max(...localHours));
 
-    summary.textContent = `pic ${peakLocal}h`;
+    summary.textContent = t('dash.heatmap.peak', { hour: peakLocal });
+    const localeIsEn = (window.LULLMAIL_LOCALE || 'fr') === 'en';
 
     cont.innerHTML = localHours.map((v, h) => {
       const ratio = v / max;
@@ -434,8 +442,10 @@ export async function mountDashboard(host, opts) {
       const opacity = (0.15 + ratio * 0.85).toFixed(3);
       const showLabel = h % 3 === 0;
       const isPeak = v === max && v > 0;
-      return `<div class="hm-vrow${isPeak ? ' hm-vpeak' : ''}" title="${h}h · ${v} mail${v !== 1 ? 's' : ''}">
-        <span class="hm-vlbl">${showLabel ? h + 'h' : ''}</span>
+      const tip = t('dash.heatmap.tooltip', { hour: h, n: v });
+      const lblText = showLabel ? (localeIsEn ? h + ':00' : h + 'h') : '';
+      return `<div class="hm-vrow${isPeak ? ' hm-vpeak' : ''}" title="${tip}">
+        <span class="hm-vlbl">${lblText}</span>
         <div class="hm-vtrack"><div class="hm-vbar" style="width:${barW}%;opacity:${opacity}"></div></div>
       </div>`;
     }).join('');
@@ -451,7 +461,7 @@ export async function mountDashboard(host, opts) {
     if (!senders || !senders.length) {
       el.innerHTML = `<div class="ts-empty">
         <i data-lucide="inbox" class="w-5 h-5"></i>
-        <span>Aucun expéditeur enregistré pour l'instant.</span>
+        <span>${t('dash.top.empty')}</span>
       </div>`;
       window.lucide?.createIcons({ nodes: [el] });
       return;
@@ -463,11 +473,11 @@ export async function mountDashboard(host, opts) {
       const display = s.name || s.email;
       const pct = Math.max(2, Math.round((s.total / top[0].total) * 100));
       const subBits = [];
-      if (s.unread) subBits.push(`${s.unread} non lus`);
-      if (s.newsletter) subBits.push(`${s.newsletter} newsletter${s.newsletter > 1 ? 's' : ''}`);
-      const sub = subBits.join(' · ') || `${s.total} mails`;
+      if (s.unread)     subBits.push(t('dash.top.unread',      { n: s.unread }));
+      if (s.newsletter) subBits.push(t('dash.top.newsletters', { n: s.newsletter }));
+      const sub = subBits.join(' · ') || t('dash.top.totals', { n: s.total });
       return `
-        <a class="ts-row" href="#/inbox?q=${encodeURIComponent(s.email)}" title="Voir les mails de ${escapeHtml(display)}">
+        <a class="ts-row" href="#/inbox?q=${encodeURIComponent(s.email)}" title="${t('dash.top.row_title', { name: escapeHtml(display) })}">
           <span class="ts-av" style="background:${av}">
             <span class="av-text">${escapeHtml(ini)}</span>
             ${avatarImgHtml(s.email)}
@@ -491,14 +501,16 @@ export async function mountDashboard(host, opts) {
     const allActive = list.filter((x) => !x.unsubscribed_at);
     const noisyMails = allActive.reduce((acc, x) => acc + (x.total || 0), 0);
 
-    if (sub) sub.textContent = list.length ? `${list.length} expéditeur(s) détecté(s)` : '';
+    if (sub) sub.textContent = list.length
+      ? t('dash.unsub.detected', { n: list.length })
+      : '';
 
     if (!oneClick.length && !allActive.length) {
       card.innerHTML = `<div class="ux-empty">
         <i data-lucide="check-circle" class="w-5 h-5"></i>
         <div>
-          <div class="ux-empty-title">Tout est propre</div>
-          <div class="ux-empty-sub">Aucune liste de diffusion à nettoyer pour le moment.</div>
+          <div class="ux-empty-title">${t('dash.unsub.empty_title')}</div>
+          <div class="ux-empty-sub">${t('dash.unsub.empty_sub')}</div>
         </div>
       </div>`;
       window.lucide?.createIcons({ nodes: [card] });
@@ -519,12 +531,12 @@ export async function mountDashboard(host, opts) {
       const ini = initials(s.name || s.email);
       const display = s.name || s.email;
       const tag = s.has_one_click
-        ? `<span class="ux-tag ok">1 clic</span>`
-        : `<span class="ux-tag muted">manuel</span>`;
-      const subBits = [`${s.total} mail${s.total > 1 ? 's' : ''}`];
-      if (s.unread) subBits.push(`${s.unread} non lu${s.unread > 1 ? 's' : ''}`);
+        ? `<span class="ux-tag ok">${t('dash.unsub.tag.oneclick')}</span>`
+        : `<span class="ux-tag muted">${t('dash.unsub.tag.manual')}</span>`;
+      const subBits = [t('dash.unsub.row.mails', { n: s.total })];
+      if (s.unread) subBits.push(t('dash.unsub.row.unread', { n: s.unread }));
       return `
-        <a class="ux-row" href="#/cleanup?tab=unsubscribe&sender=${encodeURIComponent(s.email)}" title="Désabonner ${escapeHtml(display)}">
+        <a class="ux-row" href="#/cleanup?tab=unsubscribe&sender=${encodeURIComponent(s.email)}" title="${t('dash.unsub.row_title', { name: escapeHtml(display) })}">
           <span class="ts-av" style="background:${av}">
             <span class="av-text">${escapeHtml(ini)}</span>
             ${avatarImgHtml(s.email)}
@@ -541,16 +553,16 @@ export async function mountDashboard(host, opts) {
       <div class="ux-stats">
         <div class="ux-num-block">
           <span class="ux-num">${oneClick.length}</span>
-          <span class="ux-lbl">en 1 clic</span>
+          <span class="ux-lbl">${t('dash.unsub.kpi.oneclick')}</span>
         </div>
         <div class="ux-num-block subtle">
           <span class="ux-num">${noisyMails}</span>
-          <span class="ux-lbl">mails concernés</span>
+          <span class="ux-lbl">${t('dash.unsub.kpi.affected')}</span>
         </div>
       </div>
       <div class="ux-list">${rowsHtml}</div>
       <a class="mb-cta ux-cta" href="#/cleanup?tab=unsubscribe">
-        <span>Voir tous les désabonnements</span>
+        <span>${t('dash.unsub.cta_all')}</span>
         <i data-lucide="arrow-right" class="w-4 h-4"></i>
       </a>`;
     window.lucide?.createIcons({ nodes: [card] });
@@ -623,9 +635,9 @@ export async function mountDashboard(host, opts) {
   $('#btn-run-queue').addEventListener('click', async () => {
     try {
       const r = await api.triggerSync();
-      window.toast(r.message || 'Analyse lancée');
+      window.toast(r.message || t('dash.toast.analysis_started'));
     } catch (err) {
-      window.toast('Erreur : ' + err.message);
+      window.toast(t('dash.toast.error', { msg: err.message }));
     }
   });
 

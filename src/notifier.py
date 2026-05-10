@@ -3,6 +3,8 @@ from typing import Dict
 
 import requests
 
+from src.i18n import tr
+
 logger = logging.getLogger(__name__)
 
 # ntfy priority 1 (min) … 5 (urgent)
@@ -22,10 +24,10 @@ def _sender_name(raw: str) -> str:
     return raw.strip()
 
 
-def send(email_data: Dict, server: str, topic: str) -> bool:
+def send(email_data: Dict, server: str, topic: str, locale: str = "fr") -> bool:
     score      = email_data.get("importance_score", 0)
     category   = email_data.get("category", "other")
-    subject    = (email_data.get("subject") or "(Sans objet)").strip()
+    subject    = (email_data.get("subject") or tr("notifier.no_subject", locale)).strip()
     sender_raw = email_data.get("sender", "")
     summary    = (email_data.get("summary") or "").strip()
     account    = email_data.get("account_email", "")
@@ -43,7 +45,7 @@ def send(email_data: Dict, server: str, topic: str) -> bool:
         body_parts.append(summary[:300] + ("…" if len(summary) > 300 else ""))
     footer = account
     if needs_reply:
-        footer += " — réponse attendue"
+        footer += " — " + tr("notifier.reply_expected", locale)
     body_parts.append(footer)
     body = "\n\n".join(body_parts)
 

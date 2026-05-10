@@ -11,7 +11,10 @@ import {
  * Show a branded confirm dialog. Returns a Promise<boolean>.
  * opts: { title, message, confirmLabel, danger }
  */
-function confirmAsync({ title = 'Confirmer', message = '', confirmLabel = 'Confirmer', danger = false } = {}) {
+function confirmAsync({ title = '', message = '', confirmLabel = '', danger = false } = {}) {
+  const _t = window.t || ((k) => k);
+  const _title = title || _t('cleanup.confirm.default_title');
+  const _label = confirmLabel || _t('cleanup.confirm.default_ok');
   return new Promise((resolve) => {
     const backdrop = document.createElement('div');
     backdrop.className = 'confirm-backdrop';
@@ -21,12 +24,12 @@ function confirmAsync({ title = 'Confirmer', message = '', confirmLabel = 'Confi
           <span class="confirm-icon ${danger ? 'confirm-icon-danger' : ''}">
             <i data-lucide="${danger ? 'triangle-alert' : 'help-circle'}"></i>
           </span>
-          <strong id="confirm-title">${escapeHtml(title)}</strong>
+          <strong id="confirm-title">${escapeHtml(_title)}</strong>
         </div>
         <p class="confirm-msg">${escapeHtml(message)}</p>
         <div class="confirm-actions">
-          <button class="confirm-btn-cancel">Annuler</button>
-          <button class="confirm-btn-ok ${danger ? 'is-danger' : ''}">${escapeHtml(confirmLabel)}</button>
+          <button class="confirm-btn-cancel">${_t('cleanup.cancel')}</button>
+          <button class="confirm-btn-ok ${danger ? 'is-danger' : ''}">${escapeHtml(_label)}</button>
         </div>
       </div>`;
 
@@ -44,20 +47,23 @@ function confirmAsync({ title = 'Confirmer', message = '', confirmLabel = 'Confi
   });
 }
 
+// Labels are resolved at runtime via t() inside mountCleanup.
+// Kept as key references here so the array is still static at parse time.
 const TABS = [
-  { id: 'rules',       label: 'Règles de nettoyage',   icon: 'sliders',     enabled: true },
-  { id: 'unsubscribe', label: 'Désabonnement',          icon: 'mail-x',      enabled: true },
-  { id: 'senders',     label: 'Top expéditeurs',        icon: 'users',       enabled: true },
+  { id: 'rules',       labelKey: 'cleanup.tab.rules',       icon: 'sliders',     enabled: true },
+  { id: 'unsubscribe', labelKey: 'cleanup.tab.unsubscribe',  icon: 'mail-x',      enabled: true },
+  { id: 'senders',     labelKey: 'cleanup.tab.senders',      icon: 'users',       enabled: true },
 ];
 
 // Curated cleanup presets. The id is stable so jobs/state can key on it.
 // `default` is the action surfaced as the primary button; `also` lists
 // extra non-destructive actions exposed as secondary buttons.
+// Labels/descriptions resolved at runtime via t() in mountCleanup.
 const RULES = [
   {
     id: 'spam',
-    label: 'Spam',
-    description: 'Indésirables',
+    labelKey: 'cleanup.rule.spam.label',
+    descKey:  'cleanup.rule.spam.desc',
     icon: 'shield-x',
     accent: 'var(--danger)',
     filter: { categories: ['spam'] },
@@ -65,8 +71,8 @@ const RULES = [
   },
   {
     id: 'newsletters-old',
-    label: 'Newsletters anciennes',
-    description: '+ de 30 jours, lues ou non.',
+    labelKey: 'cleanup.rule.newsletters_old.label',
+    descKey:  'cleanup.rule.newsletters_old.desc',
     icon: 'newspaper',
     accent: '#93C5FD',
     filter: { categories: ['newsletter'], older_than_days: 30 },
@@ -74,8 +80,8 @@ const RULES = [
   },
   {
     id: 'low-score-unread',
-    label: 'Score faible non lus',
-    description: '≤ 3 et toujours non lus.',
+    labelKey: 'cleanup.rule.low_score.label',
+    descKey:  'cleanup.rule.low_score.desc',
     icon: 'arrow-down-narrow-wide',
     accent: '#C4B5FD',
     filter: { max_score: 3, is_read: false },
@@ -83,8 +89,8 @@ const RULES = [
   },
   {
     id: 'very-old-unread',
-    label: 'Anciens non lus',
-    description: '+ de 6 mois et jamais ouverts.',
+    labelKey: 'cleanup.rule.very_old.label',
+    descKey:  'cleanup.rule.very_old.desc',
     icon: 'archive',
     accent: 'var(--muted-2)',
     filter: { is_read: false, older_than_days: 180 },
@@ -92,8 +98,8 @@ const RULES = [
   },
   {
     id: 'other-unread',
-    label: '"Autre" non lus',
-    description: 'Sans valeur évidente identifiés par l\'IA, non lus.',
+    labelKey: 'cleanup.rule.other_unread.label',
+    descKey:  'cleanup.rule.other_unread.desc',
     icon: 'inbox',
     accent: '#FCD34D',
     filter: { categories: ['other'], is_read: false },
@@ -106,43 +112,50 @@ const RULES = [
 const CAT_ORDER = ['important', 'transactional', 'newsletter', 'other', 'spam', 'pending'];
 
 function relativeFrench(iso) {
+  const _t = window.t || ((k) => k);
   if (!iso) return '—';
   const d = new Date(iso);
   if (isNaN(d.getTime())) return '—';
   const diffMs = Date.now() - d.getTime();
   const sec  = Math.max(1, Math.round(diffMs / 1000));
-  if (sec < 60)        return `il y a ${sec} s`;
+  if (sec < 60)        return _t('cleanup.rel.sec',    { n: sec });
   const min = Math.round(sec / 60);
-  if (min < 60)        return `il y a ${min} min`;
+  if (min < 60)        return _t('cleanup.rel.min',    { n: min });
   const h = Math.round(min / 60);
-  if (h < 24)          return `il y a ${h} h`;
+  if (h < 24)          return _t('cleanup.rel.hour',   { n: h });
   const days = Math.round(h / 24);
-  if (days < 30)       return `il y a ${days} j`;
+  if (days < 30)       return _t('cleanup.rel.day',    { n: days });
   const months = Math.round(days / 30);
-  if (months < 12)     return `il y a ${months} mois`;
+  if (months < 12)     return _t('cleanup.rel.month',  { n: months });
   const years = Math.round(months / 12);
-  return `il y a ${years} an${years > 1 ? 's' : ''}`;
+  return _t('cleanup.rel.year', { n: years });
 }
 
 export async function mountCleanup(host, _opts) {
+  const t = window.t || ((k) => k);
+
+  // Resolve translated labels for static arrays (TABS + RULES).
+  const TABS_L  = TABS.map((tab) => ({ ...tab, label: t(tab.labelKey) }));
+  const RULES_L = RULES.map((r)   => ({ ...r,  label: t(r.labelKey), description: t(r.descKey) }));
+
   host.innerHTML = `
     <div class="cln">
       <div class="cln-head">
         <div class="cln-head-titles">
-          <h1>Nettoyage</h1><div class="sub" id="cln-sub">Chargement…</div>
+          <h1>${t('cleanup.title')}</h1><div class="sub" id="cln-sub">${t('cleanup.loading')}</div>
         </div>
         <div class="cln-head-actions">
         </div>
       </div>
 
-      <nav class="cln-tabs" role="tablist" aria-label="Sections de nettoyage">
-        ${TABS.map((t, i) => `
-          <button class="cln-tab ${i === 0 ? 'active' : ''} ${t.enabled ? '' : 'is-disabled'}"
-                  role="tab" data-tab="${t.id}" ${t.enabled ? '' : 'aria-disabled="true"'}
+      <nav class="cln-tabs" role="tablist" aria-label="${t('cleanup.tabs_aria')}">
+        ${TABS_L.map((tab, i) => `
+          <button class="cln-tab ${i === 0 ? 'active' : ''} ${tab.enabled ? '' : 'is-disabled'}"
+                  role="tab" data-tab="${tab.id}" ${tab.enabled ? '' : 'aria-disabled="true"'}
                   aria-selected="${i === 0}">
-            <i data-lucide="${t.icon}" class="w-4 h-4"></i>
-            <span>${escapeHtml(t.label)}</span>
-            ${t.enabled ? '' : '<span class="cln-tab-soon">Bientôt</span>'}
+            <i data-lucide="${tab.icon}" class="w-4 h-4"></i>
+            <span>${escapeHtml(tab.label)}</span>
+            ${tab.enabled ? '' : `<span class="cln-tab-soon">${t('cleanup.tab.soon')}</span>`}
           </button>
         `).join('')}
       </nav>
@@ -200,10 +213,10 @@ export async function mountCleanup(host, _opts) {
   host.querySelectorAll('.cln-tab').forEach((btn) => {
     btn.addEventListener('click', () => {
       const id = btn.dataset.tab;
-      const tab = TABS.find((t) => t.id === id);
+      const tab = TABS_L.find((tab) => tab.id === id);
       if (!tab) return;
       if (!tab.enabled) {
-        window.toast(`${tab.label} : bientôt`);
+        window.toast(t('cleanup.tab.soon_toast', { label: tab.label }));
         return;
       }
       if (id === state.tab) return;
@@ -219,6 +232,7 @@ export async function mountCleanup(host, _opts) {
         b.classList.toggle('active', on);
         b.setAttribute('aria-selected', on ? 'true' : 'false');
       });
+
       renderPane();
       // Refresh senders if a rule modified the dataset since last load.
       if (id === 'senders' && state.sendersStale) {
@@ -251,20 +265,20 @@ export async function mountCleanup(host, _opts) {
           <div class="cln-acc-select" id="cln-acc-wrap">
             <button class="cln-acc-btn" id="cln-acc-btn" type="button">
               <i data-lucide="users" class="w-4 h-4"></i>
-              <span id="cln-acc-label">Tous les comptes</span>
+              <span id="cln-acc-label">${t('cleanup.all_accounts')}</span>
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
             </button>
             <div class="cln-acc-drop" id="cln-acc-drop" role="listbox" hidden></div>
           </div>
           <div class="cln-sort">
             ${[
-              { v: 'total',      label: 'Volume' },
-              { v: 'unread',     label: 'Non lus' },
-              { v: 'newsletter', label: 'Newsletters' },
-              { v: 'recent',     label: 'Récent' },
-              { v: 'oldest',     label: 'Anciens' },
+              { v: 'total',      labelKey: 'cleanup.sort.total' },
+              { v: 'unread',     labelKey: 'cleanup.sort.unread' },
+              { v: 'newsletter', labelKey: 'cleanup.sort.newsletter' },
+              { v: 'recent',     labelKey: 'cleanup.sort.recent' },
+              { v: 'oldest',     labelKey: 'cleanup.sort.oldest' },
             ].map((o) => `
-              <button class="cln-sort-btn ${state.sortMode === o.v ? 'active' : ''}" data-sort="${o.v}">${o.label}</button>
+              <button class="cln-sort-btn ${state.sortMode === o.v ? 'active' : ''}" data-sort="${o.v}">${t(o.labelKey)}</button>
             `).join('')}
           </div>
         </div>
@@ -296,16 +310,17 @@ export async function mountCleanup(host, _opts) {
     if (!btn || !drop) return;
 
     function paint() {
-      const items = [{ email: '', name: 'Tous les comptes' }, ...state.accounts];
+      const allAccLabel = t('cleanup.all_accounts');
+      const items = [{ email: '', name: allAccLabel }, ...state.accounts];
       drop.innerHTML = items.map((a) => `
         <div class="acc-select-opt ${state.accountFilter === a.email ? 'active' : ''}"
              role="option" data-acc="${escapeHtml(a.email)}">
-          ${escapeHtml(a.name || a.email || 'Tous les comptes')}
+          ${escapeHtml(a.name || a.email || allAccLabel)}
         </div>
       `).join('');
       const cur = state.accountFilter
         ? (state.accounts.find((a) => a.email === state.accountFilter)?.name || state.accountFilter)
-        : 'Tous les comptes';
+        : allAccLabel;
       label.textContent = cur;
     }
     paint();
@@ -346,15 +361,16 @@ export async function mountCleanup(host, _opts) {
     const items = sortSenders(state.senders);
     const totalEmails = items.reduce((acc, s) => acc + s.total, 0);
     const totalUnread = items.reduce((acc, s) => acc + s.unread, 0);
-    $('#cln-count').textContent =
-      `${items.length} expéditeur${items.length > 1 ? 's' : ''} · ${totalEmails} message${totalEmails > 1 ? 's' : ''} · ${totalUnread} non lu${totalUnread > 1 ? 's' : ''}`;
+    $('#cln-count').textContent = t('cleanup.senders.count', {
+      senders: items.length, emails: totalEmails, unread: totalUnread,
+    });
 
     if (!items.length) {
       list.innerHTML = `
         <div class="cln-empty">
           <div class="cln-empty-ico"><i data-lucide="sparkles" class="w-7 h-7"></i></div>
-          <div class="cln-empty-title">Boîte impeccable</div>
-          <div class="cln-empty-sub">Aucun expéditeur à nettoyer pour le moment.</div>
+          <div class="cln-empty-title">${t('cleanup.senders.empty_title')}</div>
+          <div class="cln-empty-sub">${t('cleanup.senders.empty_sub')}</div>
         </div>`;
       window.lucide?.createIcons();
       return;
@@ -421,25 +437,25 @@ export async function mountCleanup(host, _opts) {
           <div class="cln-row-top">
             <span class="cln-row-name">${escapeHtml(display)}</span>
             <span class="cln-row-mail">${escapeHtml(s.email)}</span>
-            ${domain ? `<a class="cln-row-domain" href="https://${escapeHtml(domain)}" target="_blank" rel="noopener noreferrer" title="Ouvrir ${escapeHtml(domain)}"><i data-lucide="external-link" class="w-3 h-3"></i></a>` : ''}
+            ${domain ? `<a class="cln-row-domain" href="https://${escapeHtml(domain)}" target="_blank" rel="noopener noreferrer" title="${t('cleanup.sender.open_domain', { domain: escapeHtml(domain) })}"><i data-lucide="external-link" class="w-3 h-3"></i></a>` : ''}
           </div>
           <div class="cln-row-stats">
             <span class="cln-stat"><strong>${s.total}</strong> msg</span>
-            ${s.unread > 0 ? `<span class="cln-stat cln-stat-unread"><strong>${s.unread}</strong> non lu${s.unread > 1 ? 's' : ''}</span>` : ''}
+            ${s.unread > 0 ? `<span class="cln-stat cln-stat-unread"><strong>${s.unread}</strong> ${t('cleanup.sender.unread')}</span>` : ''}
             ${s.newsletter > 0 ? `<span class="cln-stat" style="color:${CATEGORY_COLOR.newsletter}"><strong>${s.newsletter}</strong> news</span>` : ''}
             ${s.important > 0 ? `<span class="cln-stat" style="color:${CATEGORY_COLOR.important}"><strong>${s.important}</strong> imp.</span>` : ''}
-            <span class="cln-stat cln-stat-date">dernier ${escapeHtml(relativeFrench(s.last_seen))}</span>
+            <span class="cln-stat cln-stat-date">${t('cleanup.sender.last_seen', { rel: escapeHtml(relativeFrench(s.last_seen)) })}</span>
           </div>
         </div>
         <div class="cln-row-actions">
-          <button class="cln-act" data-act="view" title="Voir dans la boîte" aria-label="Voir dans la boîte de réception" ${isBusy ? 'disabled' : ''}>
-            <i data-lucide="inbox" class="w-4 h-4"></i><span>Ouvrir</span>
+          <button class="cln-act" data-act="view" title="${t('cleanup.act.view_title')}" aria-label="${t('cleanup.act.view_aria')}" ${isBusy ? 'disabled' : ''}>
+            <i data-lucide="inbox" class="w-4 h-4"></i><span>${t('cleanup.act.view')}</span>
           </button>
-          <button class="cln-act" data-act="mark_read" title="Marquer tous lus" aria-label="Marquer tous lus" ${isBusy ? 'disabled' : ''}>
-            <i data-lucide="mail-open" class="w-4 h-4"></i><span>Tout lire</span>
+          <button class="cln-act" data-act="mark_read" title="${t('cleanup.act.mark_read_title')}" aria-label="${t('cleanup.act.mark_read_title')}" ${isBusy ? 'disabled' : ''}>
+            <i data-lucide="mail-open" class="w-4 h-4"></i><span>${t('cleanup.act.mark_read')}</span>
           </button>
-          <button class="cln-act cln-act-danger" data-act="delete" title="Tout supprimer" aria-label="Tout supprimer" ${isBusy ? 'disabled' : ''}>
-            <i data-lucide="trash-2" class="w-4 h-4"></i><span>Tout supprimer</span>
+          <button class="cln-act cln-act-danger" data-act="delete" title="${t('cleanup.act.delete_title')}" aria-label="${t('cleanup.act.delete_title')}" ${isBusy ? 'disabled' : ''}>
+            <i data-lucide="trash-2" class="w-4 h-4"></i><span>${t('cleanup.act.delete')}</span>
           </button>
         </div>
         ${breakdownBar}
@@ -462,9 +478,9 @@ export async function mountCleanup(host, _opts) {
 
     if (action === 'delete') {
       const ok = await confirmAsync({
-        title: `Supprimer tous les messages ?`,
-        message: `${sender.total} message(s) de « ${sender.name || sender.email} » seront déplacés dans la corbeille. Vous pourrez les restaurer depuis votre application de messagerie.`,
-        confirmLabel: 'Tout supprimer',
+        title: t('cleanup.confirm.delete_title'),
+        message: t('cleanup.confirm.delete_msg', { n: sender.total, name: sender.name || sender.email }),
+        confirmLabel: t('cleanup.act.delete'),
         danger: true,
       });
       if (!ok) return;
@@ -481,7 +497,7 @@ export async function mountCleanup(host, _opts) {
       const acc = state.accountFilter || undefined;
       res = await api.cleanupSender(email, action, acc);
     } catch (err) {
-      window.toast(`Échec : ${err.message}`);
+      window.toast(t('cleanup.toast.fail', { msg: err.message }));
       state.busy.delete(email);
       if (row) {
         row.classList.remove('is-busy');
@@ -498,8 +514,8 @@ export async function mountCleanup(host, _opts) {
       // Nothing for IMAP to push (e.g. all already in trash). DB is in sync.
       window.toast(
         action === 'delete'
-          ? (affected ? `${affected} message(s) déplacé(s) en corbeille` : 'Rien à supprimer')
-          : (affected ? `${affected} message(s) marqué(s) lu(s)` : 'Tous étaient déjà lus')
+          ? (affected ? t('cleanup.toast.deleted', { n: affected }) : t('cleanup.toast.nothing_to_delete'))
+          : (affected ? t('cleanup.toast.marked_read', { n: affected }) : t('cleanup.toast.already_read'))
       );
       finishLocalUpdate(email, action);
       return;
@@ -549,11 +565,11 @@ export async function mountCleanup(host, _opts) {
     const count = progress.querySelector('.cln-progress-count');
     const ratio = job.total ? ((job.done + job.failed) / job.total) : 0;
     fill.style.width = `${(ratio * 100).toFixed(1)}%`;
-    const verb = job.action === 'delete' ? 'Suppression IMAP' : 'Marquage IMAP';
+    const verb = job.action === 'delete' ? t('cleanup.progress.deleting') : t('cleanup.progress.marking');
     if (job.finished) {
       label.textContent = job.failed
-        ? `Terminé · ${job.failed} échec(s)`
-        : 'Terminé';
+        ? t('cleanup.progress.done_errors', { n: job.failed })
+        : t('cleanup.progress.done');
     } else {
       label.textContent = verb;
     }
@@ -578,10 +594,9 @@ export async function mountCleanup(host, _opts) {
       if (row) renderProgress(row, job);
       if (snap.finished) {
         state.jobs.delete(job.sender);
-        const verb = job.action === 'delete' ? 'Suppression' : 'Marquage';
         window.toast(snap.failed
-          ? `${verb} : ${snap.done} ok, ${snap.failed} échec(s)`
-          : `${verb} : ${snap.done}/${snap.total} terminés`);
+          ? t('cleanup.toast.job_errors', { done: snap.done, failed: snap.failed })
+          : t('cleanup.toast.job_done', { done: snap.done, total: snap.total }));
         finishLocalUpdate(job.sender, job.action);
         return;
       }
@@ -603,8 +618,8 @@ export async function mountCleanup(host, _opts) {
     const pane = $('#cln-pane');
     pane.innerHTML = `
       <div class="cln-rules-layout">
-        <aside class="cln-rules-rail" aria-label="Liste des règles">
-          <div class="cln-rules-rail-head">Règles de nettoyage</div>
+        <aside class="cln-rules-rail" aria-label="${t('cleanup.rules.rail_aria')}">
+          <div class="cln-rules-rail-head">${t('cleanup.tab.rules')}</div>
           <div class="cln-rules-rail-list" id="cln-rules-rail"></div>
         </aside>
         <section class="cln-rules-detail" id="cln-rules-detail" aria-live="polite"></section>
@@ -614,7 +629,7 @@ export async function mountCleanup(host, _opts) {
     if (state.selectedRule) openRuleDetail(state.selectedRule);
     // Lazily fetch counts for each rule. Cached in state.ruleStats so
     // switching tabs doesn't re-roundtrip every preset.
-    for (const r of RULES) {
+    for (const r of RULES_L) {
       if (!state.ruleStats.has(r.id)) loadRuleStats(r.id);
     }
     // Load custom rules
@@ -626,17 +641,17 @@ export async function mountCleanup(host, _opts) {
     if (!rail) return;
     const customItems = state.customRules.map((r) => customRailItemHtml(r)).join('');
     rail.innerHTML = `
-      ${RULES.map((r) => ruleRailItemHtml(r)).join('')}
+      ${RULES_L.map((r) => ruleRailItemHtml(r)).join('')}
       <div class="cln-rail-sep" id="cln-rail-sep-custom">
-        <span>Mes règles</span>
+        <span>${t('cleanup.rules.my_rules')}</span>
       </div>
       <div id="cln-custom-rail-list">
-        ${customItems || '<div class="cln-rail-empty-hint">Aucune règle personnalisée</div>'}
+        ${customItems || `<div class="cln-rail-empty-hint">${t('cleanup.rules.no_custom')}</div>`}
       </div>
       <button class="cln-rail-add-btn" id="btn-add-custom-rule" type="button"
-              title="Créer une règle personnalisée">
+              title="${t('cleanup.rules.add_title')}">
         <i data-lucide="plus" class="w-4 h-4"></i>
-        <span>Nouvelle règle</span>
+        <span>${t('cleanup.rules.new_rule')}</span>
       </button>
     `;
     rail.querySelectorAll('.cln-rail-item[data-rule]').forEach((el) => {
@@ -687,7 +702,7 @@ export async function mountCleanup(host, _opts) {
   }
 
   function selectRule(ruleId) {
-    if (!RULES.some((r) => r.id === ruleId)) return;
+    if (!RULES_L.some((r) => r.id === ruleId)) return;
     if (state.selectedRule === ruleId) return;
     state.selectedRule = ruleId;
     state.selectedCustomRule = null;
@@ -723,7 +738,7 @@ export async function mountCleanup(host, _opts) {
     if (!rail) return;
     const item = rail.querySelector(`.cln-rail-item[data-rule="${ruleId}"]`);
     if (!item) return;
-    const r = RULES.find((x) => x.id === ruleId);
+    const r = RULES_L.find((x) => x.id === ruleId);
     if (!r) return;
     item.outerHTML = ruleRailItemHtml(r);
     // Re-bind handlers on the replaced node
@@ -744,7 +759,7 @@ export async function mountCleanup(host, _opts) {
     const listEl = $('#cln-custom-rail-list');
     if (!listEl) return;
     const customItems = state.customRules.map((r) => customRailItemHtml(r)).join('');
-    listEl.innerHTML = customItems || '<div class="cln-rail-empty-hint">Aucune règle personnalisée</div>';
+    listEl.innerHTML = customItems || `<div class="cln-rail-empty-hint">${t('cleanup.rules.no_custom')}</div>`;
     listEl.querySelectorAll('.cln-rail-item[data-custom-id]').forEach((el) => {
       el.addEventListener('click', () => selectCustomRule(Number(el.dataset.customId)));
       el.addEventListener('keydown', (e) => {
@@ -755,7 +770,7 @@ export async function mountCleanup(host, _opts) {
   }
 
   async function loadRuleStats(ruleId) {
-    const r = RULES.find((x) => x.id === ruleId);
+    const r = RULES_L.find((x) => x.id === ruleId);
     if (!r) return;
     state.ruleStats.set(ruleId, { loading: true, total: 0, unread: 0, sample: [] });
     paintRailItem(ruleId);
@@ -778,9 +793,9 @@ export async function mountCleanup(host, _opts) {
   function renderRuleDetail(ruleId) {
     const detail = $('#cln-rules-detail');
     if (!detail) return;
-    const r = RULES.find((x) => x.id === ruleId);
+    const r = RULES_L.find((x) => x.id === ruleId);
     if (!r) {
-      detail.innerHTML = `<div class="cln-empty"><div class="cln-empty-title">Aucune règle sélectionnée</div></div>`;
+      detail.innerHTML = `<div class="cln-empty"><div class="cln-empty-title">${t('cleanup.rules.none_selected')}</div></div>`;
       return;
     }
     const stats = state.ruleStats.get(ruleId);
@@ -791,12 +806,12 @@ export async function mountCleanup(host, _opts) {
     const actionsBtns = r.actions.map((a, i) => {
       const isPrimary = i === 0;
       const danger = a === 'delete';
-      const label = a === 'delete' ? 'Tout supprimer' : 'Tout marquer lu';
+      const actLabel = a === 'delete' ? t('cleanup.act.delete') : t('cleanup.act.mark_all_read');
       const icon  = a === 'delete' ? 'trash-2' : 'mail-open';
       const empty = !stats || stats.total === 0 || stats.loading;
       return `<button class="cln-rule-act ${isPrimary ? 'cln-rule-act-primary' : ''} ${danger ? 'cln-rule-act-danger' : ''}"
                       data-rule-act="${a}" ${(isBusy || empty) ? 'disabled' : ''}>
-                <i data-lucide="${icon}" class="w-3.5 h-3.5"></i>${label}
+                <i data-lucide="${icon}" class="w-3.5 h-3.5"></i>${actLabel}
               </button>`;
     }).join('');
 
@@ -820,15 +835,15 @@ export async function mountCleanup(host, _opts) {
     // Body switches based on loading / empty / data
     let body = '';
     if (!stats || stats.loading) {
-      body = `<div class="cln-detail-empty">Chargement de l'aperçu…</div>`;
+      body = `<div class="cln-detail-empty">${t('cleanup.detail.loading')}</div>`;
     } else if (stats.error) {
-      body = `<div class="cln-detail-empty cln-error">Erreur : ${escapeHtml(stats.error)}</div>`;
+      body = `<div class="cln-detail-empty cln-error">${t('cleanup.detail.error', { msg: escapeHtml(stats.error) })}</div>`;
     } else if (stats.total === 0) {
       body = `
         <div class="cln-detail-empty">
           <div class="cln-empty-ico"><i data-lucide="check" class="w-7 h-7"></i></div>
-          <div class="cln-empty-title">Rien à nettoyer</div>
-          <div class="cln-empty-sub">Aucun message ne correspond à cette règle.</div>
+          <div class="cln-empty-title">${t('cleanup.detail.empty_title')}</div>
+          <div class="cln-empty-sub">${t('cleanup.detail.empty_sub')}</div>
         </div>`;
     } else {
       body = renderRuleDetailBody(stats);
@@ -889,8 +904,8 @@ export async function mountCleanup(host, _opts) {
       + (accHidden > 0 ? `<span class="cln-prv-chip cln-prv-chip-more">+${accHidden}</span>` : '');
     const dateSpanLabel = (stats.date_oldest && stats.date_newest)
       ? (stats.date_oldest === stats.date_newest
-         ? `du ${escapeHtml(relativeFrench(stats.date_oldest))}`
-         : `de ${escapeHtml(relativeFrench(stats.date_oldest))} à ${escapeHtml(relativeFrench(stats.date_newest))}`)
+         ? t('cleanup.detail.date_single', { rel: escapeHtml(relativeFrench(stats.date_oldest)) })
+         : t('cleanup.detail.date_range',  { from: escapeHtml(relativeFrench(stats.date_oldest)), to: escapeHtml(relativeFrench(stats.date_newest)) }))
       : '';
 
     // ── Top senders within the rule
@@ -898,7 +913,7 @@ export async function mountCleanup(host, _opts) {
     const topSendersHtml = topSenders.length
       ? `
         <div class="cln-detail-section">
-          <h4 class="cln-detail-section-title">Principaux expéditeurs</h4>
+          <h4 class="cln-detail-section-title">${t('cleanup.detail.top_senders')}</h4>
           <div class="cln-prv-senders">
             ${topSenders.map((s) => {
               const display = s.name || s.email;
@@ -908,7 +923,7 @@ export async function mountCleanup(host, _opts) {
               return `
                 <button class="cln-prv-sender" type="button"
                         data-sender="${escapeHtml(s.email)}"
-                        title="Voir ${escapeHtml(display)} dans la boîte">
+                        title="${t('cleanup.detail.sender_view', { name: escapeHtml(display) })}">
                   <span class="cln-prv-sender-av" style="background:${col}">
                     <span class="av-text">${escapeHtml(ini)}</span>
                     ${img}
@@ -934,19 +949,19 @@ export async function mountCleanup(host, _opts) {
       const showId = em.int_id != null;
       return `
         <div class="cln-prv-row ${em.is_read ? '' : 'is-unread'}"
-             ${showId ? `data-int-id="${em.int_id}" role="button" tabindex="0" title="Ouvrir dans la boîte"` : ''}>
+             ${showId ? `data-int-id="${em.int_id}" role="button" tabindex="0" title="${t('cleanup.detail.open_email')}"` : ''}>
           <span class="cln-prv-av" style="background:${col}">
             <span class="av-text">${escapeHtml(ini)}</span>
             ${img}
           </span>
           <div class="cln-prv-body">
             <div class="cln-prv-r1">
-              <span class="cln-prv-from">${escapeHtml(sName || sEmail || 'Inconnu')}</span>
+              <span class="cln-prv-from">${escapeHtml(sName || sEmail || t('cleanup.unknown_sender'))}</span>
               <span class="cln-prv-cat" style="background:${CATEGORY_COLOR[cat] || 'var(--muted-2)'}" title="${escapeHtml(cat)}"></span>
               ${score > 0 ? `<span class="cln-prv-score s-${score >= 7 ? 'hi' : (score >= 4 ? 'md' : 'lo')}">${score}</span>` : ''}
               <span class="cln-prv-date">${escapeHtml(relativeFrench(em.date_received))}</span>
             </div>
-            <div class="cln-prv-subj">${escapeHtml(em.subject || '(sans objet)')}</div>
+            <div class="cln-prv-subj">${escapeHtml(em.subject || t('cleanup.no_subject'))}</div>
           </div>
         </div>
       `;
@@ -968,19 +983,19 @@ export async function mountCleanup(host, _opts) {
       ${topSendersHtml}
       <div class="cln-detail-section">
         <h4 class="cln-detail-section-title">${stats.sample.length === stats.total
-          ? `Tous les messages (${stats.total})`
-          : `${stats.sample.length} messages les plus récents`
+          ? t('cleanup.detail.all_messages', { n: stats.total })
+          : t('cleanup.detail.recent_messages', { n: stats.sample.length })
         }</h4>
         <div class="cln-prv-list cln-prv-list-tall">${sampleHtml}</div>
         ${remaining > 0
-          ? `<div class="cln-prv-more">… et ${remaining} autre${remaining > 1 ? 's' : ''} non affiché${remaining > 1 ? 's' : ''}</div>`
+          ? `<div class="cln-prv-more">${t('cleanup.detail.more', { n: remaining })}</div>`
           : ''}
       </div>
     `;
   }
 
   function senderShort(raw) {
-    if (!raw) return 'Inconnu';
+    if (!raw) return (window.t || ((k) => k))('cleanup.unknown_sender');
     const m = /<([^>]+)>/.exec(raw);
     if (m) {
       const name = raw.split('<', 1)[0].trim().replace(/^"|"$/g, '').trim();
@@ -998,21 +1013,19 @@ export async function mountCleanup(host, _opts) {
       el.innerHTML = `
         <div class="cln-del-overlay" id="${id}-overlay">
           <div class="cln-del-modal" role="alertdialog" aria-modal="true"
-               aria-label="Confirmer la suppression">
+               aria-label="${(window.t||((k)=>k))('cleanup.confirm.delete_aria')}">
             <div class="cln-del-icon">
               <i data-lucide="trash-2" class="w-6 h-6"></i>
             </div>
-            <div class="cln-del-title">Supprimer ${count} message${count > 1 ? 's' : ''} ?</div>
+            <div class="cln-del-title">${(window.t||((k)=>k))('cleanup.confirm.delete_count_title', { n: count })}</div>
             <div class="cln-del-body">
-              Les messages correspondant à <strong>« ${escapeHtml(label)} »</strong>
-              seront déplacés dans la corbeille de votre serveur de mail.
-              Ils resteront restaurables depuis votre client habituel.
+              ${(window.t||((k)=>k))('cleanup.confirm.delete_body_html', { label: escapeHtml(label) })}
             </div>
             <div class="cln-del-actions">
-              <button class="cln-rule-act" id="${id}-cancel">Annuler</button>
+              <button class="cln-rule-act" id="${id}-cancel">${(window.t||((k)=>k))('cleanup.cancel')}</button>
               <button class="cln-rule-act cln-rule-act-danger" id="${id}-confirm">
                 <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-                Supprimer ${count} message${count > 1 ? 's' : ''}
+                ${(window.t||((k)=>k))('cleanup.act.delete_n', { n: count })}
               </button>
             </div>
           </div>
@@ -1038,7 +1051,7 @@ export async function mountCleanup(host, _opts) {
 
   async function runRule(ruleId, action) {
     if (state.ruleBusy.has(ruleId)) return;
-    const rule = RULES.find((r) => r.id === ruleId);
+    const rule = RULES_L.find((r) => r.id === ruleId);
     const stats = state.ruleStats.get(ruleId);
     if (!rule || !stats || stats.total === 0) return;
 
@@ -1055,7 +1068,7 @@ export async function mountCleanup(host, _opts) {
     try {
       res = await api.runCleanupRule(rule.filter, action);
     } catch (err) {
-      window.toast(`Échec : ${err.message}`);
+      window.toast(t('cleanup.toast.fail', { msg: err.message }));
       state.ruleBusy.delete(ruleId);
       if (detail) detail.querySelectorAll('button').forEach((b) => (b.disabled = false));
       return;
@@ -1064,7 +1077,7 @@ export async function mountCleanup(host, _opts) {
     const total = res?.total ?? 0;
     const jobId = res?.job_id;
     if (!jobId || total === 0) {
-      window.toast(`Aucune action requise (${res?.affected ?? 0})`);
+      window.toast(t('cleanup.toast.nothing_required', { n: res?.affected ?? 0 }));
       finishRule(ruleId, action);
       return;
     }
@@ -1094,9 +1107,9 @@ export async function mountCleanup(host, _opts) {
     const count = wrap.querySelector('.cln-progress-count');
     const ratio = job.total ? ((job.done + job.failed) / job.total) : 0;
     fill.style.width = `${(ratio * 100).toFixed(1)}%`;
-    const verb = job.action === 'delete' ? 'Suppression IMAP' : 'Marquage IMAP';
+    const verb = job.action === 'delete' ? t('cleanup.progress.deleting') : t('cleanup.progress.marking');
     label.textContent = job.finished
-      ? (job.failed ? `Terminé · ${job.failed} échec(s)` : 'Terminé')
+      ? (job.failed ? t('cleanup.progress.done_errors', { n: job.failed }) : t('cleanup.progress.done'))
       : verb;
     count.textContent = `${job.done + job.failed} / ${job.total}`;
   }
@@ -1116,10 +1129,9 @@ export async function mountCleanup(host, _opts) {
       const detail = $('#cln-rules-detail');
       if (detail && state.selectedRule === job.ruleId) renderRuleProgress(detail, job);
       if (snap.finished) {
-        const verb = job.action === 'delete' ? 'Suppression' : 'Marquage';
         window.toast(snap.failed
-          ? `${verb} : ${snap.done} ok, ${snap.failed} échec(s)`
-          : `${verb} : ${snap.done}/${snap.total} terminés`);
+          ? t('cleanup.toast.job_errors', { done: snap.done, failed: snap.failed })
+          : t('cleanup.toast.job_done', { done: snap.done, total: snap.total }));
         state.ruleJobs.delete(job.ruleId);
         finishRule(job.ruleId, job.action);
         return;
@@ -1135,21 +1147,22 @@ export async function mountCleanup(host, _opts) {
     // Invalidate the cached counts — every rule's selection may have
     // shifted (deleting low-score also empties "Other unread", etc.),
     // and the senders tab is also stale.
-    for (const r of RULES) state.ruleStats.delete(r.id);
+    for (const r of RULES_L) state.ruleStats.delete(r.id);
     state.sendersStale = true;
     // Refetch counts in the background; rail badges go to "…" then update.
-    for (const r of RULES) loadRuleStats(r.id);
+    for (const r of RULES_L) loadRuleStats(r.id);
     // Repaint detail immediately to lift the disabled state and progress.
     if (state.selectedRule) renderRuleDetail(state.selectedRule);
   }
 
   // ── Custom rules ──────────────────────────────────────────────────────────
 
+  // Template names/descriptions resolved at runtime.
   const CUSTOM_TEMPLATES = [
     {
       id: 'job-search',
-      name: 'Recherche d\'emploi',
-      description: 'Offres, candidatures, entretiens',
+      nameKey: 'cleanup.tpl.job_search.name',
+      descKey: 'cleanup.tpl.job_search.desc',
       icon: 'briefcase',
       accent: '#34D399',
       filter: {
@@ -1160,8 +1173,8 @@ export async function mountCleanup(host, _opts) {
     },
     {
       id: 'security-codes',
-      name: 'Codes de sécurité',
-      description: 'OTP, 2FA, codes de vérification',
+      nameKey: 'cleanup.tpl.security_codes.name',
+      descKey: 'cleanup.tpl.security_codes.desc',
       icon: 'shield-check',
       accent: '#F59E0B',
       filter: {
@@ -1171,8 +1184,8 @@ export async function mountCleanup(host, _opts) {
     },
     {
       id: 'social-networks',
-      name: 'Réseaux sociaux',
-      description: 'Notifications Twitter, Instagram…',
+      nameKey: 'cleanup.tpl.social.name',
+      descKey: 'cleanup.tpl.social.desc',
       icon: 'share-2',
       accent: '#818CF8',
       filter: {
@@ -1182,8 +1195,8 @@ export async function mountCleanup(host, _opts) {
     },
     {
       id: 'app-notifications',
-      name: 'Notifications app',
-      description: 'Alertes automatiques no-reply',
+      nameKey: 'cleanup.tpl.app_notifs.name',
+      descKey: 'cleanup.tpl.app_notifs.desc',
       icon: 'bell',
       accent: '#94A3B8',
       filter: {
@@ -1193,8 +1206,8 @@ export async function mountCleanup(host, _opts) {
     },
     {
       id: 'promotions',
-      name: 'Promotions',
-      description: 'Soldes, offres spéciales, réductions',
+      nameKey: 'cleanup.tpl.promotions.name',
+      descKey: 'cleanup.tpl.promotions.desc',
       icon: 'tag',
       accent: '#F472B6',
       filter: {
@@ -1202,7 +1215,7 @@ export async function mountCleanup(host, _opts) {
       },
       actions: ['delete', 'mark_read'],
     },
-  ];
+  ].map((tpl) => ({ ...tpl, name: t(tpl.nameKey), description: t(tpl.descKey) }));
 
   async function loadCustomRules() {
     try {
@@ -1286,7 +1299,7 @@ export async function mountCleanup(host, _opts) {
     if (!detail) return;
     const r = state.customRules.find((x) => x.id === customId);
     if (!r) {
-      detail.innerHTML = `<div class="cln-empty"><div class="cln-empty-title">Règle introuvable</div></div>`;
+      detail.innerHTML = `<div class="cln-empty"><div class="cln-empty-title">${t('cleanup.custom.not_found')}</div></div>`;
       return;
     }
     const key = `c-${customId}`;
@@ -1299,12 +1312,12 @@ export async function mountCleanup(host, _opts) {
     const actionsBtns = (r.actions || ['mark_read']).map((a, i) => {
       const isPrimary = i === 0;
       const danger = a === 'delete';
-      const label = a === 'delete' ? 'Tout supprimer' : 'Tout marquer lu';
+      const actLabel = a === 'delete' ? t('cleanup.act.delete') : t('cleanup.act.mark_all_read');
       const icon  = a === 'delete' ? 'trash-2' : 'mail-open';
       const empty = !isEnabled || !stats || stats.total === 0 || stats.loading;
       return `<button class="cln-rule-act ${isPrimary ? 'cln-rule-act-primary' : ''} ${danger ? 'cln-rule-act-danger' : ''}"
                       data-custom-act="${a}" ${(isBusy || empty) ? 'disabled' : ''}>
-                <i data-lucide="${icon}" class="w-3.5 h-3.5"></i>${label}
+                <i data-lucide="${icon}" class="w-3.5 h-3.5"></i>${actLabel}
               </button>`;
     }).join('');
 
@@ -1312,18 +1325,18 @@ export async function mountCleanup(host, _opts) {
     if (!isEnabled) {
       body = `<div class="cln-detail-empty cln-custom-disabled-msg">
         <i data-lucide="power-off" class="w-7 h-7"></i>
-        <div>Règle désactivée — activez-la pour voir les résultats.</div>
-        <button class="cln-rule-act cln-rule-act-primary" id="btn-custom-enable">Activer</button>
+        <div>${t('cleanup.custom.disabled_msg')}</div>
+        <button class="cln-rule-act cln-rule-act-primary" id="btn-custom-enable">${t('cleanup.custom.enable')}</button>
       </div>`;
     } else if (!stats || stats.loading) {
-      body = `<div class="cln-detail-empty">Chargement de l'aperçu…</div>`;
+      body = `<div class="cln-detail-empty">${t('cleanup.detail.loading')}</div>`;
     } else if (stats.error) {
-      body = `<div class="cln-detail-empty cln-error">Erreur : ${escapeHtml(stats.error)}</div>`;
+      body = `<div class="cln-detail-empty cln-error">${t('cleanup.detail.error', { msg: escapeHtml(stats.error) })}</div>`;
     } else if (stats.total === 0) {
       body = `<div class="cln-detail-empty">
         <div class="cln-empty-ico"><i data-lucide="check" class="w-7 h-7"></i></div>
-        <div class="cln-empty-title">Rien à nettoyer</div>
-        <div class="cln-empty-sub">Aucun message ne correspond à cette règle.</div>
+        <div class="cln-empty-title">${t('cleanup.detail.empty_title')}</div>
+        <div class="cln-empty-sub">${t('cleanup.detail.empty_sub')}</div>
       </div>`;
     } else {
       body = renderRuleDetailBody(stats);
@@ -1342,17 +1355,17 @@ export async function mountCleanup(host, _opts) {
           </div>
         </div>
         <div class="cln-detail-actions">
-          <button class="cln-rule-act" id="btn-custom-edit-detail" title="Modifier la règle">
-            <i data-lucide="pencil" class="w-3.5 h-3.5"></i>Modifier
+          <button class="cln-rule-act" id="btn-custom-edit-detail" title="${t('cleanup.custom.edit_title')}">
+            <i data-lucide="pencil" class="w-3.5 h-3.5"></i>${t('cleanup.custom.edit')}
           </button>
           <button class="cln-rule-act cln-custom-toggle-btn ${isEnabled ? 'is-enabled' : ''}"
                   id="btn-custom-toggle-detail"
-                  title="${isEnabled ? 'Désactiver la règle' : 'Activer la règle'}">
+                  title="${isEnabled ? t('cleanup.custom.disable_title') : t('cleanup.custom.enable_title')}">
             <i data-lucide="${isEnabled ? 'power' : 'power-off'}" class="w-3.5 h-3.5"></i>
-            ${isEnabled ? 'Activée' : 'Désactivée'}
+            ${isEnabled ? t('cleanup.custom.enabled') : t('cleanup.custom.disabled')}
           </button>
-          <button class="cln-rule-act cln-rule-act-danger" id="btn-custom-delete-detail" title="Supprimer la règle">
-            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>Supprimer
+          <button class="cln-rule-act cln-rule-act-danger" id="btn-custom-delete-detail" title="${t('cleanup.custom.delete_rule_title')}">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>${t('cleanup.custom.delete_rule')}
           </button>
           ${actionsBtns}
         </div>
@@ -1397,7 +1410,7 @@ export async function mountCleanup(host, _opts) {
       paintCustomRailList();
       if (state.selectedCustomRule === customId) renderCustomRuleDetail(customId);
     } catch (err) {
-      window.toast(`Erreur : ${err.message}`);
+      window.toast(t('cleanup.toast.error', { msg: err.message }));
     }
   }
 
@@ -1405,9 +1418,9 @@ export async function mountCleanup(host, _opts) {
     const r = state.customRules.find((x) => x.id === customId);
     if (!r) return;
     const okRule = await confirmAsync({
-      title: 'Supprimer la règle ?',
-      message: `La règle « ${r.name} » sera définitivement supprimée.`,
-      confirmLabel: 'Supprimer',
+      title: t('cleanup.custom.delete_rule_confirm_title'),
+      message: t('cleanup.custom.delete_rule_confirm_msg', { name: r.name }),
+      confirmLabel: t('cleanup.custom.delete_rule'),
       danger: true,
     });
     if (!okRule) return;
@@ -1422,7 +1435,7 @@ export async function mountCleanup(host, _opts) {
       }
       paintCustomRailList();
     } catch (err) {
-      window.toast(`Erreur : ${err.message}`);
+      window.toast(t('cleanup.toast.error', { msg: err.message }));
     }
   }
 
@@ -1443,7 +1456,7 @@ export async function mountCleanup(host, _opts) {
     try {
       res = await api.runCleanupRule(r.filter, action);
     } catch (err) {
-      window.toast(`Échec : ${err.message}`);
+      window.toast(t('cleanup.toast.fail', { msg: err.message }));
       state.customBusy.delete(customId);
       if (detail) detail.querySelectorAll('button').forEach((b) => (b.disabled = false));
       return;
@@ -1451,7 +1464,7 @@ export async function mountCleanup(host, _opts) {
     const total = res?.total ?? 0;
     const jobId = res?.job_id;
     if (!jobId || total === 0) {
-      window.toast(`Aucune action requise (${res?.affected ?? 0})`);
+      window.toast(t('cleanup.toast.nothing_required', { n: res?.affected ?? 0 }));
       finishCustomRule(customId, action);
       return;
     }
@@ -1470,8 +1483,9 @@ export async function mountCleanup(host, _opts) {
       const detail = $('#cln-rules-detail');
       if (detail && state.selectedCustomRule === job.customId) renderRuleProgress(detail, job);
       if (snap.finished) {
-        const verb = job.action === 'delete' ? 'Suppression' : 'Marquage';
-        window.toast(snap.failed ? `${verb} : ${snap.done} ok, ${snap.failed} échec(s)` : `${verb} : ${snap.done}/${snap.total} terminés`);
+        window.toast(snap.failed
+          ? t('cleanup.toast.job_errors', { done: snap.done, failed: snap.failed })
+          : t('cleanup.toast.job_done', { done: snap.done, total: snap.total }));
         state.customJobs.delete(job.customId);
         finishCustomRule(job.customId, job.action);
         return;
@@ -1539,29 +1553,29 @@ export async function mountCleanup(host, _opts) {
   function renderTemplateList(panelEl) {
     panelEl.innerHTML = `
       <div class="cln-panel-head">
-        <strong>Choisir un modèle</strong>
-        <button class="cln-panel-close" id="btn-panel-close" title="Fermer">
+        <strong>${t('cleanup.tpl.choose')}</strong>
+        <button class="cln-panel-close" id="btn-panel-close" title="${t('cleanup.close')}">
           <i data-lucide="x" class="w-4 h-4"></i>
         </button>
       </div>
       <div class="cln-panel-body" style="padding:18px;gap:14px">
         <div class="cln-template-list">
-          ${CUSTOM_TEMPLATES.map((t) => `
-            <button class="cln-template-card" data-tpl="${escapeHtml(t.id)}" type="button">
-              <span class="cln-template-icon" style="background:color-mix(in oklab, ${t.accent} 18%, transparent); color: ${t.accent}">
-                <i data-lucide="${t.icon}" class="w-5 h-5"></i>
+          ${CUSTOM_TEMPLATES.map((tpl) => `
+            <button class="cln-template-card" data-tpl="${escapeHtml(tpl.id)}" type="button">
+              <span class="cln-template-icon" style="background:color-mix(in oklab, ${tpl.accent} 18%, transparent); color: ${tpl.accent}">
+                <i data-lucide="${tpl.icon}" class="w-5 h-5"></i>
               </span>
               <span class="cln-template-info">
-                <span class="cln-template-name">${escapeHtml(t.name)}</span>
-                <span class="cln-template-desc">${escapeHtml(t.description)}</span>
+                <span class="cln-template-name">${escapeHtml(tpl.name)}</span>
+                <span class="cln-template-desc">${escapeHtml(tpl.description)}</span>
               </span>
               <i data-lucide="chevron-right" class="w-4 h-4 cln-template-arr"></i>
             </button>
           `).join('')}
         </div>
-        <div class="cln-panel-divider">ou</div>
+        <div class="cln-panel-divider">${t('cleanup.tpl.or')}</div>
         <button class="cln-rule-act cln-rule-act-primary" id="btn-tpl-scratch" style="width:100%;justify-content:center">
-          <i data-lucide="plus" class="w-4 h-4"></i>Créer depuis zéro
+          <i data-lucide="plus" class="w-4 h-4"></i>${t('cleanup.tpl.from_scratch')}
         </button>
       </div>
     `;
@@ -1569,7 +1583,7 @@ export async function mountCleanup(host, _opts) {
     panelEl.querySelector('#btn-tpl-scratch')?.addEventListener('click', () => renderCustomForm(panelEl, null));
     panelEl.querySelectorAll('.cln-template-card').forEach((btn) => {
       btn.addEventListener('click', () => {
-        const tpl = CUSTOM_TEMPLATES.find((t) => t.id === btn.dataset.tpl);
+        const tpl = CUSTOM_TEMPLATES.find((tpl) => tpl.id === btn.dataset.tpl);
         if (tpl) renderCustomForm(panelEl, null, tpl);
       });
     });
@@ -1588,11 +1602,11 @@ export async function mountCleanup(host, _opts) {
     const cats      = filter.categories || [];
 
     const CAT_META = {
-      important:     { label: 'Important',      color: '#FCA5A5' },
-      newsletter:    { label: 'Newsletter',      color: '#93C5FD' },
-      transactional: { label: 'Transactionnel',  color: '#86EFAC' },
-      spam:          { label: 'Spam',            color: '#CBD5E1' },
-      other:         { label: 'Autre',           color: '#C4B5FD' },
+      important:     { label: t('cat.important'),     color: '#FCA5A5' },
+      newsletter:    { label: t('cat.newsletter'),    color: '#93C5FD' },
+      transactional: { label: t('cat.transactional'), color: '#86EFAC' },
+      spam:          { label: t('cat.spam'),          color: '#CBD5E1' },
+      other:         { label: t('cat.other'),         color: '#C4B5FD' },
     };
     const catPills = Object.entries(CAT_META).map(([c, m]) => `
       <label class="cln-cat-pill ${cats.includes(c) ? 'is-on' : ''}" style="--pill-c:${m.color}">
@@ -1617,8 +1631,8 @@ export async function mountCleanup(host, _opts) {
 
     const defaultAction = (base.actions || ['mark_read'])[0];
     const actionButtons = [
-      { v: 'mark_read', label: 'Marquer comme lu',       icon: 'mail-open' },
-      { v: 'delete',    label: 'Déplacer en corbeille',   icon: 'trash-2'  },
+      { v: 'mark_read', label: t('cleanup.form.action.mark_read'), icon: 'mail-open' },
+      { v: 'delete',    label: t('cleanup.form.action.delete'),    icon: 'trash-2'  },
     ].map((o) => `
       <button type="button" class="cln-action-seg ${defaultAction === o.v ? 'is-on' : ''}"
               data-action="${o.v}">
@@ -1628,11 +1642,11 @@ export async function mountCleanup(host, _opts) {
 
     panelEl.innerHTML = `
       <div class="cln-panel-head">
-        <button class="cln-panel-back" id="btn-panel-back" title="Retour" style="${isEdit ? 'display:none' : ''}">
+        <button class="cln-panel-back" id="btn-panel-back" title="${t('cleanup.back')}" style="${isEdit ? 'display:none' : ''}">
           <i data-lucide="arrow-left" class="w-4 h-4"></i>
         </button>
-        <strong>${isEdit ? 'Modifier la règle' : (template ? escapeHtml(template.name) : 'Nouvelle règle')}</strong>
-        <button class="cln-panel-close" id="btn-panel-close" title="Fermer">
+        <strong>${isEdit ? t('cleanup.custom.edit_title') : (template ? escapeHtml(template.name) : t('cleanup.rules.new_rule'))}</strong>
+        <button class="cln-panel-close" id="btn-panel-close" title="${t('cleanup.close')}">
           <i data-lucide="x" class="w-4 h-4"></i>
         </button>
       </div>
@@ -1643,7 +1657,7 @@ export async function mountCleanup(host, _opts) {
               style="background:color-mix(in oklab, ${currentAccent} 18%, transparent); color:${currentAccent}">
           <i data-lucide="${currentIcon}" class="w-5 h-5"></i>
         </span>
-        <span class="cln-form-preview-name" id="preview-name">${escapeHtml(base.name || 'Ma règle')}</span>
+        <span class="cln-form-preview-name" id="preview-name">${escapeHtml(base.name || t('cleanup.custom.preview_name'))}</span>
       </div>
 
       <div class="cln-panel-body">
@@ -1651,26 +1665,26 @@ export async function mountCleanup(host, _opts) {
 
           <!-- Identité -->
           <div class="cln-form-group">
-            <div class="cln-form-group-title">Identité</div>
+            <div class="cln-form-group-title">${t('cleanup.form.identity')}</div>
 
             <label class="cln-form-label">
-              <span>Nom</span>
+              <span>${t('cleanup.form.name')}</span>
               <input type="text" name="name" class="cln-form-input" maxlength="60" id="input-rule-name"
-                     value="${escapeHtml(base.name || '')}" placeholder="Ma règle" required>
+                     value="${escapeHtml(base.name || '')}" placeholder="${t('cleanup.form.name_ph')}" required>
             </label>
 
             <label class="cln-form-label">
-              <span>Description <span class="cln-form-opt">· optionnel</span></span>
+              <span>${t('cleanup.form.description')} <span class="cln-form-opt">· ${t('cleanup.form.optional')}</span></span>
               <input type="text" name="description" class="cln-form-input" maxlength="120"
-                     value="${escapeHtml(base.description || '')}" placeholder="Résumé en une phrase">
+                     value="${escapeHtml(base.description || '')}" placeholder="${t('cleanup.form.description_ph')}">
             </label>
 
-            <div class="cln-form-label"><span>Icône</span>
+            <div class="cln-form-label"><span>${t('cleanup.form.icon')}</span>
               <div class="cln-icon-grid" id="cln-icon-grid">${iconOptions}</div>
               <input type="hidden" name="icon" value="${escapeHtml(currentIcon)}">
             </div>
 
-            <div class="cln-form-label"><span>Couleur</span>
+            <div class="cln-form-label"><span>${t('cleanup.form.color')}</span>
               <div class="cln-accent-grid" id="cln-accent-grid">${accentOptions}</div>
               <input type="hidden" name="accent" value="${escapeHtml(currentAccent)}">
             </div>
@@ -1678,48 +1692,48 @@ export async function mountCleanup(host, _opts) {
 
           <!-- Filtres -->
           <div class="cln-form-group">
-            <div class="cln-form-group-title">Filtres <span class="cln-form-opt">· combinés en ET</span></div>
+            <div class="cln-form-group-title">${t('cleanup.form.filters')} <span class="cln-form-opt">· ${t('cleanup.form.filters_hint')}</span></div>
 
             <label class="cln-form-label">
-              <span>Mots dans le sujet <span class="cln-form-opt">· séparés par des virgules</span></span>
+              <span>${t('cleanup.form.subject_kw')} <span class="cln-form-opt">· ${t('cleanup.form.kw_hint')}</span></span>
               <div class="cln-kw-wrap">
                 <i data-lucide="type" class="w-3.5 h-3.5 cln-kw-icon"></i>
                 <input type="text" name="subject_keywords" class="cln-form-input cln-kw-input"
                        value="${escapeHtml(subjectKw)}"
-                       placeholder="candidature, entretien, recrutement…">
+                       placeholder="${t('cleanup.form.subject_kw_ph')}">
               </div>
             </label>
 
             <label class="cln-form-label">
-              <span>Mots dans l'expéditeur <span class="cln-form-opt">· email ou domaine</span></span>
+              <span>${t('cleanup.form.sender_kw')} <span class="cln-form-opt">· ${t('cleanup.form.sender_kw_hint')}</span></span>
               <div class="cln-kw-wrap">
                 <i data-lucide="at-sign" class="w-3.5 h-3.5 cln-kw-icon"></i>
                 <input type="text" name="sender_keywords" class="cln-form-input cln-kw-input"
                        value="${escapeHtml(senderKw)}"
-                       placeholder="linkedin.com, noreply, indeed…">
+                       placeholder="${t('cleanup.form.sender_kw_ph')}">
               </div>
             </label>
 
             <div class="cln-form-label">
-              <span>Catégories</span>
+              <span>${t('cleanup.form.categories')}</span>
               <div class="cln-cat-pills">${catPills}</div>
             </div>
 
             <div class="cln-form-row-2">
               <label class="cln-form-label">
-                <span>Score max <span class="cln-form-opt">/ 10</span></span>
+                <span>${t('cleanup.form.max_score')} <span class="cln-form-opt">/ 10</span></span>
                 <input type="number" name="max_score" class="cln-form-input" min="1" max="10"
                        value="${maxScore}" placeholder="—">
               </label>
               <label class="cln-form-label">
-                <span>Ancienneté min <span class="cln-form-opt">· jours</span></span>
+                <span>${t('cleanup.form.older_than')} <span class="cln-form-opt">· ${t('cleanup.form.days')}</span></span>
                 <input type="number" name="older_than_days" class="cln-form-input" min="1"
                        value="${olderDays}" placeholder="—">
               </label>
             </div>
 
             <label class="cln-form-toggle-row">
-              <span>Non lus uniquement</span>
+              <span>${t('cleanup.form.unread_only')}</span>
               <span class="cln-form-toggle ${filter.is_read === false ? 'is-on' : ''}" id="toggle-unread-only">
                 <span class="cln-toggle-knob"></span>
               </span>
@@ -1730,7 +1744,7 @@ export async function mountCleanup(host, _opts) {
 
           <!-- Action -->
           <div class="cln-form-group">
-            <div class="cln-form-group-title">Action par défaut</div>
+            <div class="cln-form-group-title">${t('cleanup.form.default_action')}</div>
             <div class="cln-action-seg-wrap" id="cln-action-seg">
               ${actionButtons}
             </div>
@@ -1740,11 +1754,11 @@ export async function mountCleanup(host, _opts) {
           <!-- Footer -->
           <div class="cln-form-footer">
             ${isEdit ? `<button type="button" class="cln-form-btn-del" id="btn-form-delete">
-              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>Supprimer
+              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>${t('cleanup.custom.delete_rule')}
             </button>` : ''}
             <button type="submit" class="cln-rule-act cln-rule-act-primary cln-form-submit">
               <i data-lucide="${isEdit ? 'check' : 'plus'}" class="w-3.5 h-3.5"></i>
-              ${isEdit ? 'Enregistrer' : 'Créer la règle'}
+              ${isEdit ? t('set.save') : t('cleanup.form.create')}
             </button>
           </div>
         </form>
@@ -1758,7 +1772,7 @@ export async function mountCleanup(host, _opts) {
     const nameInput = panelEl.querySelector('#input-rule-name');
     const previewName = panelEl.querySelector('#preview-name');
     nameInput?.addEventListener('input', () => {
-      if (previewName) previewName.textContent = nameInput.value.trim() || 'Ma règle';
+      if (previewName) previewName.textContent = nameInput.value.trim() || t('cleanup.form.name_ph');
     });
 
     // Icon picker + live preview
@@ -1832,7 +1846,7 @@ export async function mountCleanup(host, _opts) {
     panelEl.querySelector('#cln-custom-form')?.addEventListener('submit', async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
-      const name = fd.get('name')?.toString().trim() || 'Sans titre';
+      const name = fd.get('name')?.toString().trim() || t('cleanup.form.no_title');
       const description = fd.get('description')?.toString().trim() || '';
       const icon   = fd.get('icon')?.toString()   || 'filter';
       const accent = fd.get('accent')?.toString() || 'var(--accent)';
@@ -1856,7 +1870,7 @@ export async function mountCleanup(host, _opts) {
       const body = { name, description, icon, accent, filter: builtFilter, actions: [defaultAction] };
 
       const submitBtn = e.target.querySelector('[type=submit]');
-      if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = isEdit ? 'Enregistrement…' : 'Création…'; }
+      if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = isEdit ? t('set.busy.saving') : t('cleanup.form.creating'); }
       try {
         if (isEdit) {
           await api.updateCustomRule(existingRule.id, body);
@@ -1880,10 +1894,10 @@ export async function mountCleanup(host, _opts) {
         paintCustomRailList();
         closeCustomPanel();
         if (state.selectedCustomRule != null) renderCustomRuleDetail(state.selectedCustomRule);
-        window.toast(isEdit ? 'Règle mise à jour' : 'Règle créée');
+        window.toast(isEdit ? t('cleanup.toast.rule_updated') : t('cleanup.toast.rule_created'));
       } catch (err) {
-        window.toast(`Erreur : ${err.message}`);
-        if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = `<i data-lucide="${isEdit ? 'check' : 'plus'}" class="w-3.5 h-3.5"></i>${isEdit ? 'Enregistrer' : 'Créer la règle'}`; window.lucide?.createIcons({ el: submitBtn }); }
+        window.toast(t('cleanup.toast.error', { msg: err.message }));
+        if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = `<i data-lucide="${isEdit ? 'check' : 'plus'}" class="w-3.5 h-3.5"></i>${isEdit ? t('set.save') : t('cleanup.form.create')}`; window.lucide?.createIcons({ el: submitBtn }); }
       }
     });
 
@@ -1894,10 +1908,10 @@ export async function mountCleanup(host, _opts) {
   function renderUnsubscribePane() {
     const pane = $('#cln-pane');
     pane.innerHTML = `
-      <div class="cln-unsub-status" id="cln-unsub-status">Chargement…</div>
+      <div class="cln-unsub-status" id="cln-unsub-status">${t('cleanup.loading')}</div>
       <div class="cln-rules-layout">
-        <aside class="cln-rules-rail" aria-label="Liste des expéditeurs">
-          <div class="cln-rules-rail-head">Expéditeurs avec lien</div>
+        <aside class="cln-rules-rail" aria-label="${t('cleanup.unsub.rail_aria')}">
+          <div class="cln-rules-rail-head">${t('cleanup.unsub.rail_head')}</div>
           <div class="cln-rules-rail-list" id="cln-unsub-rail"></div>
         </aside>
         <section class="cln-rules-detail" id="cln-unsub-detail" aria-live="polite"></section>
@@ -1922,7 +1936,7 @@ export async function mountCleanup(host, _opts) {
       el.innerHTML = `
         <div class="cln-unsub-status-row">
           <i data-lucide="refresh-cw" class="w-4 h-4" style="animation: spin 1s linear infinite"></i>
-          <span><strong>Réanalyse en cours…</strong> ${job.done + job.failed} / ${job.total} en-têtes</span>
+          <span><strong>${t('cleanup.unsub.reanalyzing')}</strong> ${job.done + job.failed} / ${job.total} ${t('cleanup.unsub.headers')}</span>
         </div>
         <div class="cln-progress-track" style="height:4px;margin-top:6px">
           <div class="cln-progress-fill" style="width:${pct}%"></div>
@@ -1932,7 +1946,7 @@ export async function mountCleanup(host, _opts) {
       return;
     }
 
-    if (!s) { el.textContent = 'Chargement…'; return; }
+    if (!s) { el.textContent = t('cleanup.loading'); return; }
 
     const linkN = s.senders_with_link || 0;
     const haveN = s.with_header || 0;
@@ -1949,22 +1963,22 @@ export async function mountCleanup(host, _opts) {
       banner = `
         <div class="cln-unsub-banner">
           <i data-lucide="info" class="w-4 h-4"></i>
-          <span>Les liens de désabonnement n'ont pas encore été détectés dans tes mails. Lance une analyse pour les retrouver et activer le désabonnement en un clic.</span>
+          <span>${t('cleanup.unsub.no_links_yet')}</span>
         </div>`;
     }
 
     const btnLabel =
-      missN === 0   ? 'À jour' :
-      !lastBackfill ? 'Analyser les liens' :
-                      'Actualiser';
+      missN === 0   ? t('cleanup.unsub.btn_up_to_date') :
+      !lastBackfill ? t('cleanup.unsub.btn_analyze') :
+                      t('cleanup.unsub.btn_refresh');
 
     el.innerHTML = `
       ${banner}
       <div class="cln-unsub-status-row">
-        <span class="cln-unsub-stat"><strong>${linkN}</strong> expéditeur${linkN > 1 ? 's' : ''} avec lien</span>
+        <span class="cln-unsub-stat"><strong>${linkN}</strong> ${t('cleanup.unsub.senders_with_link', { n: linkN })}</span>
         <span class="cln-unsub-stat-muted">·</span>
-        <span class="cln-unsub-stat"><strong>${haveN}</strong> mail${haveN > 1 ? 's' : ''} inspecté${haveN > 1 ? 's' : ''}</span>
-        ${missN > 0 ? `<span class="cln-unsub-stat-muted">·</span><span class="cln-unsub-stat cln-unsub-stat-warn"><strong>${missN}</strong> mail${missN > 1 ? 's' : ''} non analysé${missN > 1 ? 's' : ''}</span>` : ''}
+        <span class="cln-unsub-stat"><strong>${haveN}</strong> ${t('cleanup.unsub.inspected', { n: haveN })}</span>
+        ${missN > 0 ? `<span class="cln-unsub-stat-muted">·</span><span class="cln-unsub-stat cln-unsub-stat-warn"><strong>${missN}</strong> ${t('cleanup.unsub.not_analyzed', { n: missN })}</span>` : ''}
         <button class="cln-unsub-backfill" id="btn-backfill" ${missN === 0 ? 'disabled' : ''} style="margin-left:auto">
           <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
           ${btnLabel}
@@ -1981,9 +1995,9 @@ export async function mountCleanup(host, _opts) {
     );
     if (eligible.length === 0) return;
     const ok = await confirmAsync({
-      title: `Désabonnement en masse ?`,
-      message: `Une requête one-click sera envoyée pour ${eligible.length} expéditeur(s). Les expéditeurs sans flag one-click ne sont pas inclus.`,
-      confirmLabel: 'Se désabonner',
+      title: t('cleanup.unsub.bulk_confirm_title'),
+      message: t('cleanup.unsub.bulk_confirm_msg', { n: eligible.length }),
+      confirmLabel: t('cleanup.unsub.unsubscribe'),
       danger: false,
     });
     if (!ok) return;
@@ -1995,11 +2009,11 @@ export async function mountCleanup(host, _opts) {
         purge: false,
       });
     } catch (err) {
-      window.toast(`Échec : ${err.message}`);
+      window.toast(t('cleanup.toast.fail', { msg: err.message }));
       return;
     }
     if (!res.job_id || res.total === 0) {
-      window.toast('Rien à désabonner');
+      window.toast(t('cleanup.unsub.nothing'));
       return;
     }
 
@@ -2033,8 +2047,8 @@ export async function mountCleanup(host, _opts) {
       paintUnsubStatus();
       if (snap.finished) {
         window.toast(snap.failed
-          ? `Désabonnement bulk : ${snap.done} ok, ${snap.failed} échec(s)`
-          : `Désabonnement bulk terminé (${snap.done}/${snap.total})`);
+          ? t('cleanup.unsub.bulk_done_errors', { done: snap.done, failed: snap.failed })
+          : t('cleanup.unsub.bulk_done', { done: snap.done, total: snap.total }));
         state.backfillJob = null;
         await loadUnsubSenders();
         await loadUnsubStats();
@@ -2054,7 +2068,7 @@ export async function mountCleanup(host, _opts) {
     if (state.unsubSenders.length === 0) {
       rail.innerHTML = `
         <div class="cln-empty" style="padding:24px 12px;text-align:center;font-size:12.5px;color:var(--muted)">
-          ${state.unsubStats == null ? 'Chargement…' : 'Aucun expéditeur identifié pour le moment.'}
+          ${state.unsubStats == null ? t('cleanup.loading') : t('cleanup.unsub.no_senders')}
         </div>`;
       return;
     }
@@ -2073,9 +2087,9 @@ export async function mountCleanup(host, _opts) {
   }
 
   function unsubModeIcon(s) {
-    if (s.has_one_click) return { icon: 'zap', label: 'one-click', className: 'mode-oneclick' };
-    if (s.http_url)      return { icon: 'globe', label: 'page web', className: 'mode-http' };
-    if (s.mailto)        return { icon: 'mail', label: 'email', className: 'mode-mailto' };
+    if (s.has_one_click) return { icon: 'zap', label: t('cleanup.unsub.mode.oneclick'), className: 'mode-oneclick' };
+    if (s.http_url)      return { icon: 'globe', label: t('cleanup.unsub.mode.web'), className: 'mode-http' };
+    if (s.mailto)        return { icon: 'mail', label: t('cleanup.unsub.mode.email'), className: 'mode-mailto' };
     return { icon: 'help-circle', label: '?', className: '' };
   }
 
@@ -2125,7 +2139,7 @@ export async function mountCleanup(host, _opts) {
     if (!detail) return;
     const s = state.unsubSenders.find((x) => x.email === email);
     if (!s) {
-      detail.innerHTML = `<div class="cln-empty"><div class="cln-empty-title">Aucun expéditeur sélectionné</div></div>`;
+      detail.innerHTML = `<div class="cln-empty"><div class="cln-empty-title">${t('cleanup.unsub.none_selected')}</div></div>`;
       return;
     }
 
@@ -2140,15 +2154,15 @@ export async function mountCleanup(host, _opts) {
     // Primary button label depends on capability + already-done state
     let primaryLabel, primaryIcon, primaryAction;
     if (done) {
-      primaryLabel = 'Re-désabonner'; primaryIcon = 'refresh-cw'; primaryAction = 'auto-force';
+      primaryLabel = t('cleanup.unsub.re_unsub'); primaryIcon = 'refresh-cw'; primaryAction = 'auto-force';
     } else if (s.has_one_click) {
-      primaryLabel = 'Se désabonner'; primaryIcon = 'zap'; primaryAction = 'auto';
+      primaryLabel = t('cleanup.unsub.unsubscribe'); primaryIcon = 'zap'; primaryAction = 'auto';
     } else if (s.http_url) {
-      primaryLabel = 'Ouvrir la page de désabo'; primaryIcon = 'external-link'; primaryAction = 'http_only';
+      primaryLabel = t('cleanup.unsub.open_page'); primaryIcon = 'external-link'; primaryAction = 'http_only';
     } else if (s.mailto) {
-      primaryLabel = 'Envoyer le mail de désabo'; primaryIcon = 'mail'; primaryAction = 'mailto_only';
+      primaryLabel = t('cleanup.unsub.send_email'); primaryIcon = 'mail'; primaryAction = 'mailto_only';
     } else {
-      primaryLabel = 'Aucun lien'; primaryIcon = 'x'; primaryAction = null;
+      primaryLabel = t('cleanup.unsub.no_link'); primaryIcon = 'x'; primaryAction = null;
     }
 
     const purgeChecked = state.unsubPurge ? 'checked' : '';
@@ -2167,7 +2181,7 @@ export async function mountCleanup(host, _opts) {
             <span class="cln-unsub-chip ${mode.className}">
               <i data-lucide="${mode.icon}" class="w-3 h-3"></i>${escapeHtml(mode.label)}
             </span>
-            ${done ? `<span class="cln-unsub-chip-done"><i data-lucide="check" class="w-3 h-3"></i>Désabonné le ${escapeHtml(shortDate(s.unsubscribed_at))}</span>` : ''}
+            ${done ? `<span class="cln-unsub-chip-done"><i data-lucide="check" class="w-3 h-3"></i>${t('cleanup.unsub.done_date', { date: escapeHtml(shortDate(s.unsubscribed_at)) })}</span>` : ''}
           </p>
           ${(s.accounts || []).length > 0 ? `
           <p class="cln-detail-desc cln-unsub-recip-row">
@@ -2182,11 +2196,11 @@ export async function mountCleanup(host, _opts) {
             </button>` : ''}
           ${s.http_url && primaryAction !== 'http_only' ? `
             <button class="cln-rule-act" data-unsub-act="http_only" ${isBusy ? 'disabled' : ''}>
-              <i data-lucide="globe" class="w-3.5 h-3.5"></i>Page web
+              <i data-lucide="globe" class="w-3.5 h-3.5"></i>${t('cleanup.unsub.web_page')}
             </button>` : ''}
           ${s.mailto && primaryAction !== 'mailto_only' ? `
             <button class="cln-rule-act" data-unsub-act="mailto_only" ${isBusy ? 'disabled' : ''}>
-              <i data-lucide="mail" class="w-3.5 h-3.5"></i>Email
+              <i data-lucide="mail" class="w-3.5 h-3.5"></i>${t('cleanup.unsub.email_btn')}
             </button>` : ''}
         </div>
       </header>
@@ -2202,16 +2216,16 @@ export async function mountCleanup(host, _opts) {
     })();
     let explainer = '';
     if (s.has_one_click && httpDomain) {
-      explainer = `Désabonnement automatique en un clic via <strong>${escapeHtml(httpDomain)}</strong>. On envoie la requête depuis le serveur — pas besoin d'ouvrir d'onglet.`;
+      explainer = t('cleanup.unsub.explainer.oneclick', { domain: escapeHtml(httpDomain) });
     } else if (httpDomain) {
-      explainer = `Désabonnement via une page web hébergée par <strong>${escapeHtml(httpDomain)}</strong>. On ouvrira l'onglet pour vous, vous validerez en ligne.`;
+      explainer = t('cleanup.unsub.explainer.http', { domain: escapeHtml(httpDomain) });
     } else if (s.mailto) {
-      explainer = `Désabonnement par email à <strong>${escapeHtml(s.mailto.split('?')[0])}</strong>. On ouvrira votre client mail avec le message pré-rempli.`;
+      explainer = t('cleanup.unsub.explainer.mailto', { address: escapeHtml(s.mailto.split('?')[0]) });
     }
 
     const accountsLine = (s.accounts || []).length > 1
       ? `<span class="cln-detail-desc" style="display:block;margin-top:4px">
-          Reçu sur ${s.accounts.length} comptes : ${
+          ${t('cleanup.unsub.received_on', { n: s.accounts.length })} ${
             s.accounts.map((a) => `<span class="cln-prv-chip">${escapeHtml(a.split('@')[0])}</span>`).join(' ')
           }
         </span>`
@@ -2221,32 +2235,32 @@ export async function mountCleanup(host, _opts) {
       <div class="cln-unsub-kpis">
         <div class="cln-unsub-kpi">
           <span class="cln-unsub-kpi-val">${s.total}</span>
-          <span class="cln-unsub-kpi-lbl">message${s.total > 1 ? 's' : ''}</span>
+          <span class="cln-unsub-kpi-lbl">${t('cleanup.unsub.kpi.emails')}</span>
         </div>
         <div class="cln-unsub-kpi">
           <span class="cln-unsub-kpi-val">${s.unread}</span>
-          <span class="cln-unsub-kpi-lbl">non lu${s.unread > 1 ? 's' : ''}</span>
+          <span class="cln-unsub-kpi-lbl">${t('cleanup.unsub.kpi.unread')}</span>
         </div>
         <div class="cln-unsub-kpi">
           <span class="cln-unsub-kpi-val">${escapeHtml(shortDate(s.last_seen))}</span>
-          <span class="cln-unsub-kpi-lbl">dernier reçu</span>
+          <span class="cln-unsub-kpi-lbl">${t('cleanup.unsub.kpi.last_received')}</span>
         </div>
         ${(s.accounts || []).length > 1 ? `
         <div class="cln-unsub-kpi">
           <span class="cln-unsub-kpi-val">${s.accounts.length}</span>
-          <span class="cln-unsub-kpi-lbl">compte${s.accounts.length > 1 ? 's' : ''}</span>
+          <span class="cln-unsub-kpi-lbl">${t('cleanup.unsub.kpi.accounts')}</span>
         </div>` : ''}
       </div>
 
       <div class="cln-unsub-mails-section">
         <div class="cln-unsub-mails-head">
           <i data-lucide="mails" class="w-3.5 h-3.5"></i>
-          <span>Messages de cet expéditeur</span>
+          <span>${t('cleanup.unsub.mails_head')}</span>
         </div>
         <div class="cln-unsub-mails-list" id="cln-unsub-mails-list">
           <div class="cln-unsub-mails-loading">
             <i data-lucide="loader" class="w-3.5 h-3.5" style="animation:spin 1s linear infinite"></i>
-            Chargement…
+            ${t('cleanup.loading')}
           </div>
         </div>
       </div>
@@ -2286,12 +2300,12 @@ export async function mountCleanup(host, _opts) {
     if (!listEl.isConnected) return;
 
     if (emails.length === 0) {
-      listEl.innerHTML = `<div class="cln-unsub-mails-empty">Aucun message trouvé.</div>`;
+      listEl.innerHTML = `<div class="cln-unsub-mails-empty">${(window.t||((k)=>k))('cleanup.unsub.no_mails')}</div>`;
       return;
     }
 
     listEl.innerHTML = emails.map((em) => {
-      const subj = escapeHtml(em.subject || '(Sans objet)');
+      const subj = escapeHtml(em.subject || (window.t||((k)=>k))('cleanup.no_subject'));
       const dt   = escapeHtml(shortDate(em.date_received));
       const read = em.is_read ? '' : 'is-unread';
       const score = em.importance_score != null ? em.importance_score : '—';
@@ -2354,11 +2368,11 @@ export async function mountCleanup(host, _opts) {
     try {
       res = await api.runHeaderBackfill();
     } catch (err) {
-      window.toast(`Échec : ${err.message}`);
+      window.toast(t('cleanup.toast.fail', { msg: err.message }));
       return;
     }
     if (!res.job_id) {
-      window.toast('Tous les en-têtes sont déjà à jour');
+      window.toast(t('cleanup.backfill.toast.uptodate'));
       await loadUnsubStats();
       paintUnsubStatus();
       return;
@@ -2385,8 +2399,8 @@ export async function mountCleanup(host, _opts) {
       paintUnsubStatus();
       if (snap.finished) {
         const verb = snap.failed
-          ? `Backfill : ${snap.done} ok, ${snap.failed} échec(s)`
-          : `Backfill terminé : ${snap.done}/${snap.total}`;
+          ? t('cleanup.backfill.toast.partial', { done: snap.done, fail: snap.failed })
+          : t('cleanup.backfill.toast.done', { done: snap.done, total: snap.total });
         window.toast(verb);
         state.backfillJob = null;
         await loadUnsubStats();
@@ -2437,25 +2451,25 @@ export async function mountCleanup(host, _opts) {
     })();
     if (mode === 'auto' || mode === 'auto-force') {
       descEl.textContent = s.has_one_click && httpDomain
-        ? `Désabonnement automatique via ${httpDomain}.`
+        ? t('cleanup.unsub.modal.desc_oneclick', { domain: httpDomain })
         : httpDomain
-          ? `Ouverture de la page de désabonnement sur ${httpDomain}.`
-          : s.mailto ? `Envoi d'un email de désabonnement.` : '';
+          ? t('cleanup.unsub.modal.desc_http', { domain: httpDomain })
+          : s.mailto ? t('cleanup.unsub.modal.desc_mailto') : '';
     } else if (mode === 'http_only') {
-      descEl.textContent = `La page de désabonnement s'ouvrira dans un nouvel onglet.`;
+      descEl.textContent = t('cleanup.unsub.modal.desc_http_only');
     } else {
-      descEl.textContent = `Un email de désabonnement sera préparé dans votre client mail.`;
+      descEl.textContent = t('cleanup.unsub.modal.desc_mailto_only');
     }
 
     // Purge option
-    purgeText.innerHTML = `Aussi déplacer en corbeille les <strong>${s.total}</strong> message${s.total > 1 ? 's' : ''} existant${s.total > 1 ? 's' : ''}`;
+    purgeText.innerHTML = t('cleanup.unsub.modal.purge_html', { n: s.total });
     purgeCb.checked = state.unsubPurge;
     purgeLbl.style.display = '';
 
     // Confirm button label/icon
     const modeIcon = mode === 'http_only' ? 'globe' : mode === 'mailto_only' ? 'mail' : 'zap';
     iconEl.setAttribute('data-lucide', modeIcon);
-    confirmLbl.textContent = 'Se désabonner';
+    confirmLbl.textContent = t('cleanup.unsub.unsubscribe');
 
     // Show
     modal.hidden = false;
@@ -2509,7 +2523,7 @@ export async function mountCleanup(host, _opts) {
         force,
       });
     } catch (err) {
-      window.toast(`Échec : ${err.message}`);
+      window.toast(t('cleanup.toast.fail', { msg: err.message }));
       state.unsubBusy.delete(email);
       if (detail) detail.querySelectorAll('button').forEach((b) => (b.disabled = false));
       return;
@@ -2518,7 +2532,7 @@ export async function mountCleanup(host, _opts) {
     // Server says "open this URL/mailto in a tab".
     if (res.action_required === 'open_url') {
       window.open(res.target, '_blank', 'noopener,noreferrer');
-      window.toast('Page de désabonnement ouverte dans un nouvel onglet');
+      window.toast(t('cleanup.unsub.toast.page_opened'));
       // We can't know if the user really clicked unsubscribe — flag visually
       // but don't stamp `unsubscribed_at` server-side (the user may abort).
       finishUnsub(email, false);
@@ -2526,19 +2540,19 @@ export async function mountCleanup(host, _opts) {
     }
     if (res.action_required === 'open_mailto') {
       window.open(`mailto:${res.target}`, '_blank');
-      window.toast('Client mail ouvert pour le désabonnement');
+      window.toast(t('cleanup.unsub.toast.mail_opened'));
       finishUnsub(email, false);
       return;
     }
 
     if (res.already && !res.job_id) {
-      window.toast('Déjà désabonné');
+      window.toast(t('cleanup.unsub.toast.already'));
       finishUnsub(email, true);
       return;
     }
 
     if (!res.job_id || res.total === 0) {
-      window.toast('Désabonnement effectué');
+      window.toast(t('cleanup.unsub.toast.done'));
       finishUnsub(email, true);
       return;
     }
@@ -2568,8 +2582,8 @@ export async function mountCleanup(host, _opts) {
     const ratio = job.total ? ((job.done + job.failed) / job.total) : 0;
     fill.style.width = `${(ratio * 100).toFixed(1)}%`;
     label.textContent = job.finished
-      ? (job.failed ? `Terminé · ${job.failed} échec(s)` : 'Terminé')
-      : 'Désabonnement en cours';
+      ? (job.failed ? t('cleanup.unsub.progress.done_partial', { fail: job.failed }) : t('cleanup.unsub.progress.done'))
+      : t('cleanup.unsub.progress.label');
     count.textContent = `${job.done + job.failed} / ${job.total}`;
   }
 
@@ -2587,8 +2601,8 @@ export async function mountCleanup(host, _opts) {
       if (detail && state.selectedUnsub === job.sender) renderUnsubProgress(detail, job);
       if (snap.finished) {
         window.toast(snap.failed
-          ? `Désabonnement : ${snap.done} ok, ${snap.failed} échec(s)`
-          : 'Désabonnement réussi');
+          ? t('cleanup.unsub.toast.partial', { done: snap.done, fail: snap.failed })
+          : t('cleanup.unsub.toast.success'));
         state.unsubJobs.delete(job.sender);
         finishUnsub(job.sender, snap.done > 0);
         return;
@@ -2632,11 +2646,11 @@ export async function mountCleanup(host, _opts) {
       state.senders = await api.getTopSenders(params);
       $('#cln-sub').textContent =
         state.senders.length
-          ? `${state.senders.length} expéditeurs analysés`
-          : 'Aucun email à analyser';
+          ? t('cleanup.senders.count', { n: state.senders.length })
+          : t('cleanup.senders.empty');
       renderSenderList();
     } catch (err) {
-      $('#cln-pane').innerHTML = `<div class="cln-empty cln-error">Erreur : ${escapeHtml(err.message)}</div>`;
+      $('#cln-pane').innerHTML = `<div class="cln-empty cln-error">${escapeHtml(t('cleanup.toast.fail', { msg: err.message }))}</div>`;
     }
   }
 
@@ -2644,7 +2658,7 @@ export async function mountCleanup(host, _opts) {
   // Honour ?tab= deep-link (e.g. #/cleanup?tab=unsubscribe from the dashboard)
   const hashParams = new URLSearchParams(location.hash.includes('?') ? location.hash.split('?')[1] : '');
   const deepTab = hashParams.get('tab');
-  if (deepTab && deepTab !== state.tab && TABS.find((t) => t.id === deepTab && t.enabled)) {
+  if (deepTab && deepTab !== state.tab && TABS_L.find((tab) => tab.id === deepTab && tab.enabled)) {
     state.tab = deepTab;
     host.querySelectorAll('.cln-tab').forEach((b) => {
       const on = b.dataset.tab === deepTab;
