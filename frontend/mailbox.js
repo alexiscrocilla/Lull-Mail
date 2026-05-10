@@ -1456,6 +1456,10 @@ export async function mountMailbox(host, _opts) {
   // resolves, the older response is dropped on the floor. Prevents the
   // "filter snaps back" race when a slow response overwrites fresh state.
   let _loadEmailsToken = 0;
+  // Stamped at the head of loadEmails / loadAccounts. Read by the
+  // visibilitychange handler to debounce: a quick tab-switch must
+  // not trigger a second reload on top of the periodic refresh.
+  let _lastLoadAt = 0;
 
   // ── Infinite scroll (virtual list) ───────────────────────
   const PAGE_SIZE = 40;
@@ -3599,6 +3603,7 @@ export async function mountMailbox(host, _opts) {
 
   // ── Data loading ──────────────────────────────────────────
   async function loadAccounts() {
+    _lastLoadAt = Date.now();
     try {
       const [accs, dash] = await Promise.all([
         api.getAccounts(),
@@ -3662,6 +3667,7 @@ export async function mountMailbox(host, _opts) {
     // considered stale and its response is dropped — a slow response
     // must never overwrite the state set by a more recent call.
     const myToken = ++_loadEmailsToken;
+    _lastLoadAt = Date.now();
     try {
       // For a single selected account send the API filter; for 0 or 2+ filter client-side.
       const singleAcc = state.accountFilters.size === 1 ? [...state.accountFilters][0] : undefined;
@@ -3812,7 +3818,7 @@ export async function mountMailbox(host, _opts) {
         setSyncSpinner(false);
       }
     };
-    syncTimer = setInterval(tick, 3000);
+    syncTimer = setInterval(tick, 5000);
     tick();
   }
 
@@ -4174,18 +4180,22 @@ export async function mountMailbox(host, _opts) {
   }
   document.addEventListener('keydown', onEscape);
 
-  // Auto-refresh every 20s
+  // Auto-refresh every 60s — was 20s but on a 750-mail / 14-account
+  // session that hammered the DB and CPU for no UX win. The Sync button
+  // is one click away if the user wants something newer.
   const refreshTimer = setInterval(() => {
     loadEmails().catch(() => {});
     loadAccounts().catch(() => {});
-  }, 20_000);
+  }, 60_000);
 
-  // Refresh immediately when the user comes back to the tab
+  // Refresh when the user comes back to the tab, but debounce: a quick
+  // tab-switch must not trigger a second reload on top of the periodic
+  // refresh that just fired.
   const onVisibility = () => {
-    if (!document.hidden) {
-      loadEmails().catch(() => {});
-      loadAccounts().catch(() => {});
-    }
+    if (document.hidden) return;
+    if (Date.now() - _lastLoadAt < 10_000) return;
+    loadEmails().catch(() => {});
+    loadAccounts().catch(() => {});
   };
   document.addEventListener('visibilitychange', onVisibility);
 

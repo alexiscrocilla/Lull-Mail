@@ -1342,21 +1342,37 @@ def throughput_buckets_daily(days: int = 30) -> List[int]:
     return buckets
 
 
-def hours_distribution() -> List[int]:
-    """Return email counts by hour of day (0..23) based on date_received (non-deleted).
+_hours_dist_cache: Tuple[float, List[int]] = (0.0, [0] * 24)
+_HOURS_DIST_TTL_S = 30.0
 
-    date_received is stored as raw RFC 2822 strings, so we parse them in Python
-    via _parse_email_date — SQLite's strftime cannot handle that format.
+
+def hours_distribution() -> List[int]:
+    """Return email counts by hour of day (0..23) based on date_received_iso.
+
+    Reads the ISO column (not the raw RFC 2822 one) so we can extract the
+    hour with a string slice instead of parsing N dates per dashboard tick.
+    Cached for 30s — the dashboard polls every 5s but a heatmap that's at
+    most 30s stale is invisible to the eye.
     """
+    global _hours_dist_cache
+    now = time.time()
+    cached_at, cached = _hours_dist_cache
+    if now - cached_at < _HOURS_DIST_TTL_S:
+        return cached
     buckets = [0] * 24
     with _conn() as con:
         rows = con.execute(
-            "SELECT date_received FROM emails WHERE date_received != '' AND folder != 'deleted'"
+            "SELECT date_received_iso FROM emails "
+            "WHERE date_received_iso IS NOT NULL AND folder != 'deleted'"
         ).fetchall()
     for r in rows:
-        dt = _parse_email_date(r["date_received"])
-        if dt is not None:
-            buckets[dt.hour] += 1
+        # ISO 8601 hour is at offset 11..13 (after "YYYY-MM-DDT"). Cheaper
+        # than fromisoformat() × N because we don't need anything else.
+        try:
+            buckets[int(r["date_received_iso"][11:13])] += 1
+        except (TypeError, ValueError, IndexError):
+            continue
+    _hours_dist_cache = (now, buckets)
     return buckets
 
 

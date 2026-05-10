@@ -593,7 +593,10 @@ export async function mountDashboard(host, opts) {
       }
     };
 
-    timers.push(setInterval(tickStatus, 2000));
+    // 5s (was 2s) — /api/dashboard/status chains ~8 SQL queries; going
+    // from 30 to 12 polls/min cuts DB load by 60% with no visible UX
+    // hit (3s-stale "pending" counters are fine).
+    timers.push(setInterval(tickStatus, 5000));
     timers.push(setInterval(tickCleanup, 30000));
     tickStatus();
     tickCleanup();
