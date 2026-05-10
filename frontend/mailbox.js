@@ -1158,14 +1158,13 @@ export async function mountMailbox(host, _opts) {
 
     const chevSvg = `<svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
 
-    // Build the stable shell once — keeps the collapsible wrapper intact across re-renders.
-    // On first creation we hide the elements (opacity:0) so they can't flash before the
-    // staggered intro animation runs from the requestAnimationFrame block at mount time.
-    let shellCreatedNow = false;
+    // Build the stable shell once — keeps the collapsible wrapper intact
+    // across re-renders. The .mb-stagger class on .mb-side handles the
+    // entrance animation declaratively, so we no longer need to stamp
+    // style="opacity:0" inline on these nodes.
     if (!$('#wrap-accounts')) {
-      shellCreatedNow = true;
       outerWrap.innerHTML = `
-        <div class="mb-section-title" id="title-accounts" style="opacity:0">
+        <div class="mb-section-title" id="title-accounts">
           <span>Comptes</span>${chevSvg}
         </div>
         <div class="mb-collapsible" id="wrap-accounts">
@@ -1180,7 +1179,6 @@ export async function mountMailbox(host, _opts) {
     // Only update the items list — no DOM destruction of the wrapper
     const allSelected = state.accountFilters.size === 0;
     const section = $('#mb-accounts-list');
-    const hideStyle = shellCreatedNow ? ' style="opacity:0"' : '';
 
     // Group accounts by provider type (proton / gmail / orange / ovh / other)
     const byType = {};
@@ -1218,7 +1216,7 @@ export async function mountMailbox(host, _opts) {
           ? `<span class="mb-acc-badge error" title="${escapeHtml(stats.sync_error || 'Erreur de synchronisation')}">!</span>`
           : `<span class="mb-acc-badge ${isOn ? 'on-active' : ''}">${unread}</span>`;
         return `
-          <button class="mb-folder mb-acc-item ${isOn ? 'active' : ''}"${hideStyle} data-acc="${escapeHtml(a.email)}" title="Clic = ne voir que ce compte · Cmd/Ctrl/Maj+clic = ajouter à la sélection">
+          <button class="mb-folder mb-acc-item ${isOn ? 'active' : ''}" data-acc="${escapeHtml(a.email)}" title="Clic = ne voir que ce compte · Cmd/Ctrl/Maj+clic = ajouter à la sélection">
             <span class="mb-acc-av" style="background:${col}">${escapeHtml(ini)}</span>
             <span class="lab">${escapeHtml(a.name || a.email)}</span>
             ${badgeHtml}
@@ -1227,7 +1225,7 @@ export async function mountMailbox(host, _opts) {
 
       return `
         <div class="mb-acc-group" data-type="${escapeHtml(type)}">
-          <div class="mb-subsection-title ${collapsed ? 'is-collapsed' : ''} ${anySelected ? 'has-active' : ''} ${allInGroup ? 'all-active' : ''}"${hideStyle} data-sub-toggle="${escapeHtml(subKey)}" data-sub-type="${escapeHtml(type)}" title="Replier / déplier · Maj+clic pour ne garder que ce groupe">
+          <div class="mb-subsection-title ${collapsed ? 'is-collapsed' : ''} ${anySelected ? 'has-active' : ''} ${allInGroup ? 'all-active' : ''}" data-sub-toggle="${escapeHtml(subKey)}" data-sub-type="${escapeHtml(type)}" title="Replier / déplier · Maj+clic pour ne garder que ce groupe">
             <span class="mb-acc-type-dot" style="background:${meta.color}"></span>
             <span class="mb-acc-type-lab">${escapeHtml(meta.label)}</span>
             ${groupUnread > 0 ? `<span class="mb-acc-type-count">${groupUnread}</span>` : ''}
@@ -1244,7 +1242,7 @@ export async function mountMailbox(host, _opts) {
     }).join('');
 
     section.innerHTML = `
-      <button class="mb-folder ${allSelected ? 'active' : ''}"${hideStyle} data-acc="">
+      <button class="mb-folder ${allSelected ? 'active' : ''}" data-acc="">
         <i data-lucide="users" class="w-4 h-4"></i>
         <span class="lab">Tous les comptes</span>
       </button>
@@ -4297,34 +4295,33 @@ export async function mountMailbox(host, _opts) {
 
   setupSidebarReorder();
 
-  // Hide sidebar items immediately so they don't flash before the stagger fires.
-  host.querySelectorAll('.mb-side-head, .mb-cta, .mb-section-title, .mb-subsection-title, .mb-folder, .mb-label, .mb-userlabel-empty')
-    .forEach((el) => { el.style.opacity = '0'; });
-
   $('#btn-sync').addEventListener('click', triggerSync);
   $('#sel-bar').addEventListener('click', onSelBarClick);
 
   await Promise.all([loadAccounts(), loadEmails()]);
 
-  // Single unified stagger over all sidebar elements in DOM order once everything is loaded.
-  // Order: mb-side-head → mb-cta → [folders title + folder items] → [labels title + label items]
-  //        → [accounts title + account items]
-  requestAnimationFrame(() => {
-    const STEP = 28;
-    let i = 0;
-    host.querySelectorAll(
-      '.mb-side-head, .mb-cta, .mb-section-title, .mb-subsection-title, .mb-folder, .mb-label, .mb-userlabel-empty'
-    ).forEach((el) => {
-      el.style.opacity   = '0';
-      el.style.animation = 'none';
-      const delay = 120 + i * STEP;
-      setTimeout(() => {
-        el.style.animation = `fade-up 260ms cubic-bezier(.25,.46,.45,.94) both`;
-        el.style.opacity   = '';
-      }, delay);
-      i++;
-    });
-  });
+  // Single unified stagger over all sidebar elements in DOM order once
+  // everything is loaded. Driven 100% by CSS — we just stamp --i on each
+  // element so the .mb-stagger rule can compute the delay. opacity:0 +
+  // animation-fill-mode:both in the CSS rule keep the element invisible
+  // during its delay window, so no flash before the animation kicks.
+  // Order: mb-side-head → mb-cta → [folders] → [labels] → [accounts]
+  const sidebar = host.querySelector('.mb-side');
+  if (sidebar) {
+    sidebar.classList.add('mb-stagger');
+    const els = sidebar.querySelectorAll(
+      '.mb-side-head, .mb-cta, .mb-section-title, .mb-subsection-title, ' +
+      '.mb-folder, .mb-label, .mb-userlabel-empty'
+    );
+    els.forEach((el, i) => el.style.setProperty('--i', i));
+    // Drop .mb-stagger + --i once the cascade has finished, so subsequent
+    // refreshes (loadAccounts() rebuild) don't re-trigger the entrance.
+    const STEP = 28, BASE = 120, DUR = 260, SAFETY = 50;
+    setTimeout(() => {
+      sidebar.classList.remove('mb-stagger');
+      els.forEach((el) => el.style.removeProperty('--i'));
+    }, BASE + els.length * STEP + DUR + SAFETY);
+  }
 
   pollSync();
   window.lucide?.createIcons();

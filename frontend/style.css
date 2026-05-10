@@ -1126,6 +1126,7 @@ button { font: inherit; }
 }
 /* List area fades in after sidebar — no horizontal slide */
 .mb-list-wrap {
+  opacity: 0;
   animation: fade-in 260ms ease 200ms both;
 }
 /* Brief opacity dip when user changes a filter or sort (crossfade) */
@@ -1138,15 +1139,52 @@ button { font: inherit; }
 }
 /* Search bar + chips appear just after the list wrapper */
 .mb-search {
+  opacity: 0;
   animation: fade-up 220ms cubic-bezier(.25,.46,.45,.94) 260ms both;
 }
-/* Individual cards: class added only on first render (navigation), not on reload */
+/* Individual cards: class added only on first render (navigation), not on
+   reload. opacity:0 in the base rule complements animation-fill-mode:both
+   so the card never paints in its final state before the animation kicks. */
 .mb-card-enter {
+  opacity: 0;
   animation: fade-up 200ms cubic-bezier(.25,.46,.45,.94) both;
 }
 /* Cards loaded via infinite scroll (pages 2+) — subtle fade only, no translation */
 .mb-card-page {
+  opacity: 0;
   animation: fade-in 150ms ease both;
+}
+
+/* ── Sidebar stagger entrance ──
+   .mb-stagger is added on .mb-side at mount time, then removed after
+   the cascade completes. Each child gets --i set inline by JS — the CSS
+   computes its delay from the index. opacity:0 + animation-fill-mode:both
+   (via `both`) keeps the element invisible during the delay window, so
+   no flash before the animation starts. */
+.mb-stagger .mb-side-head,
+.mb-stagger .mb-cta,
+.mb-stagger .mb-section-title,
+.mb-stagger .mb-subsection-title,
+.mb-stagger .mb-folder,
+.mb-stagger .mb-label,
+.mb-stagger .mb-userlabel-empty {
+  opacity: 0;
+  animation: fade-up 260ms cubic-bezier(.25,.46,.45,.94) both;
+  animation-delay: calc(120ms + var(--i, 0) * 28ms);
+}
+
+/* Respect users who opted out of motion: no entrance animation,
+   everything visible immediately. */
+@media (prefers-reduced-motion: reduce) {
+  .rail, .mb-side, .mb-list-wrap, .mb-search,
+  .mb-card-enter, .mb-card-new, .mb-card-page,
+  .mb-stagger .mb-side-head, .mb-stagger .mb-cta,
+  .mb-stagger .mb-section-title, .mb-stagger .mb-subsection-title,
+  .mb-stagger .mb-folder, .mb-stagger .mb-label,
+  .mb-stagger .mb-userlabel-empty {
+    animation: none !important;
+    opacity: 1 !important;
+  }
 }
 /* New cards arriving via background refresh — true push-down slide */
 @keyframes mb-card-arrive {
@@ -1174,6 +1212,7 @@ button { font: inherit; }
   100% { border-color: transparent; }
 }
 .mb-card-new {
+  opacity: 0;
   animation:
     mb-card-arrive 360ms cubic-bezier(.25,.46,.45,.94) both,
     mb-card-highlight 800ms ease 360ms both;
