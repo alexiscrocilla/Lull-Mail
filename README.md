@@ -8,18 +8,16 @@ Silent by default. Notification by exception. Your data stays yours.
 
 You get 80 emails a day. Three of them actually matter.
 
-Lull Mail sits between your mail accounts and you. It reads everything
-that comes in, picks out the three or four messages that genuinely
-deserve your attention, summarises them in two lines, and sends *one*
-notification — the right one, at the right moment. The rest waits
-until you have time. Or quietly disappears.
+Lull Mail is a free, open-source AI email app for Gmail, Outlook,
+iCloud and any IMAP inbox. It runs locally on Mac, Windows and Linux,
+brings every account into one place, summarizes each message and ranks
+what matters. No servers of ours sit between you and your data: your
+email goes straight from your accounts to the AI you choose.
 
-[![Latest release](https://img.shields.io/github/v/release/alexiscrocilla/Lull-Mail?label=download&color=2da44e)](../../releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/alexiscrocilla/Lull-Mail/total?color=2da44e)](../../releases)
-[![Build](https://img.shields.io/github/actions/workflow/status/alexiscrocilla/Lull-Mail/release.yml?label=build)](../../actions/workflows/release.yml)
-[![License: GPL v3](https://img.shields.io/badge/license-GPL%20v3-blue)](LICENSE)
-[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#download)
-[![Last commit](https://img.shields.io/github/last-commit/alexiscrocilla/Lull-Mail?color=informational)](../../commits)
+[![Latest release](https://img.shields.io/github/v/release/alexiscrocilla/Lull-Mail?label=download&color=5EEAD4&labelColor=141925&style=flat-square)](../../releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/alexiscrocilla/Lull-Mail/total?color=5EEAD4&labelColor=141925&style=flat-square)](../../releases)
+[![License](https://img.shields.io/badge/license-GPL%20v3-5EEAD4?labelColor=141925&style=flat-square)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-5EEAD4?labelColor=141925&style=flat-square)](#download)
 
 <br clear="left">
 
@@ -45,11 +43,11 @@ Head to the **[Releases](../../releases/latest)** page and grab the installer fo
 | macOS 12+ | `LullMail-X.Y.Z.dmg` | Open, drag to Applications |
 | Linux | `LullMail-X.Y.Z.tar.gz` | Extract and run `LullMail/LullMail` |
 
-> ⚠️ **Windows — SmartScreen warning.** The installer is not yet
-> code-signed. Windows will show *"Windows protected your PC"* —
-> click **More info → Run anyway**. This is expected for now.
+> ⚠️ **Windows · SmartScreen warning.** The installer is not yet
+> code-signed. Windows will show *"Windows protected your PC"*.
+> Click **More info → Run anyway**. This is expected for now.
 
-> ⚠️ **macOS — Gatekeeper warning.** The app is not yet notarised.
+> ⚠️ **macOS · Gatekeeper warning.** The app is not yet notarised.
 > Right-click → **Open** on first launch to bypass the warning.
 
 The Windows installer drops the app in `%LOCALAPPDATA%\Programs\LullMail`
@@ -117,20 +115,20 @@ Here's how that compares.*
 
 1. Download and run the installer.
 2. The setup wizard opens:
-   - **Step 1** — paste your OpenAI API key
+   - **Step 1.** Paste your OpenAI API key
      ([create one here](https://platform.openai.com/api-keys),
      ~$0.15 per 100 emails analysed with `gpt-4o-mini`).
-   - **Step 2** — add your mail accounts. For Gmail / Yahoo /
+   - **Step 2.** Add your mail accounts. For Gmail, Yahoo or
      iCloud, a *"Create an app password"* button takes you straight
      to the right page.
-   - **Step 3** — *(optional)* enable push notifications via
+   - **Step 3.** *(Optional)* enable push notifications via
      [ntfy.sh](https://ntfy.sh): free, no account, anonymous.
-   - **Step 4** — done.
+   - **Step 4.** Done.
 3. The first sync may take a few minutes depending on the size
    of your mailboxes.
 
-The app lives in the system tray. Closing the window doesn't quit it
-— right-click the tray icon → `Quit` to exit.
+The app lives in the system tray. Closing the window doesn't quit it.
+Right-click the tray icon → `Quit` to exit.
 
 ---
 
@@ -143,20 +141,20 @@ your machine, stays on your machine.**
 |---|---|
 | IMAP credentials (app password) | OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service). `config.yaml` only holds an opaque `keyring:user@host` reference. |
 | OpenAI API key | OS keyring (same as above). |
-| Downloaded emails, summaries, scores | Local SQLite — Windows: `%APPDATA%\LullMail\data\mail.db` · macOS: `~/Library/Application Support/LullMail/data/mail.db` · Linux: `~/.local/share/LullMail/data/mail.db` |
+| Downloaded emails, summaries, scores | Local SQLite. Windows: `%APPDATA%\LullMail\data\mail.db` · macOS: `~/Library/Application Support/LullMail/data/mail.db` · Linux: `~/.local/share/LullMail/data/mail.db` |
 | Attachments | Same data directory, `data/attachments/` (UUID filenames, owner-only permissions, integrity-checked on every download) |
 
 **The only outbound flows**:
 
-- **OpenAI** — every email's text (subject + body) gets sent for
+- **OpenAI**: every email's text (subject + body) gets sent for
   analysis. That's the smart-sort engine. Configurable: you can
   disable AI analysis for specific mailboxes or change the model.
-- **ntfy.sh** — *(optional)* push notification title (email subject
+- **ntfy.sh**: *(optional)* push notification title (email subject
   + summary excerpt) is sent to the anonymous topic you choose.
   No link to your identity.
-- **Your provider's IMAP** — to fetch your email. Direct, no
+- **Your provider's IMAP**: to fetch your email. Direct, no
   middleman.
-- **GitHub Releases API** — once every 6 h to check for a newer
+- **GitHub Releases API**: once every 6 h to check for a newer
   Lull Mail version. The check sends nothing about you, just a
   GET on the public releases feed.
 
@@ -179,18 +177,20 @@ installer).
 ## Quick FAQ
 
 **How much does it cost?**
-Lull Mail is free. You pay OpenAI for usage (~$0.15 / 100 emails).
-ntfy.sh is free too.
+Free. You pay OpenAI directly for the AI calls. Push notifications
+go through ntfy.sh, also free. A 100% free LLM integration is in the
+works, which will eventually drop the total cost to zero.
 
 **Does it work offline?**
-Yes for browsing what's already synced. No for IMAP fetching or AI
-analysis — those are network calls.
+Yes for reading what you've already synced. No for fetching new mail
+or running the AI on it. Both need the network.
 
 **Can I drop it overnight?**
-Yes. Lull Mail doesn't write to your servers (read-only by default)
-and registers nowhere. Uninstall the app and delete your data directory
-(Windows: `%APPDATA%\LullMail`, macOS: `~/Library/Application Support/LullMail`,
-Linux: `~/.local/share/LullMail`) — no trace left.
+Yes. Lull Mail is read-only on your mailboxes by default and doesn't
+register itself anywhere on your system. Uninstall and delete your
+data directory (Windows: `%APPDATA%\LullMail`,
+macOS: `~/Library/Application Support/LullMail`,
+Linux: `~/.local/share/LullMail`). Nothing stays behind.
 
 **Which platforms?**
 Windows 10/11, macOS 12+, and Linux. Download the right installer from
@@ -203,12 +203,12 @@ translated. To force a language manually, append `?lang=en` or `?lang=fr`
 to the URL.
 
 **Are my IMAP passwords stored in plain text?**
-No. They live in the OS keyring (Windows Credential Manager / macOS
-Keychain / Linux Secret Service). `config.yaml` only carries an
-opaque `keyring:user@host` reference; the real secret is fetched in
-memory at runtime. For Gmail / Outlook / Yahoo / iCloud you should
-still use an *app password* — easier to revoke than your main
-account password if anything goes wrong.
+No. They sit in your OS keyring (Windows Credential Manager, macOS
+Keychain, or Linux Secret Service depending on your platform).
+`config.yaml` only stores an opaque `keyring:user@host` reference;
+the real password loads into memory at runtime. For Gmail, Outlook,
+Yahoo, or iCloud, use an *app password* anyway. It's easier to
+revoke if something goes sideways.
 
 ---
 
@@ -220,7 +220,7 @@ account password if anything goes wrong.
 
 ## For developers
 
-See [`docs/DEVELOPING.md`](docs/DEVELOPING.md) — local setup,
+See [`docs/DEVELOPING.md`](docs/DEVELOPING.md) for local setup,
 developer mode (console + browser), build instructions for all platforms,
 architecture, environment variables.
 
