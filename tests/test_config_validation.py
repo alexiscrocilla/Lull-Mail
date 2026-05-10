@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Pydantic schema for config.yaml — covers the constraints that catch
 hand-edited misconfigurations before they hit the runtime.

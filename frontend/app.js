@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Router + theme + global UI for Lull Mail.
 
 import { mountMailbox } from '/static/mailbox.js';

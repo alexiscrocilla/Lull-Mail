@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 End-to-end security guards — origin-check, TLS lock, SSRF block.
 Each test exercises the live FastAPI app via TestClient so a

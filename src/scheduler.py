@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // RailToast — single-slot circular notification hosted in the rail's bottom
 // slot (see #rail-toast-host in index.html), with a placeholder cercle
 // shown when no toast is active. Falls back to a detached, centered-bottom

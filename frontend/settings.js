@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Settings page — mounted as an SPA route inside the main shell.
 // Reuses the .dash / .card / .col-N grid system + theme tokens from
 // style.css so it visually matches Inbox / Dashboard / Cleanup.

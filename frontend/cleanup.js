@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Cleanup workspace : group inbox clutter by sender, run bulk actions.
 
 import {
