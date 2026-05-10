@@ -254,7 +254,7 @@ def list_emails(
         folder=folder,
         sender=sender,
         label=label,
-        limit=min(limit, 500),
+        limit=min(limit, 2000),
         offset=offset,
     )
     # Bulk-attach an `attachments` summary so the list view can render the

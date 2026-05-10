@@ -1,6 +1,8 @@
 import re
 import sqlite3
 import logging
+import time
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -50,7 +52,8 @@ def init_db():
                 processed_at TEXT,
                 tokens_in   INTEGER DEFAULT 0,
                 tokens_out  INTEGER DEFAULT 0,
-                local_classified INTEGER DEFAULT 0
+                local_classified INTEGER DEFAULT 0,
+                date_received_iso TEXT
             );
 
             CREATE TABLE IF NOT EXISTS sync_state (
@@ -127,6 +130,17 @@ def init_db():
             con.execute("ALTER TABLE emails ADD COLUMN auth_results TEXT")
         if "ai_attempts" not in cols:
             con.execute("ALTER TABLE emails ADD COLUMN ai_attempts INTEGER DEFAULT 0")
+        # Sortable ISO 8601 timestamp derived from the RFC 2822 Date header.
+        # Pure-string ORDER BY on date_received sorts on the weekday name
+        # ("Wed" > "Sun" lexicographically), which silently hides recent mail.
+        # NULL = legacy row not yet backfilled; backfill runs once on migration.
+        if "date_received_iso" not in cols:
+            con.execute("ALTER TABLE emails ADD COLUMN date_received_iso TEXT")
+            _backfill_date_received_iso(con)
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_emails_date_iso "
+            "ON emails(date_received_iso DESC)"
+        )
         con.execute("CREATE INDEX IF NOT EXISTS idx_emails_folder ON emails(folder)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_emails_favourite ON emails(is_favourite)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_emails_unsub ON emails(unsubscribe_url, unsubscribe_mailto)")
@@ -310,14 +324,20 @@ def email_exists(message_id: str) -> bool:
 
 def insert_email(data: Dict[str, Any]) -> bool:
     try:
+        raw_date = data.get("date_str", "")
+        dt_iso: Optional[str] = None
+        if raw_date:
+            dt = _parse_email_date(raw_date)
+            if dt is not None:
+                dt_iso = dt.isoformat()
         with _conn() as con:
             con.execute("""
                 INSERT OR IGNORE INTO emails
                     (message_id, account_email, uid, subject, sender, recipient,
-                     date_received, body_text, body_html,
+                     date_received, date_received_iso, body_text, body_html,
                      list_unsubscribe, list_unsubscribe_post,
                      unsubscribe_url, unsubscribe_mailto, auth_results)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data["message_id"],
                 data["account"],
@@ -325,7 +345,8 @@ def insert_email(data: Dict[str, Any]) -> bool:
                 data.get("subject", ""),
                 data.get("sender", ""),
                 data.get("recipient", ""),
-                data.get("date_str", ""),
+                raw_date,
+                dt_iso,
                 data.get("body_text", ""),
                 data.get("body_html", ""),
                 # Empty-string sentinel = "inspected at ingest, no header found"
@@ -518,7 +539,8 @@ def get_emails(
         q += " AND lower(sender) LIKE ?"
         params.append(f"%{sender.strip().lower()}%")
 
-    q += " ORDER BY date_received DESC, importance_score DESC LIMIT ? OFFSET ?"
+    q += (" ORDER BY COALESCE(date_received_iso, '0000') DESC, "
+          "importance_score DESC LIMIT ? OFFSET ?")
     params += [limit, offset]
 
     with _conn() as con:
@@ -713,7 +735,7 @@ def actionable_emails(limit: int = 10) -> List[Dict]:
             WHERE category != 'pending'
               AND is_read = 0
               AND (needs_reply = 1 OR importance_score >= 7)
-            ORDER BY importance_score DESC, date_received DESC
+            ORDER BY importance_score DESC, date_received_iso DESC
             LIMIT ?
         """, (limit,)).fetchall()
         return [dict(r) for r in rows]
@@ -745,22 +767,54 @@ def _canonical_sender(raw: str) -> Tuple[str, str]:
 
 
 def _parse_email_date(raw: str):
-    """Parse a Date header (RFC 2822) into a tz-aware datetime, or None.
+    """Parse a Date header into a tz-aware datetime, or None.
 
-    Lexicographic ordering on the raw string is wrong (it sorts on the
-    weekday name) so we always normalise before comparing dates.
+    Accepts both ISO 8601 (rows already migrated) and RFC 2822 (raw header).
+    Lexicographic ordering on the raw RFC 2822 string is wrong (it sorts on
+    the weekday name) so we always normalise before comparing dates.
     Always returns a timezone-aware datetime (assumes UTC if naive).
     """
     if not raw:
         return None
+    # Fast-path ISO 8601 — already-migrated rows
     try:
-        from datetime import timezone as _tz
-        dt = parsedate_to_datetime(raw)
+        dt = datetime.fromisoformat(raw)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_tz.utc)
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        pass
+    # Fallback RFC 2822 — raw Date header
+    try:
+        dt = parsedate_to_datetime(raw)
+        if dt and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
         return dt
     except (TypeError, ValueError):
         return None
+
+
+def _backfill_date_received_iso(con) -> int:
+    """Compute date_received_iso for every NULL row.
+
+    Idempotent — safe to re-run. Sub-second on small bases, ~10s on 100k rows.
+    """
+    rows = con.execute(
+        "SELECT int_id, date_received FROM emails "
+        "WHERE date_received_iso IS NULL AND date_received != ''"
+    ).fetchall()
+    updated = 0
+    for r in rows:
+        dt = _parse_email_date(r["date_received"])
+        if dt is None:
+            continue
+        con.execute(
+            "UPDATE emails SET date_received_iso = ? WHERE int_id = ?",
+            (dt.isoformat(), r["int_id"]),
+        )
+        updated += 1
+    logger.info(f"date_received_iso backfill : {updated} ligne(s) mises a jour")
+    return updated
 
 
 def top_senders(limit: int = 50, account: Optional[str] = None) -> List[Dict]:
@@ -1561,7 +1615,7 @@ def find_messages_to_scan_attachments(
     if account:
         q += " AND account_email = ?"
         params.append(account)
-    q += " ORDER BY date_received DESC"
+    q += " ORDER BY date_received_iso DESC"
     if limit and limit > 0:
         q += " LIMIT ?"
         params.append(int(limit))
