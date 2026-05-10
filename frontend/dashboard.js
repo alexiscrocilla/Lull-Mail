@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import {
   api,
   avatarColor, initials, senderName, avatarImgHtml,

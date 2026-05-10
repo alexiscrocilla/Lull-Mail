@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Attachment security policy.
 
 Email attachments are the #1 attack vector (phishing, droppers, ransomware,

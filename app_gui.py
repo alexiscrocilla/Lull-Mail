@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Lull Mail — entry point for the native desktop app (Windows, macOS, Linux).
 

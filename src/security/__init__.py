@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Cross-cutting security helpers.
 
 Each module here is small and focussed:

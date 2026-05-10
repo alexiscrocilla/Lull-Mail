@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Classifieur local sans appel API.
 Détecte newsletter/transactionnel/spam par règles sur expéditeur + sujet.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Thin fetch wrappers around the FastAPI backend.
 
 async function j(url, opts) {

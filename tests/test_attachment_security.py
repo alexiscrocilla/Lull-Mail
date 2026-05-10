@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Wraps the pure functions of `src/attachment_security.py` so a regression
 in the filename-sanitization or threat-detection paths surfaces in CI.

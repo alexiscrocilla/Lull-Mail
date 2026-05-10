@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 No-AI mode — the user opted out of OpenAI by leaving the key empty.
 

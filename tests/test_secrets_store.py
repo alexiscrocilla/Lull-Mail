@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Keyring round-trip tests. Uses the in-memory `tmp_keyring` fixture so
 no real Credential Manager / Keychain entry is created.

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Anti-phishing /safe-link interstitial — analyzer + endpoint behaviour.
 """

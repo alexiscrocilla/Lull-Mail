@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // All user-visible strings here flow through window.t() (see /static/i18n.js).
 // Keep static-HTML strings synced with the data-i18n attributes in onboarding.html.
 

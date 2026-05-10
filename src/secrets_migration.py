@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 One-shot migration of in-config plain-text secrets to the OS keyring.
 

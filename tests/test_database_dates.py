@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Date ordering — `date_received` is an RFC 2822 string, sorting it as
 text ranks by weekday name first ("W" > "S" > "M" > "F"), which
