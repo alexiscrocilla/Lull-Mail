@@ -82,8 +82,9 @@ class NtfyConfig(BaseModel):
 
 class PollingConfig(BaseModel):
     interval_minutes: int = Field(default=10, ge=1, le=1440)
-    initial_fetch_count: int = Field(default=100, ge=1, le=2000)
+    initial_fetch_count: int = Field(default=500, ge=1, le=2000)
     max_age_days: int = Field(default=30, ge=0, le=3650)
+    ai_batch_size: int = Field(default=200, ge=1, le=2000)
 
 
 class ServerConfig(BaseModel):
@@ -327,8 +328,8 @@ def default_skeleton() -> Dict[str, Any]:
     return {
         "openai": {"api_key": "", "model": "gpt-4o-mini"},
         "ntfy": {"server": "https://ntfy.sh", "topic": "", "min_importance": 7},
-        "polling": {"interval_minutes": 10, "initial_fetch_count": 100,
-                    "max_age_days": 30},
+        "polling": {"interval_minutes": 10, "initial_fetch_count": 500,
+                    "max_age_days": 30, "ai_batch_size": 200},
         "server": {"host": "127.0.0.1", "port": 8000},
         "attachments": {
             "enabled": True,

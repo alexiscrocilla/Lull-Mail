@@ -52,7 +52,7 @@ def run_sync():
             init_client(api_key)
 
         accounts = [a for a in conf.get("accounts", []) if a.get("enabled", True)]
-        limit = conf.get("polling", {}).get("initial_fetch_count", 100)
+        limit = conf.get("polling", {}).get("initial_fetch_count", 500)
         model = conf.get("openai", {}).get("model", "gpt-4o-mini")
         ntfy = conf.get("ntfy", {})
         min_score = ntfy.get("min_importance", 7)
@@ -128,7 +128,8 @@ def run_sync():
 
         # Traitement AI des emails en attente
         max_age_days = conf.get("polling", {}).get("max_age_days", 30)
-        pending = db.get_pending_emails(limit=30)
+        ai_batch = int(conf.get("polling", {}).get("ai_batch_size", 200))
+        pending = db.get_pending_emails(limit=ai_batch)
 
         to_process = []
         skipped = 0
