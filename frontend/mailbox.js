@@ -1535,7 +1535,56 @@ export async function mountMailbox(host, _opts) {
     }
   }
 
+  // Fast-path guard: tells whether the new list matches the previous one
+  // exactly enough to skip the wipe + rebuild. We compare ids in order +
+  // every flag that drives card visuals (unread state, category badge,
+  // folder marker, score chip, label count, attachment paperclip).
+  // If anything else changes server-side, callers will see stale visuals
+  // until the next mutation forces a full re-render — those fields are
+  // not painted on list cards anyway (summary/draft live in the read pane).
+  function _canPatchInPlace(prev, next) {
+    if (prev.length !== next.length) return false;
+    for (let i = 0; i < prev.length; i++) {
+      const p = prev[i], n = next[i];
+      if (p.int_id !== n.int_id) return false;
+      if (!!p.is_read !== !!n.is_read) return false;
+      if (p.category !== n.category) return false;
+      if (p.folder !== n.folder) return false;
+      if ((p.importance_score || 0) !== (n.importance_score || 0)) return false;
+      if ((p.labels?.length || 0) !== (n.labels?.length || 0)) return false;
+      if ((p.attachments?.total || 0) !== (n.attachments?.total || 0)) return false;
+    }
+    return true;
+  }
+
+  // Touch only the classes that the periodic refresh can mutate
+  // (read/selected/checked). Subject/sender/avatar are immutable post-
+  // ingest, so we don't re-render them — the _canPatchInPlace guard
+  // above guarantees the structural fields we DO show haven't changed.
+  function _patchListInPlace(items) {
+    const list = $('#email-list');
+    if (!list) return;
+    for (const em of items) {
+      const card = list.querySelector(`[data-id="${em.int_id}"]`);
+      if (!card) continue; // not yet rendered (below the virtual scroll fold)
+      card.classList.toggle('unread', !em.is_read);
+      card.classList.toggle('selected', state.selectedId === em.int_id);
+      card.classList.toggle('checked', state.selectedIds.has(em.int_id));
+    }
+    _listAllItems = items;
+  }
+
   function renderList(items) {
+    // Fast-path: same ids in the same order, no flag change → in-place
+    // patch. Skips the innerHTML wipe + 1111-card rebuild that drives
+    // the jank on large inboxes. _firstRender (mount animation) and
+    // _filterDidChange (crossfade swap) intentionally bypass the
+    // fast-path to preserve those UX moments.
+    if (!_firstRender && !_filterDidChange &&
+        _canPatchInPlace(_listAllItems, items)) {
+      _patchListInPlace(items);
+      return;
+    }
     _teardownListObserver();
     const animate  = _firstRender;
     _firstRender   = false;
