@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Calque_1" data-name="Calque 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: #6fdabd;
+      }
+
+      .cls-2 {
+        fill: #fff;
+      }
+
+      .cls-3 {
+        font-family: PlusJakartaSans-Bold, 'Plus Jakarta Sans';
+        font-size: 96.58px;
+        font-variation-settings: 'wght' 700;
+        font-weight: 700;
+      }
+
+      .cls-4 {
+        fill: #f4f7f9;
+      }
+    </style>
+  </defs>
+  <g>
+    <path class="cls-1" d="M326.37,154.36l67.56-57.9.03,191.62H106.04s.13-191.85.13-191.85l120.94,103.95,22.96,19.38,76.3-65.2ZM374.49,255.27v-116.75s-65.24,56.36-65.24,56.36l65.24,60.4ZM191.03,194.99l-65.37-56.3v116.76s65.37-60.46,65.37-60.46ZM359.42,267.99l-65.11-60.54-44.14,37.87-44.47-37.87-27.4,25.87-37.84,34.84,49.11-.09,169.86-.07Z"/>
+    <path class="cls-1" d="M294.93,139.15c-8.2,25.14-36.52,37.93-60.5,28.49-24.63-9.69-36.69-37.45-26.08-62.18,5.51-12.84,15.99-22.58,30.27-26.19-9.98,17.22-8.46,38.33,4.99,52.6,13.29,14.1,33.6,17.26,51.32,7.27Z"/>
+  </g>
+  <text class="cls-3" transform="translate(63.28 398.69)"><tspan class="cls-1" x="0" y="0">Lull</tspan><tspan class="cls-2" x="158.39" y="0"> </tspan><tspan class="cls-4" x="175.58" y="0">Mail</tspan></text>
+</svg>
