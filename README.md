@@ -14,10 +14,10 @@ brings every account into one place, summarizes each message and ranks
 what matters. No servers of ours sit between you and your data: your
 email goes straight from your accounts to the AI you choose.
 
-[![Latest release](https://img.shields.io/github/v/release/alexiscrocilla/Lull-Mail?label=download&color=5EEAD4&labelColor=141925&style=flat-square)](../../releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/alexiscrocilla/Lull-Mail/total?color=5EEAD4&labelColor=141925&style=flat-square)](../../releases)
-[![License](https://img.shields.io/badge/license-GPL%20v3-5EEAD4?labelColor=141925&style=flat-square)](LICENSE)
-[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-5EEAD4?labelColor=141925&style=flat-square)](#download)
+[![Latest release](https://img.shields.io/github/v/release/alexiscrocilla/Lull-Mail?style=flat-square&label=&labelColor=141925&color=141925&logo=github&logoColor=5EEAD4)](../../releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/alexiscrocilla/Lull-Mail/total?style=flat-square&label=downloads&labelColor=141925&color=141925)](../../releases)
+[![License](https://img.shields.io/badge/GPL%20v3-141925?style=flat-square&label=license&labelColor=141925)](LICENSE)
+[![Platforms](https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux-141925?style=flat-square&label=platforms&labelColor=141925)](#download)
 
 <br clear="left">
 
