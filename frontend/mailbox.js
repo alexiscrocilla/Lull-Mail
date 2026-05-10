@@ -1451,6 +1451,11 @@ export async function mountMailbox(host, _opts) {
   let _filterDidChange = false;
   // Last card explicitly checked (avatar-click, Ctrl+click, Shift+click anchor) for range-select.
   let _lastCheckedId = null;
+  // Monotonic token for in-flight loadEmails() calls. Each call captures
+  // the current value; if a newer call has bumped it before the await
+  // resolves, the older response is dropped on the floor. Prevents the
+  // "filter snaps back" race when a slow response overwrites fresh state.
+  let _loadEmailsToken = 0;
 
   // ── Infinite scroll (virtual list) ───────────────────────
   const PAGE_SIZE = 40;
@@ -3629,11 +3634,18 @@ export async function mountMailbox(host, _opts) {
           state.accountStats[a.email].sync_error = errMap[a.email] || null;
         }
       }
-    } catch (_) { state.accounts = []; }
-    // Purge accountFilters entries that no longer exist in config
-    const activeEmails = new Set(state.accounts.map((a) => a.email));
-    for (const em of [...state.accountFilters]) {
-      if (!activeEmails.has(em)) state.accountFilters.delete(em);
+      // Purge accountFilters entries that no longer exist in config.
+      // MUST run inside the try: on a transient network blip (catch path)
+      // state.accounts becomes [] and a purge here would wipe every chip
+      // the user just selected. We only reconcile when we trust the
+      // server response.
+      const activeEmails = new Set(accs.map((a) => a.email));
+      for (const em of [...state.accountFilters]) {
+        if (!activeEmails.has(em)) state.accountFilters.delete(em);
+      }
+    } catch (_) {
+      // Transient error — keep state.accounts and state.accountFilters
+      // as-is. The next successful tick will reconcile them.
     }
     renderChips();
     renderAccounts();
@@ -3646,6 +3658,10 @@ export async function mountMailbox(host, _opts) {
   }
 
   async function loadEmails() {
+    // Capture a fresh token. Any in-flight call with an older token is
+    // considered stale and its response is dropped — a slow response
+    // must never overwrite the state set by a more recent call.
+    const myToken = ++_loadEmailsToken;
     try {
       // For a single selected account send the API filter; for 0 or 2+ filter client-side.
       const singleAcc = state.accountFilters.size === 1 ? [...state.accountFilters][0] : undefined;
@@ -3657,6 +3673,7 @@ export async function mountMailbox(host, _opts) {
       // open path detects this and re-routes to renderDraftEditor.
       if ((state.folder || 'inbox') === 'draft') {
         const drafts = await api.getDrafts(singleAcc);
+        if (myToken !== _loadEmailsToken) return;  // stale → drop
         state.emails = drafts.map((d) => ({
           int_id: -Math.abs(d.id),
           message_id: `draft:${d.id}`,
@@ -3698,7 +3715,9 @@ export async function mountMailbox(host, _opts) {
         folder: state.folder || 'inbox',
         label: state.labelFilter ?? undefined,
       };
-      state.emails = await api.getEmails(params);
+      const fresh = await api.getEmails(params);
+      if (myToken !== _loadEmailsToken) return;  // stale → drop
+      state.emails = fresh;
       // Drop selections that are no longer present in the loaded set.
       if (state.selectedIds.size) {
         const present = new Set(state.emails.map((e) => e.int_id));
@@ -3722,6 +3741,7 @@ export async function mountMailbox(host, _opts) {
       // refreshes — the initial mount already calls it, and periodic reloads
       // must never close a mail the user is currently reading.
     } catch (err) {
+      if (myToken !== _loadEmailsToken) return;  // stale → drop (don't paint old error)
       $('#email-list').innerHTML = `<div style="padding:24px;color:var(--danger)">Erreur: ${escapeHtml(err.message)}</div>`;
     }
   }
