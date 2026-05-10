@@ -29,14 +29,9 @@ until you have time. Or quietly disappears.
   <tr>
     <td><img src="docs/screenshots/01-triage.png" alt="Smart triage view" width="100%"></td>
     <td><img src="docs/screenshots/02-summary.png" alt="Two-line summaries" width="100%"></td>
-  </tr>
-  <tr>
     <td><img src="docs/screenshots/03-dashboard.png" alt="AI triage dashboard" width="100%"></td>
-    <td><img src="docs/screenshots/04-notification.png" alt="Single push notification" width="100%"></td>
   </tr>
 </table>
-
-<p align="center"><img src="docs/screenshots/demo.gif" alt="Lull Mail demo" width="720"></p>
 
 ---
 
