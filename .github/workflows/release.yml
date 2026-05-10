@@ -329,6 +329,8 @@ jobs:
           name: LullMail-${{ steps.ver.outputs.version }}-linux
           path: release-assets/
 
+      # Body is left to GitHub's generated notes; maintainers replace it
+      # with a short English user-facing summary before publish — see docs/RELEASE-NOTES.md
       - name: Create draft GitHub release
         uses: softprops/action-gh-release@v2
         with:

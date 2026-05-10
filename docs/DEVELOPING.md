@@ -147,7 +147,10 @@ git checkout main && git merge develop && git push origin main
 git tag v0.5.0 && git push origin v0.5.0
 # 4. The workflow runs ~10-15 min. A draft release appears in the
 #    Releases tab with the three artefacts attached. Review and publish.
-# 5. Back to develop.
+# 5. Edit the release body in English: keep Highlights + Install short
+#    (see docs/RELEASE-NOTES.md). Drop or trim GitHub's auto-generated
+#    wall of text unless you want to paste back only the Full Changelog link.
+# 6. Back to develop.
 git checkout develop
 ```
 
@@ -227,6 +230,7 @@ scripts/              ← dev scripts (never run directly, go through dev.bat / 
 docs/
   MARKETING.md         ← positioning, pitch, manifesto
   DEVELOPING.md        ← this file
+  RELEASE-NOTES.md     ← English release notes + PR-facing copy conventions
   SECURITY-ROADMAP.md  ← long-term security work that's still on the table
 
 .github/workflows/
