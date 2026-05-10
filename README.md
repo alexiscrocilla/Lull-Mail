@@ -15,7 +15,7 @@ notification — the right one, at the right moment. The rest waits
 until you have time. Or quietly disappears.
 
 [![Latest release](https://img.shields.io/github/v/release/alexiscrocilla/Lull-Mail?label=download)](../../releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/alexiscrocilla/Lull-Mail/total)](../../releases)
+[![Downloads](https://img.shields.io/github/downloads/alexiscrocilla/Lull-Mail/total?cacheSeconds=300)](../../releases)
 
 <br clear="left">
 
