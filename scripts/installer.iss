@@ -18,7 +18,7 @@
 
 #define MyAppName        "Lull Mail"
 #define MyAppVersion     "0.6.5"
-#define MyAppPublisher   "Digila"
+#define MyAppPublisher   "Lull Mail"
 #define MyAppExeName     "LullMail.exe"
 ; AppId is the immutable identity of this product in Add/Remove Programs.
 ; Do NOT change it across releases — Windows uses it to detect upgrades.

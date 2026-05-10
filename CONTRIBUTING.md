@@ -11,7 +11,7 @@ positioning.
 
 This project follows the [Contributor Covenant 2.1](CODE_OF_CONDUCT.md).
 By participating you agree to its terms. Reports go to
-`a.crocilla@digila.fr`.
+`contact.Lullmail@pm.me`.
 
 ## What we're looking for
 
@@ -80,7 +80,7 @@ is no CLA. You retain copyright on your work.
 ## Reporting security issues
 
 **Do not open public issues for vulnerabilities.** Email
-`a.crocilla@digila.fr` directly. Include reproduction steps and an
+`contact.Lullmail@pm.me` directly. Include reproduction steps and an
 estimate of impact. We aim to respond within five working days.
 
 ## Recognition
