@@ -127,7 +127,7 @@ Topics deliberately omit `ai` / `gpt` / `llm` — see voice rule #1 in
 | Required community-health files | GitHub's community profile checks expect these; missing files lower the project score. |
 | No private absolute paths | Stops `d:\Données Utilisateur\...` from leaking via stack traces, configs, or accidental copy-paste. |
 | Workflow + issue-template slug sanity | Prevents a `Lull-Mail-dev` slug landing in a workflow on the public repo. |
-| README asset existence | Stops broken images on the GitHub README. Screenshots under `docs/screenshots/` are explicitly allowlisted until visuals are produced. |
+| README asset existence | Stops broken images on the GitHub README. |
 | shields.io URLs (online) | Catches typos in badge URLs before the README renders broken in front of visitors. |
 
 The script does not replace common sense — it catches the regressions

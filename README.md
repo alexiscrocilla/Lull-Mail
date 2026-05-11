@@ -3,16 +3,20 @@
   <img src="frontend/assets/lullmail-logo-light.png" alt="Lull Mail" width="200" align="left">
 </picture>
 
+# Lull Mail — AI Email Triage for Windows, macOS & Linux
+
 **Your inbox, on mute.**
 Silent by default. Notification by exception. Your data stays yours.
 
 You get 80 emails a day. Three of them actually matter.
 
-Lull Mail is a free, open-source AI email app for Gmail, Outlook,
-iCloud and any IMAP inbox. It runs locally on Mac, Windows and Linux,
-brings every account into one place, summarizes each message and ranks
-what matters. No servers of ours sit between you and your data: your
-email goes straight from your accounts to the AI you choose.
+Lull Mail is a free, open-source **AI email triage app** for Gmail,
+Outlook, iCloud and any IMAP inbox. It runs locally on Mac, Windows
+and Linux, connects to your mailboxes, **classifies and summarises**
+every message, and ranks what matters — so you only get notified when
+something is genuinely urgent. No servers of ours sit between you and
+your data: your email goes straight from your accounts to the AI you
+choose.
 
 [![Latest release](https://img.shields.io/github/v/release/alexiscrocilla/Lull-Mail?style=flat-square&label=&labelColor=141925&color=141925&logo=github&logoColor=5EEAD4)](../../releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/alexiscrocilla/Lull-Mail/total?style=flat-square&label=downloads&labelColor=141925&color=141925)](../../releases)
@@ -20,18 +24,6 @@ email goes straight from your accounts to the AI you choose.
 [![Platforms](https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux-141925?style=flat-square&label=platforms&labelColor=141925)](#download)
 
 <br clear="left">
-
-## See it in action
-
-<table>
-  <tr>
-    <td><img src="docs/screenshots/01-triage.png" alt="Smart triage view" width="100%"></td>
-    <td><img src="docs/screenshots/02-summary.png" alt="Two-line summaries" width="100%"></td>
-    <td><img src="docs/screenshots/03-dashboard.png" alt="AI triage dashboard" width="100%"></td>
-  </tr>
-</table>
-
----
 
 ## Download
 
@@ -113,22 +105,15 @@ Here's how that compares.*
 
 ## Quick start
 
-1. Download and run the installer.
-2. The setup wizard opens:
-   - **Step 1.** Paste your OpenAI API key
-     ([create one here](https://platform.openai.com/api-keys),
-     ~$0.15 per 100 emails analysed with `gpt-4o-mini`).
-   - **Step 2.** Add your mail accounts. For Gmail, Yahoo or
-     iCloud, a *"Create an app password"* button takes you straight
-     to the right page.
-   - **Step 3.** *(Optional)* enable push notifications via
-     [ntfy.sh](https://ntfy.sh): free, no account, anonymous.
-   - **Step 4.** Done.
-3. The first sync may take a few minutes depending on the size
-   of your mailboxes.
+1. Download and run the installer (see [Download](#download) above).
+2. The setup wizard walks you through three steps: OpenAI API key,
+   mail accounts (one-click app-password shortcut for Gmail, Outlook,
+   iCloud, Yahoo), and *(optional)* push notifications via
+   [ntfy.sh](https://ntfy.sh).
+3. The first sync fetches the 500 most recent emails per mailbox.
+   After that, new mail is triaged in real time.
 
-The app lives in the system tray. Closing the window doesn't quit it.
-Right-click the tray icon → `Quit` to exit.
+Full walkthrough: [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md).
 
 ---
 

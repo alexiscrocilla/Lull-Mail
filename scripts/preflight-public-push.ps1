@@ -228,7 +228,6 @@ $assetPatterns = @(
     '!\[[^\]]*\]\(([^)\s]+)\)'
 )
 $missingAssets = @()
-$screenshotAssets = @()
 foreach ($pat in $assetPatterns) {
     $assetMatches = [regex]::Matches($readmeRaw, $pat)
     foreach ($am in $assetMatches) {
@@ -236,21 +235,12 @@ foreach ($pat in $assetPatterns) {
         if ($src -match '^(https?:|data:)') { continue }
         $resolved = Join-Path $repoRoot $src
         if (-not (Test-Path -LiteralPath $resolved)) {
-            if ($src -like 'docs/screenshots/*') {
-                # Allowlisted: assets land later
-                $screenshotAssets += $src
-            } else {
-                $missingAssets += $src
-            }
+            $missingAssets += $src
         }
     }
 }
 if ($missingAssets.Count -eq 0) {
-    Write-Ok "All non-screenshot assets present"
-    if ($screenshotAssets.Count -gt 0) {
-        Write-Host "  [INFO] $($screenshotAssets.Count) screenshot path(s) not on disk yet (allowlisted):" -ForegroundColor DarkGray
-        foreach ($s in $screenshotAssets) { Write-Host "         - $s" -ForegroundColor DarkGray }
-    }
+    Write-Ok "All assets present"
 } else {
     foreach ($m in $missingAssets) { Write-Fail "Missing asset: $m" }
 }
