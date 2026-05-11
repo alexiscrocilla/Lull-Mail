@@ -1,9 +1,9 @@
+# Lull Mail — AI Email Triage for Windows, macOS & Linux
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="frontend/assets/lullmail-logo-dark.png">
   <img src="frontend/assets/lullmail-logo-light.png" alt="Lull Mail" width="200" align="left">
 </picture>
-
-# Lull Mail — AI Email Triage for Windows, macOS & Linux
 
 **Your inbox, on mute.**
 Silent by default. Notification by exception. Your data stays yours.
