@@ -423,7 +423,7 @@
     --m-surface-2: #1C2333;
     --m-text: #E6EDF7;
     --m-muted: #9AA7BC;
-    --m-muted-2: #6B7588;
+    --m-muted-2: #8C99AD;
     --m-border: #232B3D;
     --m-border-soft: #1C2333;
     --m-accent: #5EEAD4;
@@ -527,8 +527,8 @@
 
   .mock-main { display: flex; flex-direction: column; min-width: 0; }
   .mock-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px 10px; border-bottom: 1px solid var(--m-border); background: var(--m-bg); }
-  .mock-head h4 { font-size: 14px; font-weight: 700; color: var(--m-text); margin: 0; letter-spacing: -0.01em; }
-  .mock-head h4 small { color: var(--m-muted-2); font-weight: 500; margin-left: 8px; }
+  .mock-head-title { font-size: 14px; font-weight: 700; color: var(--m-text); margin: 0; letter-spacing: -0.01em; }
+  .mock-head-title small { color: var(--m-muted-2); font-weight: 500; margin-left: 8px; }
   .mock-head-actions { display: flex; gap: 6px; color: var(--m-muted-2); }
   .mock-head-actions svg { width: 16px; height: 16px; stroke-width: 2; }
 
@@ -730,15 +730,18 @@
     padding: 14px 16px; text-align: left; vertical-align: middle;
     border-bottom: 1px solid var(--border);
   }
-  table.compare tbody tr:last-child td { border-bottom: 0; }
-  table.compare th {
+  table.compare tbody tr:last-child td,
+  table.compare tbody tr:last-child th { border-bottom: 0; }
+  table.compare thead th {
     font-weight: 600; color: var(--text); background: transparent;
     font-size: 0.85rem; vertical-align: bottom; padding-top: 28px; padding-bottom: 16px;
     position: relative; white-space: nowrap;
   }
   table.compare thead th:first-child { background: transparent; }
+  table.compare tbody th[scope="row"],
   table.compare td:first-child {
     font-weight: 500; color: var(--text); width: 28%; white-space: nowrap;
+    text-align: left; vertical-align: middle;
   }
   table.compare td { color: var(--muted); }
 
@@ -883,6 +886,7 @@
   </div>
 </nav>
 
+<main>
 <header class="hero">
   <div class="wrap">
     <img class="hero-logo" src="assets/lullmail-logo-dark.svg" alt="Lull Mail">
@@ -960,7 +964,7 @@
             </nav>
 
             <aside class="mock-side" aria-hidden="true">
-              <button class="mock-side-cta" type="button">
+              <button class="mock-side-cta" type="button" tabindex="-1">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M21 13V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12c0 1.1.9 2 2 2h8"/><path d="m3 7 9 6 9-6"/><path d="M19 16v6"/><path d="M16 19h6"/></svg>
                 Compose
               </button>
@@ -1044,7 +1048,7 @@
 
             <div class="mock-main">
               <div class="mock-head">
-                <h4>Inbox <small>· 3 of 187 worth your attention</small></h4>
+                <div class="mock-head-title">Inbox <small>· 3 of 187 worth your attention</small></div>
                 <div class="mock-head-actions" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="m3 12 9 9 9-9"/></svg>
@@ -1154,7 +1158,7 @@
             </nav>
             <div class="mock-main">
               <div class="mock-dash">
-                <h4 class="mock-dash-h1">Dashboard</h4>
+                <div class="mock-dash-h1">Dashboard</div>
 
                 <section class="mock-dash-card mock-cats">
                   <h5>
@@ -1326,9 +1330,9 @@
         <button class="carousel-arrow" type="button" id="demo-prev" aria-label="Previous slide">
           <svg class="icon" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
         </button>
-        <div class="carousel-dots" role="tablist" aria-label="Demo slides">
-          <button class="carousel-dot active" type="button" data-target="0" aria-label="Show inbox slide" aria-selected="true"></button>
-          <button class="carousel-dot" type="button" data-target="1" aria-label="Show dashboard slide" aria-selected="false"></button>
+        <div class="carousel-dots" role="tablist" aria-label="Demo slides" aria-orientation="horizontal">
+          <button class="carousel-dot active" type="button" role="tab" data-target="0" aria-label="Show inbox slide" aria-selected="true"></button>
+          <button class="carousel-dot" type="button" role="tab" data-target="1" aria-label="Show dashboard slide" aria-selected="false"></button>
         </div>
         <button class="carousel-arrow" type="button" id="demo-next" aria-label="Next slide">
           <svg class="icon" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
@@ -1437,8 +1441,8 @@
         <table class="compare">
           <thead>
             <tr>
-              <th></th>
-              <th>
+              <th scope="col"></th>
+              <th scope="col">
                 <span class="th-brand">
                   <span class="brand-chip lm" title="Lull Mail">
                     <img src="assets/lullmail-icon.svg" alt="" width="24" height="24" decoding="async" />
@@ -1446,7 +1450,7 @@
                   Lull Mail
                 </span>
               </th>
-              <th>
+              <th scope="col">
                 <span class="th-brand">
                   <span class="brand-chip sb" title="SaneBox">
                     <img src="assets/icon-sanebox.png" alt="" width="24" height="24" decoding="async" />
@@ -1454,7 +1458,7 @@
                   SaneBox
                 </span>
               </th>
-              <th>
+              <th scope="col">
                 <span class="th-brand">
                   <span class="brand-chip mb" title="Mailbutler">
                     <img src="assets/icon-mailbutler.ico" alt="" width="24" height="24" decoding="async" />
@@ -1462,7 +1466,7 @@
                   Mailbutler
                 </span>
               </th>
-              <th>
+              <th scope="col">
                 <span class="th-brand">
                   <span class="brand-chip hy" title="Hey">
                     <img src="assets/icon-hey.png" alt="" width="24" height="24" decoding="async" />
@@ -1474,63 +1478,63 @@
           </thead>
           <tbody>
             <tr>
-              <td>What it is</td>
+              <th scope="row">What it is</th>
               <td>Native desktop app, layer over your accounts</td>
               <td>Cloud service, sorts into IMAP folders</td>
               <td>Plugin for Outlook / Apple Mail / Gmail</td>
               <td>Standalone email service with new address</td>
             </tr>
             <tr>
-              <td>Keep your existing address</td>
+              <th scope="row">Keep your existing address</th>
               <td><span class="ic-chip ic-yes-mint"><svg class="icon" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span></td>
               <td><span class="ic-chip ic-yes"><svg class="icon" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span></td>
               <td><span class="ic-chip ic-yes"><svg class="icon" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span></td>
               <td><span class="ic-chip ic-no"><svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span></td>
             </tr>
             <tr>
-              <td>Where your emails live</td>
+              <th scope="row">Where your emails live</th>
               <td>Your machine</td>
               <td>SaneBox servers + your IMAP</td>
               <td>Your provider + Mailbutler cloud for AI</td>
               <td>Hey servers</td>
             </tr>
             <tr>
-              <td>Pricing</td>
+              <th scope="row">Pricing</th>
               <td><span class="price-pill us">Free</span></td>
               <td><span class="price-pill">$7–36 / mo</span></td>
               <td><span class="price-pill">$5–30 / mo</span></td>
               <td><span class="price-pill">$99 / yr</span></td>
             </tr>
             <tr>
-              <td>Works offline (browse synced mail)</td>
+              <th scope="row">Works offline (browse synced mail)</th>
               <td><span class="ic-chip ic-yes-mint"><svg class="icon" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span></td>
               <td><span class="ic-chip ic-no"><svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span></td>
               <td><span class="ic-chip ic-mid"><svg class="icon" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg></span></td>
               <td><span class="ic-chip ic-no"><svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span></td>
             </tr>
             <tr>
-              <td>Open source</td>
+              <th scope="row">Open source</th>
               <td><span class="ic-chip ic-yes-mint"><svg class="icon" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span></td>
               <td><span class="ic-chip ic-no"><svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span></td>
               <td><span class="ic-chip ic-no"><svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span></td>
               <td><span class="ic-chip ic-no"><svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span></td>
             </tr>
             <tr>
-              <td>Platforms</td>
+              <th scope="row">Platforms</th>
               <td>Windows, macOS, Linux</td>
               <td>Any IMAP client</td>
               <td>Outlook, Apple Mail, Gmail web</td>
               <td>Web, iOS, Android, macOS</td>
             </tr>
             <tr>
-              <td>Telemetry on your emails</td>
+              <th scope="row">Telemetry on your emails</th>
               <td>None</td>
               <td>Per their privacy policy</td>
               <td>Per their privacy policy</td>
               <td>Per their privacy policy</td>
             </tr>
             <tr>
-              <td>Replaces your email client</td>
+              <th scope="row">Replaces your email client</th>
               <td><span class="ic-chip ic-no-mint"><svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span></td>
               <td><span class="ic-chip ic-no"><svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span></td>
               <td><span class="ic-chip ic-no"><svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span></td>
@@ -1625,6 +1629,7 @@
     </a>
   </div>
 </section>
+</main>
 
 <footer>
   <div class="wrap">
