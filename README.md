@@ -1,4 +1,4 @@
-# Lull Mail — AI Email Triage for Windows, macOS & Linux
+# Lull Mail: AI Email Triage for Windows, macOS & Linux
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="frontend/assets/lullmail-logo-dark.png">
@@ -13,7 +13,7 @@ You get 80 emails a day. Three of them actually matter.
 Lull Mail is a free, open-source **AI email triage app** for Gmail,
 Outlook, iCloud and any IMAP inbox. It runs locally on Mac, Windows
 and Linux, connects to your mailboxes, **classifies and summarises**
-every message, and ranks what matters — so you only get notified when
+every message, and ranks what matters, so you only get notified when
 something is genuinely urgent. No servers of ours sit between you and
 your data: your email goes straight from your accounts to the AI you
 choose.

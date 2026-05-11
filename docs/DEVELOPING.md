@@ -7,16 +7,16 @@ Guide to clone, run in dev mode, build the app, and produce release packages.
 ## Prerequisites
 
 - **Python 3.11+** with `python` or `py` on `PATH`.
-- **Windows 10/11** — to produce the Inno Setup installer (`.exe`).
+- **Windows 10/11**: to produce the Inno Setup installer (`.exe`).
   *(Optional)* [Inno Setup 6](https://jrsoftware.org/isdl.php) for local installer builds.
-- **macOS 12+** — to produce the `.app` / `.dmg`. No extra tools needed
+- **macOS 12+**: to produce the `.app` / `.dmg`. No extra tools needed
   (icon generation uses `sips` + `iconutil`, which ship with macOS).
-- **Linux** — to produce the `.tar.gz`. Requires `libwebkit2gtk-4.1-dev`
+- **Linux**: to produce the `.tar.gz`. Requires `libwebkit2gtk-4.1-dev`
   (or `4.0` on older distros): `sudo apt install libwebkit2gtk-4.1-dev`.
 
 ## Dev commands
 
-**Windows** — all commands go through `dev.bat`:
+**Windows**: all commands go through `dev.bat`:
 
 ```cmd
 .\dev.bat install        :: create .venv and install deps (run once)
@@ -27,10 +27,10 @@ Guide to clone, run in dev mode, build the app, and produce release packages.
 ```
 
 `dev.bat` is a thin dispatcher that routes to the real scripts in
-`scripts/`. It's the single entry point at the root — same role as
+`scripts/`. It's the single entry point at the root, same role as
 a `Makefile` or `npm run` in other ecosystems.
 
-**macOS / Linux** — use the shell script directly:
+**macOS / Linux**: use the shell script directly:
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -r requirements.txt
@@ -79,7 +79,7 @@ without polluting your installed Lull Mail.
 ```
 
 `dev.bat build` runs PyInstaller through `lull_mail.spec` and produces a
-**onedir** bundle (`dist\LullMail\` — exe + DLLs + `frontend/`).
+**onedir** bundle (`dist\LullMail\`, with exe + DLLs + `frontend/`).
 
 `dev.bat installer` chains the build (silent via `LULLMAIL_NOINTERACT=1`)
 and then compiles `scripts\installer.iss` to produce the setup exe. The
@@ -143,7 +143,7 @@ Release procedure:
 # 1. Bump the version in scripts/installer.iss (#define MyAppVersion).
 # 2. Merge develop → main and push.
 git checkout main && git merge develop && git push origin main
-# 3. Tag and push — this triggers all three build jobs.
+# 3. Tag and push. This triggers all three build jobs.
 git tag v0.5.0 && git push origin v0.5.0
 # 4. The workflow runs ~10-15 min. A draft release appears in the
 #    Releases tab with the three artefacts attached. Review and publish.
@@ -195,10 +195,10 @@ src/                  ← Python code
   auth_results.py     ← SPF/DKIM/DMARC verdict parser
   safe_link.py        ← anti-phishing interstitial (`/safe-link?url=…`)
   brands.py           ← curated brand list for typosquat / subdomain-spoof
-  secrets_store.py    ← OS-keyring wrapper (Credential Manager / Keychain
-                        / Secret Service) — IMAP passwords + OpenAI key
+  secrets_store.py    ← OS-keyring wrapper for IMAP passwords + OpenAI key
+                        (Credential Manager / Keychain / Secret Service)
   secrets_migration.py← one-shot move of clear-text secrets into the keyring
-  scheduler.py        ← apscheduler — periodic jobs
+  scheduler.py        ← apscheduler, periodic jobs
   notifier.py         ← ntfy push
   lifecycle.py        ← start/stop services
   updater.py          ← GitHub Releases poller + one-click install
@@ -245,7 +245,7 @@ docs/
 | `LULLMAIL_DATA` | Force the data directory (handy to test onboarding on a clean copy). |
 | `LULLMAIL_NO_MIGRATE=1` | Disable auto-migration of a `config.yaml` sitting next to the exe. |
 | `LULLMAIL_PORT` | Force a fixed port instead of an ephemeral one. |
-| `LULLMAIL_NOINTERACT=1` | Skip the `pause` and `start explorer` at the end of `build.bat` — used by CI and `build_installer.bat`. |
+| `LULLMAIL_NOINTERACT=1` | Skip the `pause` and `start explorer` at the end of `build.bat`. Used by CI and `build_installer.bat`. |
 
 ## Architecture in 30 seconds
 
@@ -289,7 +289,7 @@ Lull Mail ships bilingual **French / English** since v0.3.0.
 **Detection**, in priority order:
 1. `?lang=en` or `?lang=fr` URL parameter
 2. `localStorage.lullmail.lang` (`'en'` or `'fr'`)
-3. `navigator.language` — starts with `fr` → French, anything else → English
+3. `navigator.language`: starts with `fr` → French, anything else → English
 
 **Architecture**: a single file [`frontend/i18n.js`](../frontend/i18n.js)
 holds both dictionaries (FR + EN), exposes `window.t(key, vars)` and
@@ -337,9 +337,9 @@ Or in the console: `localStorage.setItem('lullmail.lang', 'en')` then reload.
 `src/paths.py` is the **only** module that knows where data lives.
 It handles three modes:
 
-- **Frozen (.exe)** — `%APPDATA%\LullMail\`
-- **Dev** — project root (where `main.py` lives)
-- **Override** — `LULLMAIL_DATA` env var
+- **Frozen (.exe)**: `%APPDATA%\LullMail\`
+- **Dev**: project root (where `main.py` lives)
+- **Override**: `LULLMAIL_DATA` env var
 
 And two boot-time migrations:
 
@@ -349,6 +349,6 @@ And two boot-time migrations:
 2. **Copy** any `config.yaml` sitting next to the exe into
    `%APPDATA%\LullMail\` on first launch (legacy distribution
    without an installer). Skipped if the candidate looks like a dev
-   source tree — otherwise builds run from `dist\LullMail\` would
+   source tree. Otherwise builds run from `dist\LullMail\` would
    inherit the developer's `config.yaml` and onboarding would never
    trigger.
