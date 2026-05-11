@@ -1,7 +1,7 @@
 # Contributing to Lull Mail
 
 Thanks for considering a contribution. Lull Mail is a small, opinionated
-project — the bar for "is this aligned with what we're building" matters
+project. The bar for "is this aligned with what we're building" matters
 as much as the bar for "does this code work". Before opening a PR, skim
 [`docs/DEVELOPING.md`](docs/DEVELOPING.md) for local setup and
 [`docs/MARKETING.md`](docs/MARKETING.md) for the product voice and
@@ -19,12 +19,12 @@ By participating you agree to its terms. Reports go to
   [bug-report template](.github/ISSUE_TEMPLATE/bug_report.yml).
 - **Bug fixes**, especially around mail-server quirks (Gmail OAuth,
   Outlook IMAP edge cases, ProtonMail Bridge, etc.).
-- **Privacy and security improvements** — see
+- **Privacy and security improvements**: see
   [`docs/SECURITY-ROADMAP.md`](docs/SECURITY-ROADMAP.md) for items
   already on our list.
 - **Provider tweaks** to better detect newsletters, transactional
   mail, or scoring edge cases.
-- **Translations** — the UI is currently FR/EN; adding a new locale
+- **Translations**: the UI is currently FR/EN; adding a new locale
   is welcome.
 
 ## What we're slow on
@@ -73,7 +73,7 @@ By participating you agree to its terms. Reports go to
 ## Licence of contributions
 
 Lull Mail is licensed under [GPL v3](LICENSE). Contributions are
-inbound under the same terms — by opening a pull request you agree
+inbound under the same terms. By opening a pull request you agree
 that your contribution will be licensed under GPL v3 or later. There
 is no CLA. You retain copyright on your work.
 
@@ -86,5 +86,5 @@ estimate of impact. We aim to respond within five working days.
 ## Recognition
 
 Material contributors are credited by name in the release notes.
-We do not run a "all-contributors" bot — credit goes to people who
+We do not run a "all-contributors" bot. Credit goes to people who
 shipped, not people who showed up.

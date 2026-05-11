@@ -20,7 +20,7 @@ see [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 
 ### 1. Bump version
 
-- [ ] `scripts/installer.iss` — update `MyAppVersion`.
+- [ ] `scripts/installer.iss`: update `MyAppVersion`.
 - [ ] Confirm the version matches what you'll tag (`vX.Y.Z`). The
       release workflow extracts the version from the tag and fails the
       build if the installer's `MyAppVersion` doesn't match.
@@ -48,14 +48,14 @@ The public mirror lives at `alexiscrocilla/Lull-Mail`. We run a
 sanitised `git filter-repo` pass before push so dev-only commits never
 appear in public history.
 
-- [ ] `git fetch public && git reset --hard public/main` — make sure
+- [ ] `git fetch public && git reset --hard public/main`. Make sure
       the local clone reflects the latest public state before
       rewriting history (sync local to remote BEFORE filter-repo,
       otherwise a stale local clone overwrites newer remote state).
 - [ ] Run the existing `git filter-repo` sanitisation pipeline
       (project-specific; document in your own notes if not yet
       automated).
-- [ ] `git push public main --force-with-lease` — never plain
+- [ ] `git push public main --force-with-lease`. Never plain
       `--force` on `main`.
 
 ### 5. Tag and trigger the build
@@ -77,7 +77,7 @@ appear in public history.
   - macOS: open the `.dmg`, drag to Applications, right-click ->
     Open (Gatekeeper), run setup.
   - Linux: extract the `.tar.gz`, run `LullMail/LullMail`.
-- [ ] If any smoke test fails, fix forward — delete the draft, push a
+- [ ] If any smoke test fails, fix forward: delete the draft, push a
       new tag.
 - [ ] Click **Publish release** when all three pass.
 
@@ -95,7 +95,7 @@ appear in public history.
 
 These commands set repo-level metadata (description, homepage, topics,
 Pages source). Run once after the public mirror has all the files from
-this overhaul — re-run only when topics or description change.
+this overhaul. Re-run only when topics or description change.
 
 ```bash
 gh repo edit alexiscrocilla/Lull-Mail \
@@ -113,7 +113,7 @@ gh api -X POST repos/alexiscrocilla/Lull-Mail/pages \
   -f "source[branch]=main" -f "source[path]=/docs"
 ```
 
-Topics deliberately omit `ai` / `gpt` / `llm` — see voice rule #1 in
+Topics deliberately omit `ai` / `gpt` / `llm`; see voice rule #1 in
 [`MARKETING.md`](MARKETING.md) ("never lead with AI").
 
 ## What the preflight script checks (and why)
@@ -130,6 +130,6 @@ Topics deliberately omit `ai` / `gpt` / `llm` — see voice rule #1 in
 | README asset existence | Stops broken images on the GitHub README. |
 | shields.io URLs (online) | Catches typos in badge URLs before the README renders broken in front of visitors. |
 
-The script does not replace common sense — it catches the regressions
+The script does not replace common sense. It catches the regressions
 we have already seen in production. Add new checks here when you find a
 new failure mode.

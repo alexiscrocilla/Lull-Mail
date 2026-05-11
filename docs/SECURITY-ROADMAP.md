@@ -5,15 +5,15 @@ already shipped (sandboxed iframe + anti-phishing interstitial,
 TLS / SSRF / origin-check network guards, OS-keyring credential
 storage, remote-image blocker + SPF/DKIM/DMARC verdict badges,
 per-endpoint rate-limit, automated test suite). Each entry below is
-a deliberate scope cut — the underlying problem is real but the
+a deliberate scope cut. The underlying problem is real but the
 remediation is heavier (new deps, significant code, or business-
 grade infrastructure) and warrants its own focused work.
 
-Order is rough priority — top entries land first when capacity allows.
+Order is rough priority. Top entries land first when capacity allows.
 
 ---
 
-## 1. End-to-end encryption — OpenPGP / S/MIME
+## 1. End-to-end encryption: OpenPGP / S/MIME
 
 **Problem.** Lull Mail can decrypt and display whatever the IMAP
 server hands over. Anything end-to-end encrypted between sender and
@@ -32,10 +32,10 @@ SMTP yet).
   fingerprints in Settings.
 
 **Library options.**
-- `python-gnupg` — wraps the GnuPG CLI. Mature, but adds an
+- `python-gnupg`: wraps the GnuPG CLI. Mature, but adds an
   external runtime dep (`gpg` / `gpg.exe`) and ships a fairly
   large binary distribution.
-- `PGPy` — pure Python implementation. No external deps, smaller
+- `PGPy`: pure Python implementation. No external deps, smaller
   PyInstaller bundle, slower decryption on large mails.
 
 **Decision deferred.** Tie-breaker is whether we end up needing
@@ -46,7 +46,7 @@ GnuPG for keyring access on Linux too.
 ## 2. Antivirus integration on attachment download
 
 **Problem.** Today's attachment pipeline (`src/attachment_security.py`)
-catches the obvious — extensions, magic bytes, EICAR, double
+catches the obvious: extensions, magic bytes, EICAR, double
 extensions, suspicious MIME mismatches. It does NOT scan with a real
 AV engine, so a freshly-crafted dropper hidden in a PDF with valid
 PDF magic bytes would be marked `safe` and saved.
@@ -54,8 +54,8 @@ PDF magic bytes would be marked `safe` and saved.
 **Scope.**
 - **Windows:** call into AMSI (`AMSIScanBuffer`) via `ctypes` before
   writing the attachment to disk. AMSI is the API Defender (and
-  third-party AVs) hook into — gets us free coverage from whatever
-  the user already runs.
+  third-party AVs) hook into, which gets us free coverage from
+  whatever the user already runs.
 - **macOS:** XProtect runs system-wide whenever a file lands in
   user space, no API needed; document it.
 - **Linux:** invoke `clamdscan` over the local socket if the daemon
@@ -96,7 +96,7 @@ Lull Mail vs. ProtonMail for privacy-first users.
 **Problem.** Today's installer is unsigned. Windows SmartScreen
 shows the "this app may be dangerous" dialog on every fresh
 download, training users to click "Run anyway" on unsigned
-binaries — exactly the muscle reflex phishing distributors want.
+binaries, exactly the muscle reflex phishing distributors want.
 
 **Scope.**
 - Acquire an EV Code Signing certificate (DigiCert / Sectigo,
@@ -125,7 +125,7 @@ profiles bypassed via offline disk access.
 **Scope.**
 - Opt-in flag in Settings: "Protect with master password".
 - When enabled, secrets are encrypted with AES-GCM keyed by
-  PBKDF2(passphrase, salt, 600k iterations) — the encrypted blob
+  PBKDF2(passphrase, salt, 600k iterations). The encrypted blob
   lives in `config.yaml` instead of the keyring.
 - App startup pops a native password dialog (pywebview-native)
   before the wizard / dashboard load.
@@ -133,7 +133,7 @@ profiles bypassed via offline disk access.
   off, behaviour stays exactly as today.
 
 **Risk.** Lost master password = lost secrets. The wipe flow stays
-the recovery path — re-setup from scratch.
+the recovery path: re-setup from scratch.
 
 ---
 
@@ -142,7 +142,7 @@ the recovery path — re-setup from scratch.
 **Problem.** Lull Mail already surfaces SPF/DKIM/DMARC verdicts
 per email, but doesn't aggregate them across the whole inbox. A user
 running their own domain might want to see "98% of mail purporting
-to be from `mydomain.com` failed DMARC last month" — a signal of
+to be from `mydomain.com` failed DMARC last month", a signal of
 active spoofing campaigns.
 
 **Scope.**
@@ -171,7 +171,7 @@ could trigger a destructive action AND scrub the log line.
 - Settings page surfaces the last 30 days of destructive actions
   with a "this is read-only" disclaimer.
 - Future: HMAC-chain each row to detect post-hoc tampering
-  (Merkle log style — overkill for now, noted as a stretch).
+  (Merkle log style, overkill for now, noted as a stretch).
 
 ---
 

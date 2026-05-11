@@ -27,13 +27,13 @@ The wizard handles the most common providers with a one-click
 | Outlook / Microsoft 365 | App password |
 | iCloud | App password |
 | Yahoo | App password |
-| ProtonMail | A running [Proton Mail Bridge](https://proton.me/mail/bridge) — paste the Bridge-generated password manually |
+| ProtonMail | A running [Proton Mail Bridge](https://proton.me/mail/bridge). Paste the Bridge-generated password manually. |
 | Orange / OVH / Free / any IMAP | Host, port, username, password (no shortcut, fill in manually) |
 
 ## 3. (Optional) Push notifications
 
 Lull Mail can fire a push notification when something genuinely urgent
-arrives. It uses [ntfy.sh](https://ntfy.sh) — free, no account,
+arrives. It uses [ntfy.sh](https://ntfy.sh): free, no account,
 anonymous.
 
 1. Pick a topic name only you know (e.g. `lull-mail-<random>`).

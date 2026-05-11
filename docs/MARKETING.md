@@ -1,4 +1,4 @@
-# Lull — Marketing voice & manifesto
+# Lull: Marketing voice & manifesto
 
 > Reference document for product communication.
 > All public copy (website, README, Product Hunt, app stores, social
@@ -8,7 +8,7 @@
 
 ## One-line positioning
 
-> **Lull — Your inbox, on mute.**
+> **Lull. Your inbox, on mute.**
 > Silent by default. Notification by exception. Your data stays yours.
 
 ---
@@ -16,10 +16,10 @@
 ## Voice rules
 
 1. **Never lead with "AI", "agentic", "smart".** AI is the means,
-   not the promise. It's mentioned in the feature list — never in
+   not the promise. It's mentioned in the feature list, never in
    the title or the subtitle.
-2. **User benefit first.** Calm, silence, focus, control, privacy
-   — that's what we're selling.
+2. **User benefit first.** Calm, silence, focus, control, privacy.
+   That's what we're selling.
 3. **No empty superlatives.** No "revolutionary", "next-gen",
    "game-changing". Short sentences, concrete facts.
 4. **Radical honesty.** We say what the product is *not*. We
@@ -43,7 +43,7 @@ twentieth newsletter from a site where you bought a phone case in
 Lull sits between your mail accounts and you. It reads everything
 that comes in, picks out the three or four messages that genuinely
 deserve your attention, summarises them in two lines, and sends
-*one* notification — the right one, at the right moment.
+*one* notification: the right one, at the right moment.
 
 The rest waits until you have time. Or quietly disappears.
 
@@ -86,7 +86,7 @@ talks straight to your IMAP servers.
   zero appetite to babysit a fifth.
 - Professionals who spend their day in meetings and just want to
   know if something important landed.
-- People who eventually muted all email notifications — and now
+- People who eventually muted all email notifications, and now
   miss things that matter.
 - Anyone who wants their data on their own hard drive. Not in
   someone else's data centre.
@@ -104,7 +104,7 @@ That's exactly the point.
 
 ## Short pitch (App Store, Product Hunt, meta description)
 
-> **Lull** — An inbox that only rings for what genuinely matters.
+> **Lull.** An inbox that only rings for what genuinely matters.
 > Runs 100% locally on your machine (Windows, macOS, Linux), plugged
 > into your Gmail, Outlook, iCloud or IMAP accounts. You get a
 > notification when an urgent email arrives. For everything else, silence.
@@ -131,7 +131,7 @@ That's exactly the point.
 ### Email is fifty years old. We let it become a leash.
 
 Every day, dozens of messages compete for your attention at the
-same volume — whether it's a client waiting on a reply, a bank
+same volume, whether it's a client waiting on a reply, a bank
 confirming a transfer, or a sock company that decided Tuesday was
 a great day for an inventory clearance. It's absurd. We've accepted
 the absurd.
