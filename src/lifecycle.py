@@ -56,19 +56,37 @@ def start_email_services(*, restart: bool = False) -> bool:
                 logger.exception("Échec arrêt scheduler avant redémarrage")
             _scheduler = None
 
-        # When the user opted out of AI (empty key), skip OpenAI client
-        # init entirely — the scheduler will fall back to rule-based
-        # classification and the on-demand /draft + /reanalyze endpoints
-        # short-circuit with a 409.
-        api_key = (conf.get("openai") or {}).get("api_key", "")
-        if api_key:
+        # Init du provider LLM actif (OpenAI ou local).
+        # `cfg.llm.provider` décide : "openai" → besoin d'une api_key ;
+        # "local" → besoin que le GGUF analyzer soit téléchargé.
+        # Si l'init échoue (clé absente, GGUF absent, serveur crash), on
+        # retombe en mode sans IA : le scheduler utilise les rules locales
+        # et le fallback no-AI ; les endpoints /draft + /reanalyze
+        # short-circuitent avec 409.
+        provider_name = (conf.get("llm") or {}).get("provider", "openai")
+        if provider_name == "local":
+            from src.llm.registry import get_provider, reset as _reset_provider
+            from src.llm.server import LLMServerError
+            # Reset au cas où l'utilisateur vient de basculer de "openai"
+            # à "local" via /api/setup/llm — le registry doit ré-instancier.
+            _reset_provider()
             try:
-                init_client(api_key)
+                get_provider().init()
+                logger.info("Provider local actif — analyzer démarré")
+            except LLMServerError as e:
+                logger.warning("Local LLM indisponible (%s) — mode sans IA", e)
             except Exception:
-                logger.exception("init_client a échoué")
-                return False
+                logger.exception("init du provider local a échoué")
         else:
-            logger.info("Mode sans IA actif — pas d'initialisation du client OpenAI")
+            api_key = (conf.get("openai") or {}).get("api_key", "")
+            if api_key:
+                try:
+                    init_client(api_key)
+                except Exception:
+                    logger.exception("init_client a échoué")
+                    return False
+            else:
+                logger.info("Mode sans IA actif — pas d'initialisation du client OpenAI")
 
         interval = int(conf.get("polling", {}).get("interval_minutes", 10))
         sched = BackgroundScheduler(timezone="Europe/Paris")
@@ -92,3 +110,13 @@ def stop_email_services() -> None:
             except Exception:
                 logger.exception("Échec arrêt scheduler")
         _scheduler = None
+
+        # Arrêt propre des serveurs LLM locaux si on les avait spawné.
+        # No-op en mode OpenAI (le provider OpenAI n'a pas de stop()).
+        try:
+            from src.llm.registry import get_provider
+            provider = get_provider()
+            if hasattr(provider, "stop"):
+                provider.stop()
+        except Exception:
+            logger.exception("Échec arrêt provider LLM")

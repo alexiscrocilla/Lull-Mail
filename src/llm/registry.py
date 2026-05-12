@@ -25,14 +25,36 @@ _provider: Optional[LLMProvider] = None
 def get_provider() -> LLMProvider:
     """Retourne le provider LLM actif (instancié à la 1ère demande).
 
-    Phase 1 hard-code `OpenAIProvider`. Phase 2 lira
-    `cfg["llm"]["provider"]` ici pour brancher entre "openai" et "local".
-    Cache le résultat dans `_provider` pour amortir les init répétés
-    (par ex. le scheduler appelle `init_client` à chaque tick — on ne
-    veut pas reconstruire le client OpenAI à chaque fois).
+    Lit `cfg.llm.provider` pour choisir entre :
+      - "openai" (défaut) → `OpenAIProvider` (cloud GPT)
+      - "local" → `LocalLLMProvider` (Phi-3.5-mini + llama_cpp.server)
+
+    Le résultat est caché dans `_provider` pour amortir les init répétés
+    (le scheduler appelle `init_client` à chaque tick — pas la peine de
+    reconstruire le client à chaque fois). `reset()` permet de forcer le
+    re-pick après un changement de `cfg.llm.provider` via Settings.
+
+    Import lazy de `LocalLLMProvider` : tant qu'on est en mode OpenAI,
+    on ne charge pas `llama_cpp` ni les dépendances locales.
     """
     global _provider
-    if _provider is None:
+    if _provider is not None:
+        return _provider
+
+    # Lazy import de `cfg` pour éviter le cycle config → registry → config.
+    try:
+        from src import config as cfg
+        provider_name = (cfg.get().get("llm") or {}).get("provider", "openai")
+    except Exception:  # noqa: BLE001
+        # Si la config n'est pas chargeable (mode setup), on tombe sur OpenAI
+        # par défaut — il sera de toute façon désactivé tant qu'`ai_enabled()`
+        # ne renvoie pas True.
+        provider_name = "openai"
+
+    if provider_name == "local":
+        from src.llm.local_provider import LocalLLMProvider
+        _provider = LocalLLMProvider()
+    else:
         _provider = OpenAIProvider()
     return _provider
 
