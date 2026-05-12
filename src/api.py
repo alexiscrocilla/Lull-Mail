@@ -237,6 +237,7 @@ class SendRequest(BaseModel):
 @app.get("/api/emails")
 def list_emails(
     account: Optional[str] = None,
+    accounts: Optional[str] = None,
     category: Optional[str] = None,
     is_read: Optional[bool] = None,
     needs_reply: Optional[bool] = None,
@@ -246,8 +247,18 @@ def list_emails(
     limit: int = 100,
     offset: int = 0,
 ):
+    # `accounts` (comma-separated) is the multi-account variant. Without
+    # it, a multi-selection in the sidebar would have to fall back to
+    # "no account filter + client-side prune", which silently drops
+    # mail from light accounts once the 2000-row cap is reached.
+    acct_filter: Optional[object] = account
+    if accounts:
+        parsed = [a.strip() for a in accounts.split(",") if a.strip()]
+        if parsed:
+            acct_filter = parsed if len(parsed) > 1 else parsed[0]
+
     rows = db.get_emails(
-        account=account,
+        account=acct_filter,
         category=category,
         is_read=is_read,
         needs_reply=needs_reply,

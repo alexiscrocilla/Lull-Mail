@@ -5,7 +5,7 @@ import logging
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Union
 
 from src import paths
 
@@ -519,7 +519,7 @@ def mark_notified(message_id: str):
 
 
 def get_emails(
-    account: Optional[str] = None,
+    account: Optional[Union[str, List[str]]] = None,
     category: Optional[str] = None,
     is_read: Optional[bool] = None,
     needs_reply: Optional[bool] = None,
@@ -544,7 +544,21 @@ def get_emails(
         q = "SELECT * FROM emails WHERE 1=1"
         params = []
 
-    if account:
+    # Single account → equality; list of accounts → IN(). Filtering
+    # multi-account selections server-side keeps the LIMIT cap honest
+    # (otherwise lighter accounts get evicted by busy ones once the
+    # global top-N has been picked, then re-filtered client-side to
+    # zero rows for those accounts).
+    if isinstance(account, (list, tuple, set)):
+        accs = [a for a in account if a]
+        if len(accs) == 1:
+            q += " AND account_email = ?"
+            params.append(accs[0])
+        elif accs:
+            placeholders = ",".join("?" * len(accs))
+            q += f" AND account_email IN ({placeholders})"
+            params.extend(accs)
+    elif account:
         q += " AND account_email = ?"
         params.append(account)
     if category and category != "all":
