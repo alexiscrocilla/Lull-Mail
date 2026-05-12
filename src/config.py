@@ -82,21 +82,50 @@ class OpenAIConfig(BaseModel):
         return v
 
 
+class LocalLLMConfig(BaseModel):
+    """Sous-config du mode `provider == "local"`.
+
+    `analyzer_model_id` et `drafter_model_id` doivent correspondre à
+    des clés du `src.llm.catalog.CATALOG`. La validation que le fichier
+    GGUF est effectivement sur disque se fait au runtime
+    (`ai_enabled()` + `LocalLLMServer.start()`), pas ici — un user qui
+    coche "Local" sans avoir téléchargé le modèle reste dans un état
+    "setup mode partiel" jusqu'à ce qu'il complète le download.
+
+    `drafter_idle_timeout_min` : combien de minutes sans appel avant de
+    décharger le Drafter de la RAM. 0 = jamais décharger (recommandé
+    sur tier Heavy).
+    """
+
+    tier: Literal["light", "medium", "heavy"] = "medium"
+    analyzer_model_id: str = "phi-3.5-mini-q4"
+    drafter_model_id: str = "mistral-7b-v03-q4"
+    # GPU offload : 0 = CPU only. Phase 2 v1 reste CPU-only ; le GPU
+    # NVIDIA est un opt-in v2 (nécessite la wheel CUDA séparée).
+    gpu_layers: int = Field(default=0, ge=0, le=999)
+    context_size: int = Field(default=4096, ge=512, le=131072)
+    drafter_idle_timeout_min: int = Field(default=5, ge=0, le=1440)
+
+
 class LLMConfig(BaseModel):
     """Sélecteur de provider LLM.
 
-    Phase 1 : seul `"openai"` est supporté. `ai_enabled()` continue de
-    s'appuyer uniquement sur `openai.api_key`. Phase 2 ajoutera la
-    valeur `"local"` qui active `LocalLLMProvider` (Phi-3.5-mini +
-    rules + score dérivé), avec une sous-clé `local: LocalLLMConfig`
-    à ce moment-là.
+    `provider == "openai"` : backend par défaut (cf. Phase 1). Le champ
+    `local` est ignoré mais reste présent pour ne pas casser un yaml qui
+    aurait les deux sections.
+
+    `provider == "local"` : active `LocalLLMProvider` (Phase 2). Le mode
+    "100 % gratuit" — aucun appel à OpenAI tant que ce flag est posé.
+    L'analyzer démarre au boot via `lifecycle.start_email_services` ; le
+    drafter est chargé à la demande.
 
     Le champ est tolérant : un YAML qui ne contient pas la section
-    `llm:` retombe sur le défaut `"openai"`, donc les installations
-    existantes ne cassent pas après le refactor.
+    `llm:` retombe sur les défauts ci-dessous, donc les installations
+    pré-Phase-2 ne cassent pas.
     """
 
     provider: Literal["openai", "local"] = "openai"
+    local: LocalLLMConfig = Field(default_factory=LocalLLMConfig)
 
 
 class NtfyConfig(BaseModel):
@@ -317,14 +346,42 @@ def reload() -> Optional[Dict[str, Any]]:
 
 
 def ai_enabled() -> bool:
-    """True when the loaded config carries a non-empty OpenAI key.
+    """True when an LLM backend is operationally available.
 
-    Used by every code path that has to choose between calling OpenAI
+    Two paths today :
+      - provider="openai"  : besoin d'une clé non vide dans `openai.api_key`.
+      - provider="local"   : besoin que le GGUF de l'analyzer existe dans
+                             `paths.MODELS_DIR`. Si l'utilisateur a coché
+                             "Local" mais pas encore téléchargé le modèle,
+                             on retombe en mode no-AI (le scheduler utilise
+                             alors le fallback rules-based).
+
+    Used by every code path that has to choose between calling the LLM
     and running in degraded "no-AI" mode (rule-based classifier only).
     Reads the in-memory `_config` so callers don't pay a disk hit on
     each check — it's already kept in sync by `load()` / `reload()`.
     """
     conf = _config or {}
+    provider = (conf.get("llm") or {}).get("provider", "openai")
+    if provider == "local":
+        # Lazy imports — `paths` est toujours présent, `catalog` peut être
+        # absent pendant la transition Phase 1 → Phase 2 si quelqu'un fait
+        # un checkout intermédiaire.
+        try:
+            from src import paths  # noqa: WPS433
+            from src.llm import catalog as _catalog  # noqa: WPS433
+        except ImportError:
+            return False
+        model_id = (
+            (conf.get("llm") or {}).get("local", {})
+            .get("analyzer_model_id", "phi-3.5-mini-q4")
+        )
+        meta = _catalog.get_model(model_id)
+        if not meta:
+            return False
+        return (paths.MODELS_DIR / meta["filename"]).is_file()
+
+    # provider == "openai" (défaut)
     key = (conf.get("openai") or {}).get("api_key", "")
     return bool(key)
 
