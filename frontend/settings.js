@@ -103,45 +103,72 @@ export async function mountSettings(host, opts = {}) {
           </div>
         </section>
 
-        <!-- OpenAI -->
-        <section class="card col-6">
+        <!-- IA — provider radio + sous-panneaux OpenAI / Local -->
+        <section class="card col-6" id="ai-section">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
               <i data-lucide="sparkles" class="w-4 h-4"></i>${t('set.ai.title')}
             </span>
-            <label class="set-toggle">
-              <input id="ai-enabled" type="checkbox" />
-              <span>${t('set.ai.toggle')}</span>
-            </label>
-          </h3>
-          <div id="ai-disabled-msg" class="sub hidden" style="margin-top:8px">
-            ${t('set.ai.disabled_msg')}
-          </div>
-          <div id="ai-fields" style="display:flex;align-items:center;gap:16px;margin-top:10px">
-            <div class="set-grid" style="flex:1">
-              <label class="set-field">
-                <span class="set-label">${t('set.ai.key_label')}</span>
-                <input id="openai-key" type="password" class="set-input mono" placeholder="${t('set.ai.key_ph_empty')}" autocomplete="new-password" />
-                <span class="set-hint">${t('set.ai.key_hint')}</span>
+            <div class="set-provider-radio" role="radiogroup" aria-label="${t('set.llm.provider_label')}">
+              <label class="set-prov-opt">
+                <input type="radio" name="llm-provider" id="llm-prov-openai" value="openai" />
+                <span>${t('set.llm.openai_option')}</span>
               </label>
-              <label class="set-field">
-                <span class="set-label">${t('set.ai.model_label')}</span>
-                <input type="hidden" id="openai-model" value="gpt-4o-mini" />
-                <div class="set-drop-wrap" id="openai-model-wrap">
-                  <button class="set-drop-btn" id="openai-model-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
-                    <span id="openai-model-label">gpt-4o-mini</span>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-                  </button>
-                  <div class="set-drop-menu" id="openai-model-drop" role="listbox">
-                    ${['gpt-4o-mini','gpt-4o','gpt-4.1-mini'].map(v => `
-                      <div class="acc-select-opt" data-val="${v}" role="option">${v}</div>
-                    `).join('')}
-                  </div>
-                </div>
+              <label class="set-prov-opt">
+                <input type="radio" name="llm-provider" id="llm-prov-local" value="local" />
+                <span>${t('set.llm.local_option')}</span>
               </label>
             </div>
-            <div class="set-actions" style="margin-top:0;padding-top:0;border-top:none;border-left:1px solid var(--border-2);padding-left:16px;flex-shrink:0">
-              <button class="mb-cta set-btn" id="btn-save-openai">${t('set.save')}</button>
+          </h3>
+
+          <!-- Sous-panneau OpenAI (mode cloud, défaut) -->
+          <div id="ai-panel-openai">
+            <div id="ai-disabled-msg" class="sub hidden" style="margin-top:8px">
+              ${t('set.ai.disabled_msg')}
+            </div>
+            <div id="ai-fields" style="display:flex;align-items:center;gap:16px;margin-top:10px">
+              <div class="set-grid" style="flex:1">
+                <label class="set-field">
+                  <span class="set-label">${t('set.ai.key_label')}</span>
+                  <input id="openai-key" type="password" class="set-input mono" placeholder="${t('set.ai.key_ph_empty')}" autocomplete="new-password" />
+                  <span class="set-hint">${t('set.ai.key_hint')}</span>
+                </label>
+                <label class="set-field">
+                  <span class="set-label">${t('set.ai.model_label')}</span>
+                  <input type="hidden" id="openai-model" value="gpt-4o-mini" />
+                  <div class="set-drop-wrap" id="openai-model-wrap">
+                    <button class="set-drop-btn" id="openai-model-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
+                      <span id="openai-model-label">gpt-4o-mini</span>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <div class="set-drop-menu" id="openai-model-drop" role="listbox">
+                      ${['gpt-4o-mini','gpt-4o','gpt-4.1-mini'].map(v => `
+                        <div class="acc-select-opt" data-val="${v}" role="option">${v}</div>
+                      `).join('')}
+                    </div>
+                  </div>
+                </label>
+              </div>
+              <div class="set-actions" style="margin-top:0;padding-top:0;border-top:none;border-left:1px solid var(--border-2);padding-left:16px;flex-shrink:0">
+                <button class="mb-cta set-btn" id="btn-save-openai">${t('set.save')}</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sous-panneau Local (mode 100% gratuit + privé, peuplé à la volée) -->
+          <div id="ai-panel-local" class="hidden" style="margin-top:10px">
+            <div id="llm-hw-banner" class="sub set-llm-banner">
+              <i data-lucide="cpu" class="w-4 h-4"></i>
+              <span id="llm-hw-text">${t('set.llm.hardware_loading')}</span>
+            </div>
+            <div id="llm-models-list" class="set-llm-models">
+              <div class="sub" style="font-style:italic">${t('set.loading')}</div>
+            </div>
+            <div class="set-llm-footer">
+              <span id="llm-disk-usage" class="sub"></span>
+              <button class="mb-cta set-btn" id="btn-activate-local" disabled>
+                ${t('set.llm.activate_btn')}
+              </button>
             </div>
           </div>
         </section>
@@ -379,9 +406,18 @@ export async function mountSettings(host, opts = {}) {
     accList:  host.querySelector('#accounts-list'),
     openaiKey:   host.querySelector('#openai-key'),
     openaiModel: host.querySelector('#openai-model'),
-    aiEnabled:   host.querySelector('#ai-enabled'),
     aiFields:    host.querySelector('#ai-fields'),
     aiDisabledMsg: host.querySelector('#ai-disabled-msg'),
+    // Provider radio (OpenAI / Local) — section IA
+    provRadioOpenAI: host.querySelector('#llm-prov-openai'),
+    provRadioLocal:  host.querySelector('#llm-prov-local'),
+    panelOpenAI:     host.querySelector('#ai-panel-openai'),
+    panelLocal:      host.querySelector('#ai-panel-local'),
+    llmHwText:       host.querySelector('#llm-hw-text'),
+    llmHwBanner:     host.querySelector('#llm-hw-banner'),
+    llmModelsList:   host.querySelector('#llm-models-list'),
+    llmDiskUsage:    host.querySelector('#llm-disk-usage'),
+    btnActivateLocal:host.querySelector('#btn-activate-local'),
     ntfyEnabled: host.querySelector('#ntfy-enabled'),
     ntfyTopic:   host.querySelector('#ntfy-topic'),
     ntfyMin:     host.querySelector('#ntfy-min'),
@@ -414,7 +450,19 @@ export async function mountSettings(host, opts = {}) {
     mAppPwdLink: host.querySelector('#m-app-pwd-link'),
   };
 
-  const state = { providers: [], config: null, status: null };
+  const state = {
+    providers: [], config: null, status: null,
+    // LLM local : chargé à la demande au premier switch vers "Local"
+    // pour ne pas tirer /api/llm/hardware + /api/llm/models quand l'user
+    // reste sur OpenAI. Re-fetchés à chaque toggle pour rafraîchir l'état
+    // "downloaded" après un download/delete.
+    localLoaded: false,
+    hardware: null,
+    models: [],
+    selectedAnalyzer: null,
+    selectedDrafter:  null,
+    downloadsInFlight: new Set(),  // model_ids en cours de DL — bloque l'Activate
+  };
 
   // ── Model custom dropdown ──────────────────────────────────
   (function initModelDrop() {
@@ -491,6 +539,260 @@ export async function mountSettings(host, opts = {}) {
     render();
   }
 
+  // ── Local LLM panel ───────────────────────────────────────────────
+  // Charge le hardware + le catalog côté API, peuple la liste, et
+  // bind les boutons Download/Delete par modèle. Re-callable pour
+  // rafraîchir l'état après un download.
+
+  async function loadLocalLLM() {
+    try {
+      const [hw, models] = await Promise.all([
+        api('GET', '/api/llm/hardware'),
+        api('GET', '/api/llm/models'),
+      ]);
+      state.hardware = hw;
+      state.models = models;
+      state.localLoaded = true;
+      // Pré-sélection des modèles recommandés depuis la config persistée,
+      // sinon défaut catalog pour le tier détecté.
+      const llmLocal = (state.config.llm && state.config.llm.local) || {};
+      state.selectedAnalyzer = llmLocal.analyzer_model_id
+        || _defaultModelId(models, 'analyzer', hw.recommended_tier);
+      state.selectedDrafter = llmLocal.drafter_model_id
+        || _defaultModelId(models, 'drafter', hw.recommended_tier);
+      renderLocalLLM();
+    } catch (e) {
+      els.llmModelsList.innerHTML = `<div class="sub" style="color:var(--danger)">${t('set.llm.load_error', { msg: e.message || e })}</div>`;
+    }
+  }
+
+  function _defaultModelId(models, role, tier) {
+    const _tierRank = { light: 0, medium: 1, heavy: 2 };
+    const match = models.find(m => m.role === role && m.recommended_for_tier === tier);
+    if (match) return match.id;
+    // Fallback : 1er modèle compatible (tier ≤ détecté)
+    const compat = models.find(m => m.role === role && _tierRank[m.tier] <= _tierRank[tier]);
+    return compat ? compat.id : (models.find(m => m.role === role)?.id || null);
+  }
+
+  function renderLocalLLM() {
+    const hw = state.hardware;
+    const tier = hw.recommended_tier;
+    const tierLabel = t('set.llm.tier_' + tier);
+    const gpuPart = hw.gpu ? ` + ${hw.gpu}` : (hw.is_apple_silicon ? ' + Apple Silicon' : '');
+    els.llmHwText.textContent = t('set.llm.hardware_detected', {
+      ram: hw.ram_gb.toFixed(1), gpu: gpuPart, tier: tierLabel,
+    });
+
+    // Liste : analyzers d'abord, drafters ensuite. On grise les modèles
+    // d'un tier supérieur à celui détecté (warning RAM).
+    const _tierRank = { light: 0, medium: 1, heavy: 2 };
+    const userTierRank = _tierRank[tier];
+    const html = ['analyzer', 'drafter'].map(role => {
+      const roleLabel = t('set.llm.role_' + role);
+      const items = state.models
+        .filter(m => m.role === role)
+        .map(m => {
+          const overTier = _tierRank[m.tier] > userTierRank;
+          const isRecommended = m.recommended_for_tier === tier;
+          const isSelected = (role === 'analyzer' ? state.selectedAnalyzer : state.selectedDrafter) === m.id;
+          const sizeMb = (m.size_bytes / 1024 / 1024).toFixed(0);
+          const langs = (m.languages || []).slice(0, 4).join(', ');
+          const tooltip = overTier ? t('set.llm.heavy_warning') : '';
+          return `
+            <div class="set-llm-model ${overTier ? 'disabled' : ''} ${isRecommended ? 'recommended' : ''}"
+                 data-model-id="${escapeAttr(m.id)}" data-role="${role}" title="${escapeAttr(tooltip)}">
+              <div class="set-llm-model-info">
+                <div class="set-llm-model-name">
+                  <input type="radio" name="select-${role}" ${isSelected ? 'checked' : ''}
+                         data-select-id="${escapeAttr(m.id)}" data-select-role="${role}"
+                         style="margin-right:6px;vertical-align:middle">
+                  ${escapeHtml(m.name)}
+                </div>
+                <div class="set-llm-model-sub">
+                  ${sizeMb} Mo · ${escapeHtml(m.license)} · ${escapeHtml(langs)}
+                  ${isRecommended ? ' · ' + t('set.llm.recommended_badge') : ''}
+                </div>
+                <div id="dl-progress-${escapeAttr(m.id)}" class="set-llm-progress" style="display:none">
+                  <div class="set-llm-progress-bar" style="width:0%"></div>
+                </div>
+                <div id="dl-progress-text-${escapeAttr(m.id)}" class="set-llm-progress-text" style="display:none"></div>
+              </div>
+              <div class="set-llm-model-action">
+                ${m.downloaded
+                  ? `<button class="set-llm-btn danger" data-act="delete" data-id="${escapeAttr(m.id)}">${t('set.llm.delete_btn')}</button>`
+                  : `<button class="set-llm-btn" data-act="download" data-id="${escapeAttr(m.id)}">${t('set.llm.download_btn')}</button>`
+                }
+              </div>
+            </div>
+          `;
+        })
+        .join('');
+      return `
+        <div class="set-llm-role-group">
+          <div class="sub" style="font-weight:600;margin:8px 0 4px">${roleLabel}</div>
+          ${items}
+        </div>
+      `;
+    }).join('');
+    els.llmModelsList.innerHTML = html;
+
+    // Disk usage footer
+    const totalBytes = state.models.reduce((s, m) => s + (m.downloaded ? m.downloaded_bytes : 0), 0);
+    const totalGb = (totalBytes / 1024 / 1024 / 1024).toFixed(2);
+    els.llmDiskUsage.textContent = t('set.llm.disk_usage', { size: totalGb });
+
+    // Bind buttons
+    els.llmModelsList.querySelectorAll('[data-act]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.id;
+        if (btn.dataset.act === 'download') downloadModel(id);
+        if (btn.dataset.act === 'delete')   deleteModel(id);
+      });
+    });
+    // Bind radios (sélection analyzer/drafter)
+    els.llmModelsList.querySelectorAll('[data-select-id]').forEach(rad => {
+      rad.addEventListener('change', () => {
+        if (rad.dataset.selectRole === 'analyzer') state.selectedAnalyzer = rad.dataset.selectId;
+        else                                       state.selectedDrafter = rad.dataset.selectId;
+        _updateActivateButtonState();
+      });
+    });
+
+    _updateActivateButtonState();
+    refreshIcons();
+  }
+
+  function _updateActivateButtonState() {
+    // Activate dispo seulement quand l'analyzer choisi est téléchargé,
+    // aucun DL en cours, et au moins un drafter (downloadable on-demand
+    // mais souhaitable pour que enrich_draft marche tout de suite).
+    const a = state.models.find(m => m.id === state.selectedAnalyzer);
+    const canActivate = !!(a && a.downloaded) && state.downloadsInFlight.size === 0;
+    els.btnActivateLocal.disabled = !canActivate;
+    if (!canActivate && a && !a.downloaded) {
+      els.btnActivateLocal.title = t('set.llm.need_download');
+    } else if (state.downloadsInFlight.size > 0) {
+      els.btnActivateLocal.title = t('set.llm.dl_in_progress');
+    } else {
+      els.btnActivateLocal.title = '';
+    }
+  }
+
+  async function downloadModel(modelId) {
+    state.downloadsInFlight.add(modelId);
+    _updateActivateButtonState();
+
+    const progressEl = host.querySelector(`#dl-progress-${CSS.escape(modelId)}`);
+    const textEl     = host.querySelector(`#dl-progress-text-${CSS.escape(modelId)}`);
+    const bar = progressEl?.querySelector('.set-llm-progress-bar');
+    if (progressEl) progressEl.style.display = 'block';
+    if (textEl)     textEl.style.display = 'block';
+
+    // Désactive le bouton DL pendant l'opération
+    const btn = host.querySelector(`[data-act="download"][data-id="${CSS.escape(modelId)}"]`);
+    if (btn) { btn.disabled = true; btn.textContent = t('set.llm.downloading'); }
+
+    try {
+      const resp = await fetch(`/api/llm/models/${encodeURIComponent(modelId)}/download`, {
+        method: 'POST',
+      });
+      if (!resp.ok || !resp.body) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
+      // Parse SSE stream manuellement (pas d'EventSource pour POST)
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+        for (const evt of events) {
+          if (!evt.startsWith('data: ')) continue;
+          const data = JSON.parse(evt.slice(6));
+          if (data.error) {
+            throw new Error(data.error);
+          }
+          if (bar) bar.style.width = `${Math.round(data.progress * 100)}%`;
+          if (textEl) {
+            if (data.done) {
+              textEl.textContent = data.sha_ok ? t('set.llm.dl_done') : t('set.llm.dl_failed');
+            } else {
+              textEl.textContent = `${(data.downloaded_bytes / 1024 / 1024).toFixed(0)} / ${(data.total_bytes / 1024 / 1024).toFixed(0)} Mo · ${data.speed_mbps?.toFixed(1) || 0} Mo/s`;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      if (textEl) textEl.textContent = t('set.llm.dl_failed') + ' — ' + (e.message || e);
+    } finally {
+      state.downloadsInFlight.delete(modelId);
+      // Re-fetch le catalog pour avoir l'état downloaded à jour
+      await loadLocalLLM();
+    }
+  }
+
+  async function deleteModel(modelId) {
+    if (!confirm(t('set.llm.delete_confirm'))) return;
+    try {
+      await api('DELETE', `/api/llm/models/${encodeURIComponent(modelId)}`);
+      await loadLocalLLM();
+    } catch (e) {
+      alert(t('set.llm.delete_failed') + ' — ' + (e.message || e));
+    }
+  }
+
+  async function activateLocal() {
+    if (!state.selectedAnalyzer) return;
+    els.btnActivateLocal.disabled = true;
+    els.btnActivateLocal.textContent = t('set.llm.activating');
+    try {
+      const out = await api('POST', '/api/llm/activate', {
+        analyzer_model_id: state.selectedAnalyzer,
+        drafter_model_id: state.selectedDrafter || state.selectedAnalyzer,
+      });
+      if (out.warning) {
+        alert(t('set.llm.activate_warning_' + out.warning) || out.warning);
+      }
+      // Reload pour rafraîchir le banner "services running"
+      await loadAll();
+    } catch (e) {
+      alert(t('set.llm.activate_failed') + ' — ' + (e.message || e));
+    } finally {
+      els.btnActivateLocal.textContent = t('set.llm.activate_btn');
+      _updateActivateButtonState();
+    }
+  }
+
+  function setActiveProvider(provider, { skipPersist = false } = {}) {
+    // Visual state
+    els.provRadioOpenAI.checked = (provider === 'openai');
+    els.provRadioLocal.checked  = (provider === 'local');
+    // Fallback :has → classes manuelles
+    host.querySelectorAll('.set-provider-radio .set-prov-opt').forEach(opt => {
+      const inp = opt.querySelector('input');
+      opt.classList.toggle('is-active', inp && inp.checked);
+    });
+    els.panelOpenAI.classList.toggle('hidden', provider !== 'openai');
+    els.panelLocal.classList.toggle('hidden', provider !== 'local');
+
+    if (skipPersist) return;
+    // Persiste côté backend, déclenche reload pour rafraîchir le banner
+    api('POST', '/api/setup/llm', { provider })
+      .then(() => {
+        if (provider === 'local' && !state.localLoaded) {
+          loadLocalLLM();
+        }
+        return loadAll();  // refresh services_running banner
+      })
+      .catch((e) => {
+        alert(t('set.llm.switch_failed') + ' — ' + (e.message || e));
+      });
+  }
+
   function render() {
     els.dataDir.textContent = state.status.data_dir;
 
@@ -564,12 +866,15 @@ export async function mountSettings(host, opts = {}) {
       });
     }
 
-    // OpenAI
+    // ── IA — Provider radio + sous-panneaux ───────────────────────
+    const llmCfg = state.config.llm || { provider: 'openai' };
+    const providerActive = llmCfg.provider === 'local' ? 'local' : 'openai';
+    setActiveProvider(providerActive, { skipPersist: true });
+
+    // Sous-panneau OpenAI (toujours peuplé pour ne pas perdre l'état
+    // quand l'user bascule local → openai → local sans recharger).
     const oa = state.config.openai || {};
-    // The backend returns "***" when a key is set, "" when AI is off.
-    // Use that to drive the section's disabled/enabled visual state.
     const aiOn = !!oa.api_key;
-    els.aiEnabled.checked = aiOn;
     els.aiFields.classList.toggle('hidden', !aiOn);
     els.aiDisabledMsg.classList.toggle('hidden', aiOn);
     els.openaiKey.value = '';
@@ -577,6 +882,11 @@ export async function mountSettings(host, opts = {}) {
     els.openaiModel.value = oa.model || 'gpt-4o-mini';
     const _mWrap = host.querySelector('#openai-model-wrap');
     if (_mWrap && _mWrap._sync) _mWrap._sync(els.openaiModel.value);
+
+    // Sous-panneau Local — chargé à la demande la 1ère fois qu'on bascule.
+    if (providerActive === 'local' && !state.localLoaded) {
+      loadLocalLLM().catch((e) => console.error('loadLocalLLM:', e));
+    }
 
     // ntfy
     const ntfy = state.config.ntfy || {};
@@ -610,27 +920,22 @@ export async function mountSettings(host, opts = {}) {
   async function saveOpenAI() {
     const key = els.openaiKey.value.trim();
     const model = els.openaiModel.value;
-    const enabled = els.aiEnabled.checked;
-    // Three cases drive the api_key payload:
-    //   • toggle off   → "" (backend purges keyring, no-AI mode)
-    //   • toggle on, new key typed → that key
-    //   • toggle on, field empty   → MASK (keep existing)
-    let apiKey;
-    if (!enabled) {
-      apiKey = '';
-    } else if (key) {
-      apiKey = key;
-    } else {
-      apiKey = MASK;
-    }
+    // Two cases now (le toggle on/off est devenu le radio Provider) :
+    //   • champ vide : MASK = "garde la clé existante" (no-op si déjà set,
+    //     no-AI mode si jamais set)
+    //   • champ rempli : nouvelle clé. Pour DÉSACTIVER l'IA OpenAI, l'user
+    //     passe par la radio Provider → Local, OU efface explicitement la
+    //     clé en envoyant "" via le bouton Désactiver dans une révision
+    //     future. Aujourd'hui, vider la clé garde l'ancienne (sécurité).
+    const apiKey = key || MASK;
     setBusy(els.btnSaveOA, true, t('set.busy.saving'));
     try {
       await api('POST', '/api/setup/openai', { api_key: apiKey, model });
-      window.toast?.(enabled ? t('set.toast.ai_on') : t('set.toast.ai_off'));
+      window.toast?.(t('set.toast.ai_on'));
       els.openaiKey.value = '';
       // Notify the rest of the SPA (mailbox / dashboard) so they re-render
       // their AI-conditional UI without a hard reload.
-      window.dispatchEvent(new CustomEvent('ai-config-changed', { detail: { enabled } }));
+      window.dispatchEvent(new CustomEvent('ai-config-changed', { detail: { enabled: true } }));
       await loadAll();
     } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
     finally { setBusy(els.btnSaveOA, false); }
@@ -1011,13 +1316,15 @@ export async function mountSettings(host, opts = {}) {
   // ── Wire events ──
   els.btnAdd.addEventListener('click', openModal);
   els.btnSaveOA.addEventListener('click', saveOpenAI);
-  // Live toggle: reveal/hide the key+model form as the user flips the
-  // switch. The actual disable/enable is committed only on Enregistrer.
-  els.aiEnabled.addEventListener('change', () => {
-    const on = els.aiEnabled.checked;
-    els.aiFields.classList.toggle('hidden', !on);
-    els.aiDisabledMsg.classList.toggle('hidden', on);
+  // Provider radio (OpenAI / Local) — bascule le sous-panneau visible
+  // ET persiste côté backend via /api/setup/llm.
+  els.provRadioOpenAI.addEventListener('change', () => {
+    if (els.provRadioOpenAI.checked) setActiveProvider('openai');
   });
+  els.provRadioLocal.addEventListener('change', () => {
+    if (els.provRadioLocal.checked) setActiveProvider('local');
+  });
+  els.btnActivateLocal.addEventListener('click', activateLocal);
   els.btnSaveNt.addEventListener('click', saveNtfy);
   els.btnSaveGn.addEventListener('click', saveGeneral);
   host.querySelector('#btn-open-data')?.addEventListener('click', async () => {
@@ -1347,6 +1654,102 @@ function injectStyles() {
       display: inline-flex; align-items: center; gap: 8px;
       font-size: 13px; color: var(--text); cursor: pointer;
       user-select: none;
+    }
+
+    /* ── Provider radio (OpenAI / Local) ──────────────────────────
+       Pattern visuel : segmented control. Le label sélectionné est
+       souligné par un fond accent ; les autres restent surface-2. */
+    .set-provider-radio {
+      display: inline-flex; padding: 3px;
+      background: var(--surface-2); border-radius: 10px;
+      border: 1px solid var(--border);
+    }
+    .set-provider-radio .set-prov-opt {
+      position: relative; cursor: pointer;
+      padding: 6px 14px; font-size: 13px; font-weight: 500;
+      color: var(--muted); border-radius: 7px;
+      transition: background 140ms ease, color 140ms ease;
+    }
+    .set-provider-radio .set-prov-opt:hover { color: var(--text); }
+    .set-provider-radio .set-prov-opt input { position: absolute; opacity: 0; pointer-events: none; }
+    .set-provider-radio .set-prov-opt:has(input:checked) {
+      background: var(--accent); color: var(--accent-on);
+    }
+    /* Fallback pour les navigateurs sans :has — l'état est aussi piloté
+       par une classe .is-active posée par le JS. */
+    .set-provider-radio .set-prov-opt.is-active {
+      background: var(--accent); color: var(--accent-on);
+    }
+
+    /* ── Sous-panneau LLM local ───────────────────────────────── */
+    .set-llm-banner {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px; margin-bottom: 12px;
+      background: var(--surface-2); border-radius: 9px;
+      border: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .set-llm-banner i { color: var(--muted-2); flex-shrink: 0; }
+    .set-llm-banner.warn { border-left: 3px solid var(--warning); }
+
+    .set-llm-models {
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .set-llm-model {
+      display: grid; grid-template-columns: 24px 1fr auto;
+      align-items: center; gap: 12px;
+      padding: 10px 12px;
+      background: var(--surface-2); border-radius: 9px;
+      border: 1px solid var(--border);
+    }
+    .set-llm-model.disabled { opacity: 0.5; }
+    .set-llm-model.recommended { border-color: var(--accent); border-width: 1px; }
+    .set-llm-model.recommended::before {
+      content: ""; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent); justify-self: center;
+    }
+    .set-llm-model:not(.recommended)::before {
+      content: ""; width: 6px; height: 6px; border-radius: 50%;
+      background: transparent; justify-self: center;
+    }
+    .set-llm-model-info {
+      display: flex; flex-direction: column; gap: 2px; min-width: 0;
+    }
+    .set-llm-model-name {
+      font-size: 13px; font-weight: 600; color: var(--text);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .set-llm-model-sub {
+      font-size: 11px; color: var(--muted);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .set-llm-model-action {
+      flex-shrink: 0;
+    }
+    .set-llm-btn {
+      padding: 5px 10px; font-size: 12px; font-weight: 600;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 7px; color: var(--text); cursor: pointer;
+      transition: background 120ms ease, border-color 120ms ease;
+    }
+    .set-llm-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+    .set-llm-btn.danger:hover { background: rgba(239,68,68,.1); border-color: var(--danger); color: var(--danger); }
+    .set-llm-progress {
+      width: 100%; height: 4px; border-radius: 2px;
+      background: var(--surface); overflow: hidden;
+      margin-top: 6px;
+    }
+    .set-llm-progress-bar {
+      height: 100%; background: var(--accent);
+      transition: width 200ms ease;
+    }
+    .set-llm-progress-text {
+      font-size: 10px; color: var(--muted); margin-top: 2px;
+    }
+    .set-llm-footer {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: 14px; padding-top: 12px;
+      border-top: 1px solid var(--border-2);
     }
 
     .set-status {
