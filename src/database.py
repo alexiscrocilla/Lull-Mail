@@ -131,6 +131,16 @@ def init_db():
             con.execute("ALTER TABLE emails ADD COLUMN auth_results TEXT")
         if "ai_attempts" not in cols:
             con.execute("ALTER TABLE emails ADD COLUMN ai_attempts INTEGER DEFAULT 0")
+        # Phase 1 refactor LLM : trace quel provider a classifié chaque ligne.
+        # Pour les lignes pré-refactor, on remplit rétrospectivement par
+        # "openai" (le seul backend qui existait) afin que la colonne soit
+        # exploitable côté UI/analytics sans une migration onéreuse.
+        # Valeurs futures : "local-phi-3.5-mini-q4", "local-classifier"
+        # (règles), "local-classifier-fallback" (rules après crash LLM).
+        if "analyzed_by" not in cols:
+            con.execute(
+                "ALTER TABLE emails ADD COLUMN analyzed_by TEXT DEFAULT 'openai'"
+            )
         # Sortable ISO 8601 timestamp derived from the RFC 2822 Date header.
         # Pure-string ORDER BY on date_received sorts on the weekday name
         # ("Wed" > "Sun" lexicographically), which silently hides recent mail.
@@ -379,6 +389,7 @@ def update_email_ai(message_id: str, ai: Dict[str, Any]):
                 tokens_in         = ?,
                 tokens_out        = ?,
                 local_classified  = ?,
+                analyzed_by       = ?,
                 processed_at      = datetime('now')
             WHERE message_id = ?
         """, (
@@ -391,6 +402,12 @@ def update_email_ai(message_id: str, ai: Dict[str, Any]):
             int(ai.get("tokens_in", 0)),
             int(ai.get("tokens_out", 0)),
             1 if ai.get("local_classified") else 0,
+            # `analyzed_by` est posé par chaque provider (cf. OpenAIProvider).
+            # Le fallback no-AI dans scheduler.py utilise "local-classifier".
+            # Les règles `src/local_classifier.py` posent "local-classifier"
+            # à terme (Phase 5) ; Phase 1 garde la rétro-compat avec
+            # `local_classified=1` qui informe l'UI séparément.
+            ai.get("analyzed_by") or ("openai" if not ai.get("local_classified") else "local-classifier"),
             message_id,
         ))
 

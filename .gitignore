@@ -18,6 +18,7 @@ src/_version.py
 
 # ── PyInstaller build artefacts ──
 build/
+build_spike/
 dist/
 *.spec.bak
 

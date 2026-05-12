@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -80,6 +80,23 @@ class OpenAIConfig(BaseModel):
         if v.startswith(_TODO_PLACEHOLDER):
             raise ValueError("clé API OpenAI non configurée (placeholder TODO)")
         return v
+
+
+class LLMConfig(BaseModel):
+    """Sélecteur de provider LLM.
+
+    Phase 1 : seul `"openai"` est supporté. `ai_enabled()` continue de
+    s'appuyer uniquement sur `openai.api_key`. Phase 2 ajoutera la
+    valeur `"local"` qui active `LocalLLMProvider` (Phi-3.5-mini +
+    rules + score dérivé), avec une sous-clé `local: LocalLLMConfig`
+    à ce moment-là.
+
+    Le champ est tolérant : un YAML qui ne contient pas la section
+    `llm:` retombe sur le défaut `"openai"`, donc les installations
+    existantes ne cassent pas après le refactor.
+    """
+
+    provider: Literal["openai", "local"] = "openai"
 
 
 class NtfyConfig(BaseModel):
@@ -179,6 +196,7 @@ class FullConfig(BaseModel):
     model_config = {"extra": "allow"}
 
     openai: OpenAIConfig
+    llm: LLMConfig = Field(default_factory=LLMConfig)
     ntfy: NtfyConfig = Field(default_factory=NtfyConfig)
     polling: PollingConfig = Field(default_factory=PollingConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
