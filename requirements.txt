@@ -23,7 +23,22 @@ slowapi==0.1.9
 # helpers used for outbound-attachment uploads (POST /api/uploads).
 python-multipart==0.0.20
 
+# Hardware detection (RAM / GPU / CPU cores) for the local-LLM tier
+# recommendation in Settings → IA. Falls back to a conservative 8 GB
+# estimate if missing, so this stays a soft dep — but we pin it anyway
+# because every supported platform ships a wheel.
+psutil==6.1.0
+
 # --- Desktop app (Windows) ---
 pywebview==5.3.2
 pystray==0.19.5
 Pillow==10.4.0
+
+# --- Optional: local LLM backend ---
+# Installed separately via `pip install -r requirements-local.txt
+# --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu`.
+# Keeping it out of the main requirements lets a contributor work on
+# the OpenAI path without pulling a 25 MB native wheel + needing the
+# extra index URL. The frozen build (PyInstaller) must install
+# requirements-local.txt in its environment before invoking
+# `pyinstaller lull_mail.spec`.

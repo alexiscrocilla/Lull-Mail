@@ -1,0 +1,28 @@
+# Local LLM backend — installé séparément du `requirements.txt` principal
+# parce que le wheel est lourd (~25 MB de binaires natifs) et n'est pas
+# nécessaire pour la branche OpenAI par défaut.
+#
+# Installation :
+#     pip install -r requirements-local.txt \
+#         --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+#
+# Pourquoi pin 0.3.0 et pas plus récent :
+#   - PyPI n'a pas de wheel cp313 pour 0.3.5. Le build source échoue
+#     (incompatibilité MSVC moderne avec <chrono> dans llama.cpp).
+#   - 0.3.23 (latest 2026) a un wheel sur l'index abetlen mais
+#     utilise des instructions CPU non supportées par les Intel
+#     Core 12-13ème gen (AVX-512 désactivé sur les P-cores). Crash
+#     `STATUS_ILLEGAL_INSTRUCTION` au chargement du modèle.
+#   - 0.3.0 est la dernière version dont l'index abetlen publie un
+#     wheel cp313 explicite + compatible CPU mainstream. Marche en dev
+#     ET dans le binaire frozen PyInstaller.
+#
+# Pour upgrade :
+#   1. Lire l'issue tracker upstream pour vérifier que la version cible
+#      a un wheel cp313 disponible sur https://abetlen.github.io/llama-cpp-python/whl/cpu/
+#   2. Tester sur un i5-13600K (ou équivalent CPU hybride sans AVX-512)
+#      via `python scripts/smoke_llama.py data/models/<un-petit>.gguf`.
+#   3. Tester aussi sur un Mac Apple Silicon — le pre-tokenizer évolue
+#      entre versions et un modèle Phi-4-mini exige llama-cpp >= 0.3.6.
+
+llama-cpp-python[server]==0.3.0

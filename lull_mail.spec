@@ -74,13 +74,31 @@ hiddenimports += [
     "uvicorn.lifespan.on",
 ]
 
+# Local LLM backend (opt-in). Bundle it ONLY when `llama_cpp` is
+# importable in the build environment. The `hooks/hook-llama_cpp.py`
+# script handles binaries + data files (native libllama + Metal
+# shaders) via `collect_dynamic_libs` and `collect_data_files`. Without
+# `llama_cpp` installed, the local provider is unreachable at runtime
+# anyway (LocalLLMProvider tries to spawn `python -m llama_cpp.server`
+# and surfaces a clear error) — but the OpenAI path keeps working,
+# which is the intended default ship state.
+try:
+    import llama_cpp  # noqa: F401
+    _local_llm_available = True
+except ImportError:
+    _local_llm_available = False
+
+_hookspath: list[str] = []
+if _local_llm_available:
+    _hookspath.append(_os.path.join(_os.path.dirname(_os.path.abspath(SPEC)), "hooks"))
+
 a = Analysis(
     ["app_gui.py"],
     pathex=[],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    hookspath=_hookspath,
     hooksconfig={},
     runtime_hooks=[],
     excludes=["tkinter", "matplotlib", "numpy", "pandas", "pytest"],
