@@ -39,7 +39,14 @@ logger = logging.getLogger(__name__)
 # Re-exported for backwards compat with code that referenced cfg.CONFIG_PATH.
 CONFIG_PATH = paths.CONFIG_PATH
 
-_config: Dict[str, Any] = {}
+# Three states:
+#   None  → never attempted (cfg.get() must trigger load())
+#   {}    → try_load() ran and failed → app is in setup mode; cfg.get()
+#           must return this empty dict, NOT retry load() and re-raise
+#           (otherwise every API request crashes after an orphaned
+#           keyring secret takes the config offline).
+#   dict  → successfully loaded
+_config: Optional[Dict[str, Any]] = None
 
 
 class ConfigError(Exception):
@@ -274,7 +281,12 @@ def try_load() -> Optional[Dict[str, Any]]:
 
 
 def get() -> Dict[str, Any]:
-    if not _config:
+    # `_config is None` = "never touched" — first caller triggers the
+    # initial load(). An empty dict means try_load() ran and failed
+    # (setup mode); callers handle that gracefully via conf.get(...).
+    # Re-raising here would crash every request that hits cfg.get()
+    # after a single broken secret takes the config offline.
+    if _config is None:
         return load()
     return _config
 
@@ -282,7 +294,7 @@ def get() -> Dict[str, Any]:
 def reload() -> Optional[Dict[str, Any]]:
     """Force a re-read from disk. Used by the setup API after save()."""
     global _config
-    _config = {}
+    _config = None
     return try_load()
 
 
