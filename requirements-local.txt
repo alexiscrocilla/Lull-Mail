@@ -24,5 +24,35 @@
 #      via `python scripts/smoke_llama.py data/models/<un-petit>.gguf`.
 #   3. Tester aussi sur un Mac Apple Silicon — le pre-tokenizer évolue
 #      entre versions et un modèle Phi-4-mini exige llama-cpp >= 0.3.6.
+#
+# ──────────────────────────────────────────────────────────────────────
+# Accélération GPU NVIDIA — différée à v2
+# ──────────────────────────────────────────────────────────────────────
+#
+# Le code (src/llm/server.py, src/llm/local_provider.py) lit
+# `cfg.llm.local.gpu_layers` et passe `--n_gpu_layers <N>` au
+# subprocess `llama_cpp.server` quand > 0. La logique est donc PRÊTE
+# à utiliser le GPU dès qu'une wheel CUDA cp313 sera disponible.
+#
+# Pourquoi désactivé par défaut en v1 :
+#   - L'index abetlen NE publie PAS de wheels cp313+CUDA+win64 (testé
+#     2026-05-13 : cu121/cu122/cu123/cu124 — zéro wheel cp313). Les
+#     wheels cp312 existent (29 versions) mais le projet est sur 3.13.
+#   - Le build source CUDA sur Windows + MSVC moderne échoue avec la
+#     même erreur `std::chrono::system_clock` que la version CPU.
+#
+# Pour un dev / power-user qui veut quand même activer le GPU :
+#   - Solution propre : créer un venv Python 3.12 dédié + installer
+#         pip install "llama-cpp-python[server]==0.3.4" \
+#             --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+#     puis dans config.yaml, section llm.local : `gpu_layers: 999`.
+#   - Sur Apple Silicon, Metal est automatiquement actif dès que
+#     `gpu_layers > 0` — pas besoin de wheel séparée, llama.cpp détecte
+#     Metal à la compilation et l'utilise.
+#
+# v2 envisagée : (a) attendre que abetlen publie cp313+CUDA, OU
+# (b) basculer le projet sur Python 3.12, OU (c) bundler Ollama comme
+# binaire externe. Décision reportée — la perf CPU avec Phi-3.5 +
+# Qwen 3B reste correcte pour la cible "free + privé" sur 8-16 Go RAM.
 
 llama-cpp-python[server]==0.3.0
