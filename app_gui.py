@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 # ── Working directory ────────────────────────────────────────────────────────
 # When launched from a Start-menu shortcut or double-clicked from anywhere,
@@ -154,6 +155,52 @@ def _pick_ephemeral_port() -> int:
     return port
 
 
+def _pick_stable_port() -> int:
+    """Reuse the port from the previous session when possible.
+
+    localStorage in WebView2 is partitioned by origin (`scheme://host:port`),
+    so a fresh ephemeral port every launch makes sidebar collapse state,
+    sort prefs, section order, etc. effectively *non-persistent* — even
+    though `webview.start(storage_path=…)` keeps the underlying profile.
+    We therefore remember the last-used port in `data/.last_port` and try
+    to bind it again on the next launch. If it's taken (a second instance
+    is up, or another app grabbed it in the meantime), fall back to a
+    fresh ephemeral allocation — losing the saved UI prefs that one time.
+    """
+    port_file = paths.APP_DATA_DIR / ".last_port"
+    last: Optional[int] = None
+    try:
+        raw = port_file.read_text(encoding="utf-8").strip()
+        n = int(raw)
+        if 1024 <= n <= 65535:
+            last = n
+    except (OSError, ValueError):
+        last = None
+
+    if last is not None:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            # SO_REUSEADDR is intentionally NOT set — we want to fail fast
+            # if the port is already bound, not race uvicorn to it.
+            s.bind(("127.0.0.1", last))
+            s.close()
+            return last
+        except OSError:
+            try:
+                s.close()
+            except OSError:
+                pass
+
+    port = _pick_ephemeral_port()
+    try:
+        port_file.write_text(str(port), encoding="utf-8")
+    except OSError:
+        # Storage is read-only or full — not fatal, we just lose
+        # persistence this launch.
+        pass
+    return port
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
@@ -184,13 +231,14 @@ def main() -> int:
         logger.info("Aucune configuration valide — démarrage en mode setup")
 
     # The desktop app never exposes a port to the user — it's an internal
-    # implementation detail. We always bind to loopback on a fresh
-    # ephemeral port so multiple instances can coexist and there's no
-    # "what's that :8000 about?" question. Power users can override via
-    # LULLMAIL_PORT if they really want a fixed port.
+    # implementation detail. We bind to loopback on the port from the
+    # previous launch when it's still free (so WebView2's origin-keyed
+    # localStorage keeps sidebar prefs, section order, etc. across
+    # restarts) and fall back to a fresh ephemeral port otherwise.
+    # Power users can override via LULLMAIL_PORT.
     host = "127.0.0.1"
     forced = os.environ.get("LULLMAIL_PORT")
-    port = int(forced) if forced and forced.isdigit() else _pick_ephemeral_port()
+    port = int(forced) if forced and forced.isdigit() else _pick_stable_port()
     url = f"http://127.0.0.1:{port}"
 
     # Publish the bound port so the origin-check middleware can build
@@ -213,6 +261,14 @@ def main() -> int:
     logger.info("Application prête")
 
     import webview  # imported late so the splash isn't blocked by it
+
+    # Pywebview defaults `ALLOW_DOWNLOADS` to False — WebView2 then cancels
+    # every download (`args.Cancel = True` in `on_download_starting`). Without
+    # this flag the attachment "Télécharger" buttons silently no-op in the
+    # packaged app, even though the FastAPI route responds correctly with
+    # `Content-Disposition: attachment`. Enabling it surfaces the native
+    # Windows save dialog rooted at the user's Downloads folder.
+    webview.settings['ALLOW_DOWNLOADS'] = True
 
     window = webview.create_window(
         title="Lull Mail",
