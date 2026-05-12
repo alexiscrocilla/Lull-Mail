@@ -128,6 +128,12 @@ class LLMServer:
     model_path: Path
     n_ctx: int = 4096
     n_threads: int = 6
+    # Combien de layers du modèle décharger sur le GPU. 0 = CPU only
+    # (défaut v1, fonctionne avec la wheel `llama-cpp-python[server]==0.3.0`
+    # depuis l'index abetlen `/whl/cpu`). >0 = offload partiel ou total
+    # (nécessite la wheel CUDA depuis `/whl/cu121` ou `/whl/cu124`).
+    # 999 = "tout offload" — llama.cpp clamp à n_layer du modèle.
+    n_gpu_layers: int = 0
     host: str = "127.0.0.1"
     # Auto-attribué dans `start()` si laissé à 0
     port: int = 0
@@ -181,8 +187,17 @@ class LLMServer:
             "--n_threads", str(self.n_threads),
             "--api_key", self.api_key,
         ]
-        logger.info("[%s] starting subprocess on :%d (model=%s)",
-                    self.label, self.port, self.model_path.name)
+        if self.n_gpu_layers > 0:
+            # llama_cpp.server passe ce flag à llama.cpp qui l'interprète
+            # comme "essaie d'offload N layers sur le GPU détecté". Avec
+            # 999, le runtime offload tout ce qui rentre dans la VRAM
+            # et garde le reste sur CPU (split automatique). No-op si
+            # la wheel installée est CPU-only — llama.cpp loggue un
+            # warning mais le serveur démarre quand même.
+            cmd.extend(["--n_gpu_layers", str(self.n_gpu_layers)])
+        gpu_part = f", n_gpu_layers={self.n_gpu_layers}" if self.n_gpu_layers else ""
+        logger.info("[%s] starting subprocess on :%d (model=%s%s)",
+                    self.label, self.port, self.model_path.name, gpu_part)
 
         # On capture stdout+stderr pour les router vers le logger principal
         # — sinon llama_cpp.server fait des println debug sur le terminal.

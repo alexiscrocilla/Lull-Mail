@@ -67,7 +67,9 @@ def test_base_url_format(tmp_model):
 def test_start_calls_popen_with_correct_args(tmp_model, monkeypatch):
     """Vérifie que le subprocess est lancé avec --model, --port,
     --n_ctx, --n_threads, --api_key — pas d'arguments manquants qui
-    feraient crasher llama_cpp.server au démarrage."""
+    feraient crasher llama_cpp.server au démarrage. Par défaut
+    `n_gpu_layers=0`, donc `--n_gpu_layers` NE doit PAS être passé
+    (la wheel CPU n'accepte pas le flag dans certaines versions)."""
     captured_cmd = []
 
     def fake_popen(cmd, **kwargs):
@@ -98,6 +100,37 @@ def test_start_calls_popen_with_correct_args(tmp_model, monkeypatch):
     assert "4" in captured_cmd
     assert "--api_key" in captured_cmd
     assert "test-token-abc" in captured_cmd
+    # En mode CPU (n_gpu_layers=0), le flag est omis.
+    assert "--n_gpu_layers" not in captured_cmd
+    server._proc = None
+
+
+def test_start_passes_n_gpu_layers_when_set(tmp_model, monkeypatch):
+    """Quand n_gpu_layers > 0 (mode GPU opt-in), le flag doit être
+    passé au subprocess. Nécessite la wheel CUDA de llama-cpp-python
+    installée séparément ; le subprocess ignore le flag avec la wheel
+    CPU (log warning sans crash)."""
+    captured_cmd = []
+
+    def fake_popen(cmd, **kwargs):
+        captured_cmd[:] = cmd
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.stdout = iter([])
+        return proc
+
+    monkeypatch.setattr(srv.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(srv, "_wait_for_port", lambda *a, **k: True)
+    monkeypatch.setattr(srv, "_http_get_models",
+                        lambda *a, **k: {"data": [{"id": "fake"}]})
+
+    server = srv.LLMServer(model_path=tmp_model, port=51000, n_gpu_layers=999)
+    server.start(ready_timeout=2)
+    assert "--n_gpu_layers" in captured_cmd
+    # La valeur exacte est passée verbatim — 999 = "offload tout ce qui
+    # rentre dans la VRAM", llama.cpp clamp côté C au n_layer du modèle.
+    idx = captured_cmd.index("--n_gpu_layers")
+    assert captured_cmd[idx + 1] == "999"
     server._proc = None
 
 

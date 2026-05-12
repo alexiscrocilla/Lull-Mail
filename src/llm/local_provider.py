@@ -112,10 +112,15 @@ class LocalLLMProvider(LLMProvider):
             # Reload : on arrête l'ancien si modèle différent.
             if self.analyzer_server is not None:
                 self.analyzer_server.stop()
+            # gpu_layers > 0 nécessite la wheel CUDA de llama-cpp-python
+            # installée séparément (`--extra-index-url .../whl/cu121`).
+            # Avec la wheel CPU, le flag est ignoré sans casser.
+            gpu_layers = int(local_cfg.get("gpu_layers", 0))
             self.analyzer_server = AnalyzerServer(
                 model_path=analyzer_path,
                 n_ctx=ctx,
                 n_threads=n_threads,
+                n_gpu_layers=gpu_layers,
             )
             self.analyzer_server.start()
             self.analyzer_model_id = analyzer_id
@@ -280,8 +285,12 @@ class LocalLLMProvider(LLMProvider):
             local_cfg = (cfg.get().get("llm") or {}).get("local") or {}
             ctx = local_cfg.get("context_size", 4096)
             n_threads = local_cfg.get("n_threads", 6)
+            # Le drafter prend la même config gpu_layers que l'analyzer
+            # — il n'y a qu'un seul GPU à partager (ou pas de GPU).
+            gpu_layers = int(local_cfg.get("gpu_layers", 0))
             self.drafter_server = DrafterServer(
                 model_path=path, n_ctx=ctx, n_threads=n_threads,
+                n_gpu_layers=gpu_layers,
             )
             self.drafter_server.start()
         except LLMServerError as e:
