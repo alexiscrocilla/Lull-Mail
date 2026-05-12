@@ -466,7 +466,7 @@ export async function mountMailbox(host, _opts) {
   const FOLDERS_L = FOLDERS.map((f) => ({ ...f, label: t(f.labelKey) }));
   host.innerHTML = `
     <section class="mailbox no-selection" aria-label="${t('mb.aria.mailbox')}">
-      <aside class="mb-side" aria-label="${t('mb.aria.sidebar')}">
+      <aside class="mb-side mb-stagger" aria-label="${t('mb.aria.sidebar')}">
         <div class="mb-side-head">
           <h1>${t('mb.title')}</h1>
           <button class="icon-btn" id="btn-sync" aria-label="${t('mb.sync')}" title="${t('mb.sync')}">
@@ -480,47 +480,64 @@ export async function mountMailbox(host, _opts) {
 
         <div class="mb-side-scroll">
 
-        <div class="mb-section-title" id="title-folders">
-          <span>${t('mb.sidebar.folders')}</span>
-          <div style="display:flex;align-items:center;gap:4px">
-            <button class="icon-btn" id="btn-add-folder" style="width:24px;height:24px" aria-label="${t('mb.folder.create')}" onclick="event.stopPropagation()">
-              <i data-lucide="plus" class="w-4 h-4"></i>
-            </button>
+        <!--
+          Each .mb-side-section wrapper is baked into the markup. The
+          drag-to-reorder code (setupSidebarReorder) used to wrap them
+          via appendChild at mount time, but that re-parenting restarts
+          CSS animations on the children — only on the "middle" sections,
+          since #title-folders was first in DOM order and #title-accounts
+          didn't exist yet at wrap time. Pre-wrapping eliminates that
+          asymmetry; the drag code now just attaches event listeners.
+        -->
+        <div class="mb-side-section" data-section="folders">
+          <div class="mb-section-title" id="title-folders">
+            <span>${t('mb.sidebar.folders')}</span>
+            <div style="display:flex;align-items:center;gap:4px">
+              <button class="icon-btn" id="btn-add-folder" style="width:24px;height:24px" aria-label="${t('mb.folder.create')}" onclick="event.stopPropagation()">
+                <i data-lucide="plus" class="w-4 h-4"></i>
+              </button>
+              <svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </div>
+          <div class="mb-collapsible" id="wrap-folders">
+            <div class="mb-collapsible-inner">
+              <div class="mb-section" id="mb-folders"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="mb-side-section" data-section="labels">
+          <div class="mb-section-title" id="title-labels">
+            <span>${t('mb.sidebar.categories')}</span>
             <svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
           </div>
-        </div>
-        <div class="mb-collapsible" id="wrap-folders">
-          <div class="mb-collapsible-inner">
-            <div class="mb-section" id="mb-folders"></div>
+          <div class="mb-collapsible" id="wrap-labels">
+            <div class="mb-collapsible-inner">
+              <div class="mb-section" id="mb-labels"></div>
+            </div>
           </div>
         </div>
 
-        <div class="mb-section-title" id="title-labels">
-          <span>${t('mb.sidebar.categories')}</span>
-          <svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-        </div>
-        <div class="mb-collapsible" id="wrap-labels">
-          <div class="mb-collapsible-inner">
-            <div class="mb-section" id="mb-labels"></div>
+        <div class="mb-side-section" data-section="userlabels">
+          <div class="mb-section-title" id="title-userlabels">
+            <span>${t('mb.sidebar.labels')}</span>
+            <div style="display:flex;align-items:center;gap:4px">
+              <button class="icon-btn" id="btn-add-label" style="width:24px;height:24px" aria-label="${t('mb.label.add')}" onclick="event.stopPropagation()">
+                <i data-lucide="plus" class="w-4 h-4"></i>
+              </button>
+              <svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </div>
+          <div class="mb-collapsible" id="wrap-userlabels">
+            <div class="mb-collapsible-inner">
+              <div class="mb-section" id="mb-userlabels"></div>
+            </div>
           </div>
         </div>
 
-        <div class="mb-section-title" id="title-userlabels">
-          <span>${t('mb.sidebar.labels')}</span>
-          <div style="display:flex;align-items:center;gap:4px">
-            <button class="icon-btn" id="btn-add-label" style="width:24px;height:24px" aria-label="${t('mb.label.add')}" onclick="event.stopPropagation()">
-              <i data-lucide="plus" class="w-4 h-4"></i>
-            </button>
-            <svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-          </div>
+        <div class="mb-side-section" data-section="accounts">
+          <div id="mb-accounts-wrap"></div>
         </div>
-        <div class="mb-collapsible" id="wrap-userlabels">
-          <div class="mb-collapsible-inner">
-            <div class="mb-section" id="mb-userlabels"></div>
-          </div>
-        </div>
-
-        <div id="mb-accounts-wrap"></div>
 
         </div><!-- /.mb-side-scroll -->
       </aside>
@@ -600,9 +617,14 @@ export async function mountMailbox(host, _opts) {
   const $ = (sel) => host.querySelector(sel);
 
   // ── Collapsible sidebar sections ──────────────────────────
-  function initCollapsible(titleEl, wrapEl, storageKey) {
+  function initCollapsible(titleEl, wrapEl, storageKey, { defaultCollapsed = false } = {}) {
     if (!titleEl || !wrapEl) return;
-    const collapsed = localStorage.getItem(storageKey) === '1';
+    // null = key has never been written → fall back to the
+    // section-specific default (open for FOLDERS/CATEGORIES/COMPTES,
+    // closed for ÉTIQUETTES). Once the user has toggled it the stored
+    // '0' / '1' takes over regardless of the default.
+    const stored = localStorage.getItem(storageKey);
+    const collapsed = stored === null ? defaultCollapsed : stored === '1';
     if (collapsed) {
       wrapEl.classList.add('is-collapsed');
       titleEl.classList.add('is-collapsed');
@@ -633,24 +655,26 @@ export async function mountMailbox(host, _opts) {
     const scroll = host.querySelector('.mb-side-scroll');
     if (!scroll || scroll.dataset.reorderReady === '1') return;
 
-    // Wrap each section's members under a single draggable container.
-    for (const sec of _SIDEBAR_SECTIONS) {
-      const els = sec.members.map((sel) => host.querySelector(sel)).filter(Boolean);
-      if (!els.length) continue;
-      const wrap = document.createElement('div');
-      wrap.className = 'mb-side-section';
-      wrap.dataset.section = sec.id;
-      els[0].parentNode.insertBefore(wrap, els[0]);
-      els.forEach((el) => wrap.appendChild(el));
+    // Wrappers are baked into the static markup now. We just attach the
+    // drag handlers; no DOM moves, no animation restarts on the children.
+    host.querySelectorAll('.mb-side-section').forEach((wrap) => {
       wireSectionDrag(wrap);
-    }
+    });
 
     // Restore saved order — append in order, last entries first wins
-    // because appendChild moves to the end.
+    // because appendChild moves to the end. NOTE: this DOES re-parent
+    // the sections (and so may restart child animations the first frame
+    // after mount). It only runs when the user has previously reordered
+    // sections; default order matches the markup and triggers no moves.
     let saved = [];
     try { saved = JSON.parse(localStorage.getItem(_SIDEBAR_ORDER_KEY) || '[]'); } catch (_) {}
     if (Array.isArray(saved) && saved.length) {
-      for (const id of saved) {
+      const declared = _SIDEBAR_SECTIONS.map((s) => s.id);
+      // No-op when the saved order is identical to the declared order —
+      // avoids a useless reparent (and its animation-restart side effect).
+      const same = saved.length === declared.length
+        && saved.every((id, i) => id === declared[i]);
+      if (!same) for (const id of saved) {
         const w = host.querySelector(`.mb-side-section[data-section="${id}"]`);
         if (w) scroll.appendChild(w);
       }
@@ -753,6 +777,12 @@ export async function mountMailbox(host, _opts) {
       </button>
     `).join('');
     cont.innerHTML = builtins + customs;
+    // Materialise the <i data-lucide> placeholders into real <svg> at
+    // the same instant the buttons land in the DOM. Otherwise the
+    // sidebar cascade animation begins on placeholders, the global
+    // `createIcons()` at the end of mount swaps them in late, and the
+    // user sees icons "appear after" their text label.
+    window.lucide?.createIcons({ el: cont });
     cont.querySelectorAll('.mb-folder').forEach((b) => {
       b.addEventListener('click', (e) => {
         // Ignore clicks on the inline edit chevron — handled below.
@@ -803,8 +833,12 @@ export async function mountMailbox(host, _opts) {
     cont.querySelectorAll('.mb-label').forEach((b) => {
       b.addEventListener('click', () => {
         state.category = b.dataset.cat;
+        _filterDidChange = true;
         renderLabels();
-        loadEmails();
+        // Category is a client-side narrowing of the already-loaded
+        // dataset — no API round-trip needed, the chip should feel
+        // instant. Same pattern as the quick chips below.
+        applyFilter();
       });
     });
   }
@@ -1156,10 +1190,64 @@ export async function mountMailbox(host, _opts) {
     });
   }
 
+  // Structural fingerprint: which accounts exist and in what type+name
+  // shape. Periodic refreshes that don't change the set should NOT
+  // rebuild the sidebar DOM — that wipes focus/hover/tooltip state and
+  // makes the sidebar visibly flicker every 60s. We patch badge counts
+  // and the active-state classes in place instead.
+  let _accountsFingerprint = '';
+
+  function _patchAccountBadges(section) {
+    for (const a of state.accounts) {
+      const btn = section.querySelector(`[data-acc="${CSS.escape(a.email)}"]`);
+      if (!btn) continue;
+      const badge = btn.querySelector('.mb-acc-badge');
+      if (!badge) continue;
+      const stats = state.accountStats[a.email];
+      const unread = stats?.unread ?? 0;
+      const err = stats?.sync_error || null;
+      if (err) {
+        badge.classList.add('error');
+        badge.classList.remove('on-active');
+        badge.textContent = '!';
+        badge.setAttribute('title', err);
+      } else {
+        badge.classList.remove('error');
+        badge.removeAttribute('title');
+        badge.textContent = String(unread);
+      }
+    }
+    section.querySelectorAll('[data-sub-type]').forEach((titleEl) => {
+      const type = titleEl.dataset.subType;
+      const accs = state.accounts.filter((a) =>
+        (ACCOUNT_TYPE_META[a.type] ? a.type : 'other') === type
+      );
+      const total = accs.reduce(
+        (sum, a) => sum + (state.accountStats[a.email]?.unread ?? 0), 0
+      );
+      let countEl = titleEl.querySelector('.mb-acc-type-count');
+      if (total > 0) {
+        if (!countEl) {
+          countEl = document.createElement('span');
+          countEl.className = 'mb-acc-type-count';
+          const chev = titleEl.querySelector('.mb-collapse-icon');
+          titleEl.insertBefore(countEl, chev);
+        }
+        countEl.textContent = String(total);
+      } else if (countEl) {
+        countEl.remove();
+      }
+    });
+  }
+
   function renderAccounts() {
     const outerWrap = $('#mb-accounts-wrap');
     if (!outerWrap) return;
-    if (!state.accounts.length) { outerWrap.innerHTML = ''; return; }
+    if (!state.accounts.length) {
+      outerWrap.innerHTML = '';
+      _accountsFingerprint = '';
+      return;
+    }
 
     const chevSvg = `<svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
 
@@ -1185,6 +1273,21 @@ export async function mountMailbox(host, _opts) {
     const allSelected = state.accountFilters.size === 0;
     const section = $('#mb-accounts-list');
 
+    // Skip the full innerHTML rebuild when the structural set of
+    // accounts (email + type + name) is identical to the last paint.
+    // Background refresh just wants to refresh badge counts; rebuilding
+    // the whole sidebar every 60s flickers the UI, drops focus, and
+    // closes any popover/tooltip the user was looking at.
+    const fingerprint = state.accounts
+      .map((a) => `${a.email}|${a.type || 'other'}|${a.name || ''}`)
+      .join(';');
+    if (fingerprint === _accountsFingerprint && section.firstElementChild) {
+      _patchAccountBadges(section);
+      _syncAccountActive(section);
+      return;
+    }
+    _accountsFingerprint = fingerprint;
+
     // Group accounts by provider type (proton / gmail / orange / ovh / other)
     const byType = {};
     for (const a of state.accounts) {
@@ -1207,7 +1310,13 @@ export async function mountMailbox(host, _opts) {
       const allInGroup = state.accountFilters.size > 0
         && groupEmails.every((e) => state.accountFilters.has(e));
       const subKey = `sb-accounts-${type}`;
-      const collapsed = localStorage.getItem(subKey) === '1';
+      // Per-provider subgroups (PROTON MAIL / GMAIL / …) default to
+      // collapsed when the user has never touched the toggle: the
+      // sidebar gets long fast on multi-account setups and a folded
+      // view is the cleaner starting point. Once toggled, the explicit
+      // '0' / '1' wins.
+      const storedSub = localStorage.getItem(subKey);
+      const collapsed = storedSub === null ? true : storedSub === '1';
       const groupUnread = accs.reduce((sum, a) => sum + (state.accountStats[a.email]?.unread ?? 0), 0);
 
       const items = accs.map((a) => {
@@ -1394,7 +1503,11 @@ export async function mountMailbox(host, _opts) {
         if (k === 'reply')  { state.onlyReply  = !state.onlyReply;  state.onlyUnread = false; }
         _filterDidChange = true;
         renderChips();
-        loadEmails();
+        // Quick filters narrow the already-loaded dataset — no need
+        // to round-trip the API. applyFilter() honours is_read /
+        // needs_reply now, so the chip toggle is instant instead of
+        // waiting on a ~500 ms DB query.
+        applyFilter();
       });
     });
   }
@@ -1419,11 +1532,19 @@ export async function mountMailbox(host, _opts) {
   function applyFilter() {
     const q = state.query.trim().toLowerCase();
     const activeEmails = new Set(state.accounts.map((a) => a.email));
+    const cat = state.category || '';
     const filtered = state.emails.filter((em) => {
       // Exclude emails from accounts that have been removed from config
       if (activeEmails.size > 0 && !activeEmails.has(em.account_email)) return false;
       // multi-account client-side filter (single-account is handled at API level)
       if (state.accountFilters.size > 1 && !state.accountFilters.has(em.account_email)) return false;
+      // Quick filters live client-side now (was: API round-trip per
+      // chip click, ~500 ms). state.emails is the broad load for the
+      // current folder+account+label; narrowing here keeps chip toggles
+      // instant.
+      if (state.onlyUnread && em.is_read) return false;
+      if (state.onlyReply && !em.needs_reply) return false;
+      if (cat && em.category !== cat) return false;
       if (!q) return true;
       const hay = `${em.sender || ''} ${em.subject || ''} ${em.summary || ''}`.toLowerCase();
       return hay.includes(q);
@@ -1589,8 +1710,86 @@ export async function mountMailbox(host, _opts) {
     _listAllItems = items;
   }
 
+  // Capture the int_id of the card currently sitting at the top of the
+  // viewport plus its pixel offset from the list's scroll origin. Used by
+  // renderList() to keep the user anchored on the same email across a
+  // background rebuild — otherwise periodic refreshes snap to the top
+  // and the user loses their place. Returns null when the list is empty
+  // or the user is already at the top (nothing to preserve).
+  function _capturePositionAnchor() {
+    const list = $('#email-list');
+    if (!list || list.scrollTop <= 0) return null;
+    const listTop = list.getBoundingClientRect().top;
+    const cards = list.querySelectorAll('.mb-card');
+    for (const c of cards) {
+      const r = c.getBoundingClientRect();
+      if (r.bottom > listTop + 4) {
+        return { id: parseInt(c.dataset.id, 10), offset: r.top - listTop };
+      }
+    }
+    return null;
+  }
+
+  // After a rebuild, render enough batches to bring the anchor card back
+  // into the DOM and scroll so it sits at the same viewport position it
+  // had before. No-op when the anchored email is gone from the new list
+  // (deleted / moved out of the active filter) — scrolling stays at top.
+  function _restorePositionAnchor(anchor) {
+    if (!anchor) return;
+    const list = $('#email-list');
+    if (!list) return;
+    const idx = _listAllItems.findIndex((e) => e.int_id === anchor.id);
+    if (idx === -1) return;
+    let safety = 50;
+    while (idx >= _listRendered && safety-- > 0) {
+      _appendBatch(list, false, null);
+    }
+    const card = list.querySelector(`.mb-card[data-id="${anchor.id}"]`);
+    if (!card) return;
+    const listTop = list.getBoundingClientRect().top;
+    const cardTop = card.getBoundingClientRect().top - listTop;
+    list.scrollTop += cardTop - anchor.offset;
+  }
+
+  // Auto-refresh fast path: when the new items contain the previous list
+  // as a contiguous suffix, the only change is N fresh emails prepended
+  // at the top. Splice those cards in, leave every existing card (and
+  // its handlers) untouched, and shift scrollTop by the prepended height
+  // so the user's viewport stays anchored on whatever they were reading.
+  function _tryPrependNewCards(items) {
+    const oldLen = _listAllItems.length;
+    if (!oldLen || items.length <= oldLen) return false;
+    const diff = items.length - oldLen;
+    for (let i = 0; i < oldLen; i++) {
+      if (items[i + diff].int_id !== _listAllItems[i].int_id) return false;
+    }
+    const list = $('#email-list');
+    if (!list) return false;
+
+    const newSlice = items.slice(0, diff);
+    const html = newSlice.map((em) => cardHtml(em, -1, true, false)).join('');
+    const wasScrolled = list.scrollTop > 4;
+
+    list.insertAdjacentHTML('afterbegin', html);
+    _attachCardHandlers(list, 0, diff);
+    window.lucide?.createIcons();
+
+    _listAllItems = items;
+    _listRendered += diff;
+
+    if (wasScrolled) {
+      let addedHeight = 0;
+      const cards = list.querySelectorAll('.mb-card');
+      for (let i = 0; i < diff && i < cards.length; i++) {
+        addedHeight += cards[i].offsetHeight;
+      }
+      list.scrollTop += addedHeight;
+    }
+    return true;
+  }
+
   function renderList(items) {
-    // Fast-path: same ids in the same order, no flag change → in-place
+    // Fast-path 1: same ids in the same order, no flag change → in-place
     // patch. Skips the innerHTML wipe + 1111-card rebuild that drives
     // the jank on large inboxes. _firstRender (mount animation) and
     // _filterDidChange (crossfade swap) intentionally bypass the
@@ -1598,6 +1797,13 @@ export async function mountMailbox(host, _opts) {
     if (!_firstRender && !_filterDidChange &&
         _canPatchInPlace(_listAllItems, items)) {
       _patchListInPlace(items);
+      return;
+    }
+    // Fast-path 2: new emails prepended at the top (the common auto-
+    // refresh case). Insert just the new cards, keep scroll anchored —
+    // the user does not lose their place mid-list when fresh mail lands.
+    if (!_firstRender && !_filterDidChange &&
+        _tryPrependNewCards(items)) {
       return;
     }
     _teardownListObserver();
@@ -1612,6 +1818,13 @@ export async function mountMailbox(host, _opts) {
     const newIds  = animate ? null : new Set(
       items.filter((e) => !prevIds.has(e.int_id)).map((e) => e.int_id)
     );
+
+    // For non-mount, non-filter rebuilds (deletions, reorders, sort
+    // change from outside the user's hand…) capture the scroll anchor
+    // before the wipe so we can restore it after _appendBatch paints
+    // the first page. Filter swaps intentionally reset to the top —
+    // a new chip selection is a new view.
+    const anchor = (!animate && !filterSwap) ? _capturePositionAnchor() : null;
 
     _listAllItems  = items;
     _listRendered  = 0;
@@ -1636,6 +1849,7 @@ export async function mountMailbox(host, _opts) {
 
     list.innerHTML = '';
     _appendBatch(list, animate, newIds);
+    if (anchor) _restorePositionAnchor(anchor);
   }
 
   function cardHtml(em, animIdx = -1, isNew = false, isPage2Plus = false) {
@@ -3728,8 +3942,14 @@ export async function mountMailbox(host, _opts) {
     const myToken = ++_loadEmailsToken;
     _lastLoadAt = Date.now();
     try {
-      // For a single selected account send the API filter; for 0 or 2+ filter client-side.
-      const singleAcc = state.accountFilters.size === 1 ? [...state.accountFilters][0] : undefined;
+      // 1 selected → single-account filter. 2+ selected → server-side
+      // IN() filter via `accounts=` so the 2000-row cap applies to the
+      // chosen set instead of the global stream (otherwise busy accounts
+      // evict mail from lighter ones before the multi-selection sees it).
+      // 0 selected → no filter (show all accounts).
+      const accFilters = [...state.accountFilters];
+      const singleAcc = accFilters.length === 1 ? accFilters[0] : undefined;
+      const multiAccs = accFilters.length > 1 ? accFilters.join(',') : undefined;
 
       // The Brouillons folder lives in its own table — re-shape draft
       // rows so the rest of the list-rendering code (cardHtml, sort,
@@ -3774,9 +3994,11 @@ export async function mountMailbox(host, _opts) {
       const params = {
         limit: 2000,
         account: singleAcc,
-        category: state.category || undefined,
-        is_read: state.onlyUnread ? false : undefined,
-        needs_reply: state.onlyReply ? true : undefined,
+        accounts: multiAccs,
+        // category / is_read / needs_reply are applied client-side in
+        // applyFilter() — we always load the broad folder set so chip
+        // toggles don't round-trip the DB. Passing them here would slow
+        // the chip back down and waste the cached state.emails.
         folder: state.folder || 'inbox',
         label: state.labelFilter ?? undefined,
       };
@@ -4242,10 +4464,24 @@ export async function mountMailbox(host, _opts) {
   // Auto-refresh every 60s — was 20s but on a 750-mail / 14-account
   // session that hammered the DB and CPU for no UX win. The Sync button
   // is one click away if the user wants something newer.
-  const refreshTimer = setInterval(() => {
+  //
+  // Mid-interaction guard: a popover open or a multi-selection live
+  // means a background refresh that rebuilds the list would close the
+  // popover and may evict the checked rows from the visible window —
+  // both feel broken. Skip this tick; the next 60s tick will catch up.
+  function _userIsBusy() {
+    if (_popCleanup) return true;
+    if (state.selectedIds && state.selectedIds.size) return true;
+    return false;
+  }
+
+  function _backgroundRefresh() {
+    if (_userIsBusy()) return;
     loadEmails().catch(() => {});
     loadAccounts().catch(() => {});
-  }, 60_000);
+  }
+
+  const refreshTimer = setInterval(_backgroundRefresh, 60_000);
 
   // Refresh when the user comes back to the tab, but debounce: a quick
   // tab-switch must not trigger a second reload on top of the periodic
@@ -4253,8 +4489,7 @@ export async function mountMailbox(host, _opts) {
   const onVisibility = () => {
     if (document.hidden) return;
     if (Date.now() - _lastLoadAt < 10_000) return;
-    loadEmails().catch(() => {});
-    loadAccounts().catch(() => {});
+    _backgroundRefresh();
   };
   document.addEventListener('visibilitychange', onVisibility);
 
@@ -4291,24 +4526,47 @@ export async function mountMailbox(host, _opts) {
   }
   initCollapsible($('#title-folders'),     $('#wrap-folders'),     'sb-folders');
   initCollapsible($('#title-labels'),      $('#wrap-labels'),      'sb-labels');
-  initCollapsible($('#title-userlabels'),  $('#wrap-userlabels'),  'sb-userlabels');
+  // ÉTIQUETTES (personal labels) is rarely populated on first run and
+  // adds noise to the sidebar when empty. Start it folded; once the
+  // user opens it the choice is remembered.
+  initCollapsible($('#title-userlabels'),  $('#wrap-userlabels'),  'sb-userlabels',
+                  { defaultCollapsed: true });
 
   setupSidebarReorder();
 
   $('#btn-sync').addEventListener('click', triggerSync);
   $('#sel-bar').addEventListener('click', onSelBarClick);
 
-  await Promise.all([loadAccounts(), loadEmails()]);
+  // Materialise every static <i data-lucide> placeholder baked into
+  // host.innerHTML (Sync button, Compose CTA, section "+" buttons,
+  // collapse chevrons…) into real <svg> before the entrance cascade
+  // begins. Without this the icons stay as zero-size <i> placeholders
+  // during the fade-up and only pop in at the global createIcons()
+  // call at the very end of mount — making icons look like they "load"
+  // a beat after their labels.
+  window.lucide?.createIcons();
 
-  // Single unified stagger over all sidebar elements in DOM order once
-  // everything is loaded. Driven 100% by CSS — we just stamp --i on each
-  // element so the .mb-stagger rule can compute the delay. opacity:0 +
-  // animation-fill-mode:both in the CSS rule keep the element invisible
-  // during its delay window, so no flash before the animation kicks.
-  // Order: mb-side-head → mb-cta → [folders] → [labels] → [accounts]
+  // Sidebar stagger animation.
+  //
+  // `.mb-stagger` is baked into the markup above so the CSS rule
+  // (style.css → `.mb-stagger .mb-folder { opacity: 0; animation: … }`)
+  // takes effect on the very first paint. Without that, children
+  // briefly rendered at opacity:1 default before this JS ran, then the
+  // class was added and flipped them back to opacity:0 — exactly the
+  // "elements visible then animation kicks in" flash the user saw.
+  //
+  // We still wait for loadAccounts() (fast — ~50 ms) so the COMPTES
+  // subtree exists when we stamp --i, giving every element its proper
+  // cascade slot. loadEmails() is intentionally NOT awaited here — it
+  // typically dominates the round-trip and gating the sidebar on it
+  // produced a delayed entrance that lined up exactly with mail arrival
+  // (the previous "re-fire" symptom). The email list has its own
+  // fade-in via `.mb-list-wrap`.
+  const _emailsLoading = loadEmails();
+  await loadAccounts();
+
   const sidebar = host.querySelector('.mb-side');
   if (sidebar) {
-    sidebar.classList.add('mb-stagger');
     const els = sidebar.querySelectorAll(
       '.mb-side-head, .mb-cta, .mb-section-title, .mb-subsection-title, ' +
       '.mb-folder, .mb-label, .mb-userlabel-empty'
@@ -4322,6 +4580,10 @@ export async function mountMailbox(host, _opts) {
       els.forEach((el) => el.style.removeProperty('--i'));
     }, BASE + els.length * STEP + DUR + SAFETY);
   }
+
+  // loadEmails() paints its own inline error on failure; just keep the
+  // unhandled-rejection warning quiet.
+  _emailsLoading.catch(() => {});
 
   pollSync();
   window.lucide?.createIcons();
