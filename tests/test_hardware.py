@@ -26,21 +26,23 @@ def _reset_cache():
 
 
 @pytest.mark.parametrize("ram_gb, has_nvidia, vram_gb, apple_silicon, expected", [
-    # Light tier
+    # Light tier — RAM système < 12 Go. Le GPU NVIDIA n'aide pas en
+    # mode CPU-only (la wheel CUDA est opt-in v2).
     (8, False, 0, False, "light"),       # laptop modeste Windows
     (8, False, 0, True, "light"),        # M1 8 Go — Apple Silicon mais peu de RAM
     (11.9, False, 0, False, "light"),    # juste sous le seuil 12 Go
-    # Medium tier
+    (8, True, 8, False, "light"),        # 8 Go RAM + GPU NVIDIA → toujours light en CPU-only
+    (8, True, 16, False, "light"),       # même un RTX 4080 ne sauve pas une machine 8 Go en CPU
+    # Medium tier — 12-23 Go RAM système
     (12, False, 0, False, "medium"),     # pile au seuil
     (16, False, 0, False, "medium"),
     (23.9, False, 0, False, "medium"),
-    # Heavy tier
+    (16, True, 24, False, "medium"),     # GPU costaud mais RAM medium → on reste medium en CPU-only
+    # Heavy tier — uniquement quand la RAM utilisable suffit pour le 7B
     (24, False, 0, False, "heavy"),      # gros desktop CPU-only
     (32, False, 0, False, "heavy"),
-    (16, False, 0, True, "heavy"),       # M2 16 Go — mémoire unifiée
-    (32, True, 24, False, "heavy"),      # RTX 4090
-    (16, True, 8, False, "heavy"),       # RAM medium mais GPU costaud → Heavy
-    (8, True, 12, False, "heavy"),       # même RAM faible : GPU 12 Go porte le 7B
+    (16, False, 0, True, "heavy"),       # M2 16 Go — mémoire unifiée + Metal
+    (32, True, 24, False, "heavy"),      # 32 Go RAM, le GPU est un bonus
 ])
 def test_recommended_tier_mapping(ram_gb, has_nvidia, vram_gb, apple_silicon, expected):
     assert hardware._recommended_tier(ram_gb, has_nvidia, vram_gb, apple_silicon) == expected
@@ -91,8 +93,10 @@ def test_detect_full_apple_silicon_m2_16gb(monkeypatch):
     assert snap["recommended_tier"] == "heavy"
 
 
-def test_detect_full_nvidia_rtx_4090(monkeypatch):
-    """Linux + RTX 4090 24 Go → Heavy peu importe la RAM."""
+def test_detect_full_nvidia_rtx_4090_with_enough_ram(monkeypatch):
+    """Linux + RTX 4090 24 Go + 32 Go RAM → Heavy : le GPU est un info
+    bonus, c'est la RAM système qui justifie le tier en mode CPU-only.
+    """
     fake = _fake_psutil(ram_bytes=32 * 1024**3, cpu_count=16)
     monkeypatch.setitem(__import__("sys").modules, "psutil", fake)
     monkeypatch.setattr(
@@ -106,6 +110,29 @@ def test_detect_full_nvidia_rtx_4090(monkeypatch):
     assert snap["gpu"] == "NVIDIA GeForce RTX 4090"
     assert snap["vram_gb"] == 24.0
     assert snap["recommended_tier"] == "heavy"
+
+
+def test_detect_full_nvidia_rtx_4060ti_with_8gb_ram(monkeypatch):
+    """Cas réel observé : 8 Go RAM + RTX 4060 Ti.
+
+    L'ancienne logique recommandait "Heavy" parce que le GPU était
+    présent. Sauf que la v1 tourne en CPU-only par défaut, donc le 7B
+    swapperait à mort sur la RAM système. Le tier doit être "Light".
+    """
+    fake = _fake_psutil(ram_bytes=8 * 1024**3, cpu_count=14)
+    monkeypatch.setitem(__import__("sys").modules, "psutil", fake)
+    monkeypatch.setattr(
+        hardware, "_detect_nvidia_gpu",
+        lambda: {"name": "NVIDIA GeForce RTX 4060 Ti", "vram_gb": 8.0},
+    )
+    monkeypatch.setattr(hardware.sys, "platform", "win32")
+    monkeypatch.setattr(hardware.platform, "machine", lambda: "AMD64")
+
+    snap = hardware.detect(force=True)
+    assert snap["gpu"] == "NVIDIA GeForce RTX 4060 Ti"
+    assert snap["vram_gb"] == 8.0
+    # Pas heavy malgré le GPU costaud — la v1 est CPU-only.
+    assert snap["recommended_tier"] == "light"
 
 
 def test_detect_full_light_tier_8gb_cpu(monkeypatch):

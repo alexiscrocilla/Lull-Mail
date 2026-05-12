@@ -579,10 +579,33 @@ export async function mountSettings(host, opts = {}) {
     const hw = state.hardware;
     const tier = hw.recommended_tier;
     const tierLabel = t('set.llm.tier_' + tier);
-    const gpuPart = hw.gpu ? ` + ${hw.gpu}` : (hw.is_apple_silicon ? ' + Apple Silicon' : '');
+    // Le GPU NVIDIA est affiché en info MAIS marqué inactif tant que la
+    // wheel CUDA n'est pas activée (gpu_layers > 0, opt-in v2). Apple
+    // Silicon a Metal automatique, donc pas de "(inactif)" sur Mac ARM.
+    let gpuPart = '';
+    if (hw.is_apple_silicon) {
+      gpuPart = ' + Apple Silicon (Metal actif)';
+    } else if (hw.gpu) {
+      gpuPart = ` + ${hw.gpu} ${t('set.llm.gpu_cpu_mode')}`;
+    }
     els.llmHwText.textContent = t('set.llm.hardware_detected', {
       ram: hw.ram_gb.toFixed(1), gpu: gpuPart, tier: tierLabel,
     });
+
+    // Estimation du RAM résident d'un modèle quand il tourne. C'est
+    // l'overhead du wheel llama_cpp + KV cache + le poids du modèle.
+    // Empiriquement (Phase 0 bis) : ~1.3x la taille du GGUF Q4 sur disque.
+    const _estimatedResidentBytes = (m) => m.size_bytes * 1.3;
+    // RAM totale dont on dispose après baseline OS + app + WebView2.
+    // 3.5 Go sur Windows / Linux, 2.5 Go sur Apple Silicon (macOS optimisé).
+    const baselineGb = hw.is_apple_silicon ? 2.5 : 3.5;
+    const usableRamGb = Math.max(0, hw.ram_gb - baselineGb);
+    // L'analyseur est toujours chargé en parallèle du drafter. Pour les
+    // drafters, on calcule l'overhead "analyseur + drafter simultanés".
+    const analyzerMeta = state.models.find(m => m.id === state.selectedAnalyzer);
+    const analyzerResidentGb = analyzerMeta
+      ? _estimatedResidentBytes(analyzerMeta) / 1024**3
+      : 0;
 
     // Liste : analyzers d'abord, drafters ensuite. On grise les modèles
     // d'un tier supérieur à celui détecté (warning RAM).
@@ -609,9 +632,27 @@ export async function mountSettings(host, opts = {}) {
           const isSelected = (role === 'analyzer' ? state.selectedAnalyzer : state.selectedDrafter) === m.id;
           const sizeMb = (m.size_bytes / 1024 / 1024).toFixed(0);
           const langs = (m.languages || []).slice(0, 4).join(', ');
-          const tooltip = overTier ? t('set.llm.heavy_warning') : '';
+
+          // RAM warning : estime le pic résident pour CE modèle dans
+          // sa configuration d'usage (analyzer seul, ou drafter +
+          // analyzer en simultané). Si ça dépasse la RAM utilisable,
+          // on flag l'item en rouge avec un message clair.
+          const modelResidentGb = _estimatedResidentBytes(m) / 1024**3;
+          const peakResidentGb = role === 'analyzer'
+            ? modelResidentGb
+            : modelResidentGb + analyzerResidentGb;
+          const exceedsRam = peakResidentGb > usableRamGb;
+          const ramWarningMsg = exceedsRam
+            ? t('set.llm.ram_warning', {
+                peak: peakResidentGb.toFixed(1),
+                usable: usableRamGb.toFixed(1),
+              })
+            : '';
+          const tooltip = exceedsRam ? ramWarningMsg
+                       : overTier ? t('set.llm.heavy_warning')
+                       : '';
           return `
-            <div class="set-llm-model ${overTier ? 'disabled' : ''} ${isRecommended ? 'recommended' : ''}"
+            <div class="set-llm-model ${exceedsRam ? 'ram-warning' : ''} ${overTier && !exceedsRam ? 'disabled' : ''} ${isRecommended ? 'recommended' : ''}"
                  data-model-id="${escapeAttr(m.id)}" data-role="${role}" title="${escapeAttr(tooltip)}">
               <div class="set-llm-model-info">
                 <div class="set-llm-model-name">
@@ -624,6 +665,11 @@ export async function mountSettings(host, opts = {}) {
                   ${sizeMb} Mo · ${escapeHtml(m.license)} · ${escapeHtml(langs)}
                   ${isRecommended ? ' · ' + t('set.llm.recommended_badge') : ''}
                 </div>
+                ${exceedsRam ? `
+                  <div class="set-llm-ram-warning">
+                    <i data-lucide="alert-triangle" class="w-3.5 h-3.5"></i>
+                    ${escapeHtml(ramWarningMsg)}
+                  </div>` : ''}
                 <div id="dl-progress-${escapeAttr(m.id)}" class="set-llm-progress" style="display:none">
                   <div class="set-llm-progress-bar" style="width:0%"></div>
                 </div>
@@ -1745,6 +1791,21 @@ function injectStyles() {
     }
     .set-llm-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
     .set-llm-btn.danger:hover { background: rgba(239,68,68,.1); border-color: var(--danger); color: var(--danger); }
+    .set-llm-model.ram-warning {
+      /* Bordure orange + fond légèrement teinté pour signaler que ce
+         modèle va swapper sur la RAM système de l'utilisateur. */
+      border-color: var(--warning);
+      background: color-mix(in oklab, var(--warning) 6%, var(--surface-2));
+    }
+    .set-llm-ram-warning {
+      display: flex; align-items: center; gap: 6px;
+      margin-top: 6px; padding: 5px 8px;
+      background: color-mix(in oklab, var(--warning) 12%, transparent);
+      border-radius: 6px;
+      font-size: 11px; color: var(--warning);
+      font-weight: 500;
+    }
+    .set-llm-ram-warning i { flex-shrink: 0; }
     .set-llm-progress {
       width: 100%; height: 4px; border-radius: 2px;
       background: var(--surface); overflow: hidden;

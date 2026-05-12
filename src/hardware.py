@@ -121,18 +121,30 @@ def _classify_platform() -> str:
 
 def _recommended_tier(ram_gb: float, has_nvidia: bool, vram_gb: float,
                       is_apple_silicon: bool) -> str:
-    """Mappe (RAM, GPU) → tier d'exécution recommandé.
+    """Mappe la config détectée → tier d'exécution recommandé.
 
-    Heavy en priorité : GPU NVIDIA avec ≥ 8 Go VRAM (le 7B Q4 tient dans
-    la VRAM), OU Apple Silicon ≥ 16 Go (mémoire unifiée + Metal), OU
-    machine costaude (≥ 24 Go RAM).
+    En v1, l'inférence tourne en CPU-only par défaut (`gpu_layers=0`
+    dans `LocalLLMConfig` ; la wheel CUDA est opt-in v2). Donc un GPU
+    NVIDIA détecté ne contribue PAS à la capacité réelle — la RAM
+    système est la seule contrainte qui compte. Recommander "heavy"
+    à un user avec 8 Go RAM + RTX 4090 reviendrait à le pousser vers
+    un modèle 7B qui swappera à mort sur sa RAM système.
 
-    Light pour les machines contraintes : moins de 12 Go RAM.
+    Exception Apple Silicon : Metal est activé automatiquement par
+    llama.cpp + la mémoire est unifiée CPU/GPU. Un M2 16 Go peut donc
+    réellement faire tourner un 7B sans saturer la RAM.
 
-    Medium par défaut.
+    Logique :
+      - Apple Silicon ≥ 16 Go (mémoire unifiée + Metal gratuit)        → heavy
+      - 24 Go RAM système ou plus                                       → heavy
+      - 12-23 Go RAM système                                            → medium
+      - < 12 Go RAM système (le cas typique laptop 8 Go)                → light
+
+    Le champ `gpu` (nom du GPU NVIDIA) reste exposé dans le snapshot
+    de `detect()` pour information — le frontend peut afficher
+    "RTX 4060 Ti détectée (mode CPU)" mais ne doit PAS s'en servir
+    pour pousser un modèle plus gros.
     """
-    if has_nvidia and vram_gb >= 8:
-        return "heavy"
     if is_apple_silicon and ram_gb >= 16:
         return "heavy"
     if ram_gb >= 24:
