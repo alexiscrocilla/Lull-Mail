@@ -586,15 +586,26 @@ export async function mountSettings(host, opts = {}) {
 
     // Liste : analyzers d'abord, drafters ensuite. On grise les modèles
     // d'un tier supérieur à celui détecté (warning RAM).
+    //
+    // Pour le badge "recommandé", on utilise la MÊME logique que
+    // `_defaultModelId` (qui pré-sélectionne le radio) : le modèle dont
+    // `recommended_for_tier == userTier` SI il existe, sinon le premier
+    // modèle compatible (tier ≤ userTier). Comme ça Phi-3.5-mini reste
+    // marqué "recommandé" en analyseur même sur Heavy (le catalog n'a
+    // qu'un seul analyseur — pas la peine d'en ajouter un par tier).
     const _tierRank = { light: 0, medium: 1, heavy: 2 };
     const userTierRank = _tierRank[tier];
+    const recommendedIds = {
+      analyzer: _defaultModelId(state.models, 'analyzer', tier),
+      drafter:  _defaultModelId(state.models, 'drafter',  tier),
+    };
     const html = ['analyzer', 'drafter'].map(role => {
       const roleLabel = t('set.llm.role_' + role);
       const items = state.models
         .filter(m => m.role === role)
         .map(m => {
           const overTier = _tierRank[m.tier] > userTierRank;
-          const isRecommended = m.recommended_for_tier === tier;
+          const isRecommended = m.id === recommendedIds[role];
           const isSelected = (role === 'analyzer' ? state.selectedAnalyzer : state.selectedDrafter) === m.id;
           const sizeMb = (m.size_bytes / 1024 / 1024).toFixed(0);
           const langs = (m.languages || []).slice(0, 4).join(', ');

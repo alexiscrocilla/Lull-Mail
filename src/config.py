@@ -418,9 +418,19 @@ def default_skeleton() -> Dict[str, Any]:
         "llm": {
             "provider": "openai",
             "local": {
+                # `tier` est positionné par l'UI Settings au moment où
+                # l'user clique "Activer" — pas en dur ici, sinon la
+                # recommandation du tier détecté par `src.hardware` ne
+                # serait jamais reflétée.
                 "tier": "medium",
-                "analyzer_model_id": "phi-3.5-mini-q4",
-                "drafter_model_id": "mistral-7b-v03-q4",
+                # Vide tant que l'user n'a pas activé le mode local
+                # depuis Settings → IA → Local. Quand vide, la UI
+                # pré-sélectionne le modèle recommandé pour le tier
+                # matériel détecté. ai_enabled() retourne False tant
+                # qu'un model_id valide n'est pas posé ici, ce qui
+                # garde le système en mode no-AI propre.
+                "analyzer_model_id": "",
+                "drafter_model_id": "",
                 "gpu_layers": 0,
                 "context_size": 4096,
                 "drafter_idle_timeout_min": 5,

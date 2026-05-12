@@ -499,11 +499,12 @@ def save_llm(payload: LLMProviderPayload,
     # Préserve la sous-section `local` si elle existe (modèles + tier
     # choisis précédemment via /api/llm/activate). On ne l'écrase pas
     # pour ne pas perdre la sélection de l'utilisateur quand il
-    # bascule "Local → OpenAI → Local".
+    # bascule "Local → OpenAI → Local". model_id vides = pas encore
+    # activé, l'UI pré-sélectionnera le modèle recommandé pour le tier.
     llm_sect.setdefault("local", {
         "tier": "medium",
-        "analyzer_model_id": "phi-3.5-mini-q4",
-        "drafter_model_id": "mistral-7b-v03-q4",
+        "analyzer_model_id": "",
+        "drafter_model_id": "",
         "gpu_layers": 0,
         "context_size": 4096,
         "drafter_idle_timeout_min": 5,

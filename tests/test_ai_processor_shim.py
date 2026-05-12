@@ -40,11 +40,18 @@ def test_shim_names_are_same_objects_as_src_llm():
     assert ai_processor.enrich_draft is llm.enrich_draft
 
 
-def test_shim_init_client_routes_to_openai_provider():
+def test_shim_init_client_routes_to_openai_provider(monkeypatch):
     """init_client(api_key) doit configurer le client sur le provider
-    actif (OpenAIProvider en Phase 1)."""
+    OpenAI quand cfg.llm.provider == "openai" (défaut).
+
+    On force `cfg._config` parce qu'un fichier config.yaml local sur
+    le poste du dev peut porter `provider: local` et casser le test —
+    le shim ne doit JAMAIS faire l'hypothèse implicite sur l'env."""
+    from src import config as cfg
+    monkeypatch.setattr(cfg, "_config", {"llm": {"provider": "openai"}})
+
     from src.llm.registry import get_provider, reset
-    reset()  # forcer la re-instanciation pour ce test
+    reset()  # forcer la re-instanciation
     from src.ai_processor import init_client
 
     provider = get_provider()
@@ -57,8 +64,11 @@ def test_shim_init_client_routes_to_openai_provider():
     assert provider._client is not None
 
 
-def test_shim_process_email_returns_none_when_no_client():
+def test_shim_process_email_returns_none_when_no_client(monkeypatch):
     """Mode no-AI (clé vide) : process_email retourne None proprement."""
+    from src import config as cfg
+    monkeypatch.setattr(cfg, "_config", {"llm": {"provider": "openai"}})
+
     from src.llm.registry import reset
     from src.ai_processor import init_client, process_email
     reset()
