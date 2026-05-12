@@ -415,6 +415,17 @@ def default_skeleton() -> Dict[str, Any]:
     exists yet. Filled in step-by-step before the first save()."""
     return {
         "openai": {"api_key": "", "model": "gpt-4o-mini"},
+        "llm": {
+            "provider": "openai",
+            "local": {
+                "tier": "medium",
+                "analyzer_model_id": "phi-3.5-mini-q4",
+                "drafter_model_id": "mistral-7b-v03-q4",
+                "gpu_layers": 0,
+                "context_size": 4096,
+                "drafter_idle_timeout_min": 5,
+            },
+        },
         "ntfy": {"server": "https://ntfy.sh", "topic": "", "min_importance": 7},
         "polling": {"interval_minutes": 10, "initial_fetch_count": 500,
                     "max_age_days": 30, "ai_batch_size": 200},

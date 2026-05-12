@@ -11,7 +11,7 @@ from threading import Lock
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1833,6 +1833,222 @@ def trigger_sync(request: Request, bg: BackgroundTasks, locale: str = Depends(ge
 def sync_status():
     from src.scheduler import get_last_sync, is_running
     return {"running": is_running(), "last_sync": get_last_sync()}
+
+
+# ── Local LLM management ─────────────────────────────────────────────────────
+# Endpoints qui pilotent le backend `provider=local` depuis l'UI Settings.
+# Tout est lazy-importé pour éviter de tirer `psutil` ou de toucher au
+# catalog quand l'utilisateur reste sur OpenAI.
+
+
+@app.get("/api/llm/hardware")
+def llm_hardware():
+    """Snapshot du matériel local : RAM / GPU / tier recommandé.
+    Affiché dans le bandeau "Détecté: 16 Go RAM → Medium" de Settings."""
+    from src import hardware
+    return hardware.detect()
+
+
+@app.get("/api/llm/models")
+def llm_models():
+    """Catalogue des modèles supportés, enrichi de l'état "téléchargé".
+
+    Réponse : [{id, name, role, tier, size_bytes, downloaded, license, …}]
+    Le frontend filtre par role + tier recommandé pour pré-sélectionner.
+    """
+    from src.llm import catalog
+    out = []
+    for model_id, meta in catalog.CATALOG.items():
+        path = _paths.MODELS_DIR / meta["filename"]
+        on_disk = path.is_file()
+        out.append({
+            "id": model_id,
+            "name": meta["name"],
+            "vendor": meta.get("vendor", ""),
+            "role": meta["role"],
+            "tier": meta["tier"],
+            "recommended_for_tier": meta.get("recommended_for_tier", meta["tier"]),
+            "size_bytes": meta["size_bytes"],
+            "license": meta.get("license", ""),
+            "license_url": meta.get("license_url", ""),
+            "languages": meta.get("languages", []),
+            "context_length": meta.get("context_length", 4096),
+            "downloaded": on_disk,
+            "downloaded_bytes": path.stat().st_size if on_disk else 0,
+        })
+    return out
+
+
+@app.get("/api/llm/status")
+def llm_status():
+    """État runtime des serveurs locaux. Utilisé par le bandeau
+    "Chargement du modèle de rédaction…" et le futur dashboard."""
+    from src.llm.registry import get_provider
+    provider = get_provider()
+    if provider.name != "local":
+        return {"provider": provider.name, "analyzer": None, "drafter": None}
+
+    analyzer = None
+    drafter = None
+    a = getattr(provider, "analyzer_server", None)
+    if a is not None:
+        analyzer = {
+            "running": a.running,
+            "model_id": getattr(provider, "analyzer_model_id", None),
+            "port": a.port if a.running else None,
+        }
+    d = getattr(provider, "drafter_server", None)
+    if d is not None:
+        drafter = {
+            "running": d.running,
+            "model_id": getattr(provider, "drafter_model_id", None),
+            "port": d.port if d.running else None,
+            "last_used_at": getattr(d, "last_used_at", 0),
+        }
+    return {
+        "provider": "local",
+        "analyzer": analyzer,
+        "drafter": drafter,
+    }
+
+
+class _LLMActivatePayload(BaseModel):
+    analyzer_model_id: str
+    drafter_model_id: str
+
+
+@app.post("/api/llm/activate")
+@limiter.limit("10/minute")
+def llm_activate(request: Request, payload: _LLMActivatePayload,
+                 locale: str = Depends(get_locale)):
+    """Bascule la config sur `provider=local` avec les modèles choisis,
+    persiste dans config.yaml, et redémarre les services pour spawn
+    l'AnalyzerServer.
+
+    Retourne 200 avec `{ok: True, warning: "..."}` si l'activation
+    réussit mais avec une note (par ex. modèle plus gros que la RAM
+    détectée). 400 si un modèle est inconnu du catalog ou pas téléchargé.
+    """
+    from src.llm import catalog
+    from src import hardware
+
+    a_meta = catalog.get_model(payload.analyzer_model_id)
+    d_meta = catalog.get_model(payload.drafter_model_id)
+    if a_meta is None or a_meta["role"] != "analyzer":
+        raise HTTPException(400, tr("llm.unknown_analyzer", locale,
+                                    default="Analyzer inconnu."))
+    if d_meta is None or d_meta["role"] != "drafter":
+        raise HTTPException(400, tr("llm.unknown_drafter", locale,
+                                    default="Drafter inconnu."))
+    a_path = _paths.MODELS_DIR / a_meta["filename"]
+    if not a_path.is_file():
+        raise HTTPException(400, tr("llm.analyzer_not_downloaded", locale,
+                                    default="Analyzer non téléchargé."))
+
+    # Warning soft si le modèle pèse plus que la RAM dispo. On laisse
+    # passer parce que l'user peut consciemment forcer (case "Override"
+    # dans l'UI).
+    warning = None
+    hw = hardware.detect()
+    if a_meta["size_bytes"] > hw["ram_gb"] * 1024**3 * 0.5:
+        warning = "ram_low_analyzer"
+
+    # Persist via setup_api helpers (cohérent avec /api/setup/openai).
+    from src.setup_api import _load_or_default, _persist
+    data = _load_or_default()
+    llm_sect = data.setdefault("llm", {})
+    llm_sect["provider"] = "local"
+    local_sect = llm_sect.setdefault("local", {})
+    local_sect["analyzer_model_id"] = payload.analyzer_model_id
+    local_sect["drafter_model_id"] = payload.drafter_model_id
+    _persist(data)
+
+    # Restart services pour booter l'AnalyzerServer.
+    from src.llm.registry import reset as _reset_llm
+    _reset_llm()
+    try:
+        lifecycle.start_email_services(restart=True)
+    except Exception:
+        logger.exception("Restart après activation local LLM a échoué")
+        raise HTTPException(500, tr("llm.activate_restart_failed", locale,
+                                    default="Activation OK mais échec du redémarrage."))
+
+    return {"ok": True, "warning": warning}
+
+
+@app.delete("/api/llm/models/{model_id}")
+@limiter.limit("10/minute")
+def llm_delete_model(request: Request, model_id: str,
+                     locale: str = Depends(get_locale)):
+    """Supprime un GGUF du disque pour libérer de l'espace. Sans danger :
+    le runtime ne touchera plus à ce fichier ; si c'était le modèle
+    actif, le prochain start tombera sur LLMServerError et basculera
+    en mode no-AI proprement."""
+    from src.llm import catalog
+    meta = catalog.get_model(model_id)
+    if meta is None:
+        raise HTTPException(404, tr("llm.unknown_model", locale,
+                                    default="Modèle inconnu."))
+    path = _paths.MODELS_DIR / meta["filename"]
+    if path.is_file():
+        try:
+            path.unlink()
+        except OSError as e:
+            raise HTTPException(500, f"Impossible de supprimer : {e}")
+    return {"ok": True}
+
+
+@app.post("/api/llm/models/{model_id}/download")
+@limiter.limit("4/minute")
+def llm_download_model(request: Request, model_id: str,
+                       locale: str = Depends(get_locale)):
+    """Télécharge un GGUF en streaming, renvoie un Server-Sent Events
+    flux que le frontend consomme pour mettre à jour une progress bar.
+
+    Format des events :
+        data: {"progress": 0.42, "speed_mbps": 8.3, "eta_sec": 35}
+        data: {"done": true, "sha_ok": true}
+    """
+    from src.llm import catalog, downloader
+
+    meta = catalog.get_model(model_id)
+    if meta is None:
+        raise HTTPException(404, tr("llm.unknown_model", locale,
+                                    default="Modèle inconnu."))
+
+    dst = _paths.MODELS_DIR / meta["filename"]
+    if dst.is_file():
+        # Déjà là — on renvoie un mini-flux qui annonce 100% direct.
+        def already_done():
+            payload = json.dumps({"done": True, "sha_ok": True,
+                                  "already_present": True})
+            yield f"data: {payload}\n\n"
+        return StreamingResponse(already_done(), media_type="text/event-stream")
+
+    def event_stream():
+        for event in downloader.stream_download(
+            url=meta["url"],
+            dst=dst,
+            expected_sha256=meta.get("sha256"),
+            expected_size=meta.get("size_bytes"),
+        ):
+            payload = {
+                "progress": event.progress,
+                "downloaded_bytes": event.downloaded_bytes,
+                "total_bytes": event.total_bytes,
+                "speed_mbps": event.speed_mbps,
+                "eta_sec": event.eta_sec,
+                "done": event.done,
+                "sha_ok": event.sha_ok,
+                "error": event.error,
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────

@@ -241,6 +241,17 @@ class OpenAIPayload(BaseModel):
     model: str = "gpt-4o-mini"
 
 
+class LLMProviderPayload(BaseModel):
+    """Choix du provider IA (OpenAI cloud vs LLM local embarqué).
+
+    L'UI Settings → IA poste ici uniquement le champ `provider`. La
+    sous-section `local` est mise à jour séparément via
+    `POST /api/llm/activate` qui valide aussi que les modèles existent
+    sur disque avant de redémarrer les services.
+    """
+    provider: str = "openai"
+
+
 class NtfyPayload(BaseModel):
     enabled: bool = True
     server: str = "https://ntfy.sh"
@@ -463,6 +474,40 @@ def save_openai(payload: OpenAIPayload, locale: str = Depends(get_locale)) -> Di
         new_key = _store_openai_secret(payload.api_key)
 
     data["openai"] = {"api_key": new_key, "model": payload.model or "gpt-4o-mini"}
+    _persist(data)
+    return {"ok": True}
+
+
+@router.post("/llm")
+def save_llm(payload: LLMProviderPayload,
+             locale: str = Depends(get_locale)) -> Dict[str, Any]:
+    """Bascule rapide entre OpenAI et Local sans toucher aux modèles
+    (les choix de modèles passent par `POST /api/llm/activate` qui
+    valide aussi que le GGUF est sur disque).
+
+    Utilisé par la radio Provider en haut de Settings → IA. Quand on
+    bascule sur "local" sans modèle téléchargé, l'app reste en mode
+    no-AI au prochain start (`ai_enabled()` retourne False), donc
+    aucun crash — l'UI doit guider l'user vers le téléchargement.
+    """
+    if payload.provider not in ("openai", "local"):
+        raise HTTPException(400, tr("setup.llm.bad_provider", locale,
+                                    default="Provider invalide."))
+    data = _load_or_default()
+    llm_sect = data.setdefault("llm", {})
+    llm_sect["provider"] = payload.provider
+    # Préserve la sous-section `local` si elle existe (modèles + tier
+    # choisis précédemment via /api/llm/activate). On ne l'écrase pas
+    # pour ne pas perdre la sélection de l'utilisateur quand il
+    # bascule "Local → OpenAI → Local".
+    llm_sect.setdefault("local", {
+        "tier": "medium",
+        "analyzer_model_id": "phi-3.5-mini-q4",
+        "drafter_model_id": "mistral-7b-v03-q4",
+        "gpu_layers": 0,
+        "context_size": 4096,
+        "drafter_idle_timeout_min": 5,
+    })
     _persist(data)
     return {"ok": True}
 
