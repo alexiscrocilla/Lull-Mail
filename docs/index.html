@@ -1563,11 +1563,11 @@
       </li>
       <li>
         <span class="pi" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg></span>
-        <div><strong>Emails &amp; summaries</strong><span class="pd">Local SQLite database in your user data directory. Nothing leaves except what you choose to send to OpenAI.</span></div>
+        <div><strong>Emails &amp; summaries</strong><span class="pd">Local SQLite database in your user data directory. With the default local AI, nothing leaves your machine; with OpenAI selected, only what gets sent for analysis.</span></div>
       </li>
       <li>
         <span class="pi" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg></span>
-        <div><strong>OpenAI API key</strong><span class="pd">Same keyring as the IMAP passwords. Optional: disable AI analysis per mailbox.</span></div>
+        <div><strong>AI backend</strong><span class="pd">Local models (free, default) live on disk in your data directory. Switching to OpenAI is optional: the key sits in the same keyring as IMAP passwords.</span></div>
       </li>
       <li>
         <span class="pi" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg></span>
@@ -1596,7 +1596,7 @@
           <span class="q-text">How much does it cost?</span>
           <svg class="icon q-chev" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
         </summary>
-        <p>Free. You pay OpenAI directly for the AI calls. Push notifications go through ntfy.sh, also free. A 100% free LLM integration is in the works, which will eventually drop the total cost to zero.</p>
+        <p>Free with the default local AI: the models run on your machine and cost nothing once downloaded. Switch to OpenAI in Settings if you prefer cloud quality (you pay OpenAI directly, around $0.15 per 100 emails). Push notifications go through ntfy.sh, also free.</p>
       </details>
       <details>
         <summary>
@@ -1604,7 +1604,7 @@
           <span class="q-text">Does it work offline?</span>
           <svg class="icon q-chev" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
         </summary>
-        <p>Yes for reading what you've already synced. No for fetching new mail or running the AI on it. Both need the network.</p>
+        <p>Yes for reading what you've already synced. With the default local AI you can also analyze new mail offline once the models are downloaded. Fetching new mail from your IMAP provider still needs the network.</p>
       </details>
       <details>
         <summary>

@@ -4,17 +4,27 @@ After installing Lull Mail (see the [Download section in the README](../README.m
 the setup wizard opens automatically. This guide walks through it
 and covers what to expect on the first run.
 
-## 1. OpenAI API key
+## 1. Pick your AI
 
-Lull Mail needs a key for the AI triage engine. Create one at
-[platform.openai.com/api-keys](https://platform.openai.com/api-keys).
-Expect to pay roughly **$0.15 per 100 emails** analysed with the
-default `gpt-4o-mini` model.
+Lull Mail offers two paths for the triage engine:
 
-The key is stored in your OS keyring, never in plain text. You can
-change the model later in *Settings → Intelligence artificielle*
-(e.g. switch to `gpt-4o` for finer triage, or disable AI on a
-per-mailbox basis).
+- **Local (default, recommended)** — small open-source models
+  (Phi 3.5 mini for triage, Qwen or Mistral 7B for drafting) run
+  on your CPU via the bundled `llama_cpp` runtime. The wizard
+  downloads them on demand (around 2 GB for the analyzer, plus
+  the drafter you pick). Nothing leaves your machine after that.
+- **OpenAI** *(opt-in)* — paste a key from
+  [platform.openai.com/api-keys](https://platform.openai.com/api-keys).
+  Expect to pay roughly **$0.15 per 100 emails** analysed with the
+  default `gpt-4o-mini` model. The key is stored in your OS
+  keyring, never in plain text.
+
+You can also continue **without AI**: triage falls back to local
+rule-based classification (sender domain, common newsletter
+patterns). No summaries or score, but the inbox still works.
+
+The choice can be revisited any time in *Settings → Artificial
+intelligence*.
 
 ## 2. Mail accounts
 

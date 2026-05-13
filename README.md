@@ -94,7 +94,7 @@ Here's how that compares.*
 | **What it is** | Native desktop app, layer over your accounts | Cloud service, sorts into IMAP folders | Plugin for Outlook / Apple Mail / Gmail | Standalone email service with new address |
 | **Keep your existing address** | Yes | Yes | Yes | No (`@hey.com` required) |
 | **Where your emails live** | Your machine (local SQLite) | SaneBox servers + your IMAP | Your provider + Mailbutler cloud for AI | Hey servers |
-| **Pricing** | Free, you pay your own OpenAI usage (~$0.15 / 100 emails) | $7–36 / month | $5–30 / month | $99 / year, flat |
+| **Pricing** | Free with local AI, or pay your own OpenAI usage (~$0.15 / 100 emails) | $7–36 / month | $5–30 / month | $99 / year, flat |
 | **Works offline (browse synced mail)** | Yes | No | Partial | No |
 | **Open source** | Yes (GPL v3) | No | No | No |
 | **Platforms** | Windows, macOS, Linux | Any IMAP client | Outlook, Apple Mail, Gmail web | Web, iOS, Android, macOS |
@@ -106,7 +106,8 @@ Here's how that compares.*
 ## Quick start
 
 1. Download and run the installer (see [Download](#download) above).
-2. The setup wizard walks you through three steps: OpenAI API key,
+2. The setup wizard walks you through three steps: pick your AI
+   (local models bundled in the installer, or your own OpenAI key),
    mail accounts (one-click app-password shortcut for Gmail, Outlook,
    iCloud, Yahoo), and *(optional)* push notifications via
    [ntfy.sh](https://ntfy.sh).
@@ -125,15 +126,20 @@ your machine, stays on your machine.**
 | Data | Where it lives |
 |---|---|
 | IMAP credentials (app password) | OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service). `config.yaml` only holds an opaque `keyring:user@host` reference. |
-| OpenAI API key | OS keyring (same as above). |
+| OpenAI API key *(if you use OpenAI)* | OS keyring (same as above). |
+| Local AI models *(if you use local mode)* | GGUF files in your data directory, `models/`. Downloaded on demand from Hugging Face. Never re-uploaded anywhere. |
 | Downloaded emails, summaries, scores | Local SQLite. Windows: `%APPDATA%\LullMail\data\mail.db` · macOS: `~/Library/Application Support/LullMail/data/mail.db` · Linux: `~/.local/share/LullMail/data/mail.db` |
 | Attachments | Same data directory, `data/attachments/` (UUID filenames, owner-only permissions, integrity-checked on every download) |
 
 **The only outbound flows**:
 
-- **OpenAI**: every email's text (subject + body) gets sent for
-  analysis. That's the smart-sort engine. Configurable: you can
-  disable AI analysis for specific mailboxes or change the model.
+- **Local AI (default)**: nothing leaves. The analyzer and drafter
+  run on your CPU via `llama_cpp.server`. Emails are processed
+  in-process, never sent over the network.
+- **OpenAI** *(opt-in)*: if you switch the AI provider to OpenAI
+  in Settings, every email's text (subject + body) gets sent for
+  analysis. Configurable: disable AI analysis for specific
+  mailboxes or change the model.
 - **ntfy.sh**: *(optional)* push notification title (email subject
   + summary excerpt) is sent to the anonymous topic you choose.
   No link to your identity.
@@ -154,17 +160,17 @@ suspicious TLDs, typosquat, subdomain spoofing) route through a
 warning page before opening, and SPF/DKIM/DMARC verdicts are
 surfaced as a coloured badge on every email. See
 [`docs/SECURITY-ROADMAP.md`](docs/SECURITY-ROADMAP.md) for what is
-still planned (E2E PGP, AV system integration, local LLM, signed
-installer).
+still planned (E2E PGP, AV system integration, signed installer).
 
 ---
 
 ## Quick FAQ
 
 **How much does it cost?**
-Free. You pay OpenAI directly for the AI calls. Push notifications
-go through ntfy.sh, also free. A 100% free LLM integration is in the
-works, which will eventually drop the total cost to zero.
+Free with the default local AI: the models run on your machine and
+cost nothing once downloaded. Switch to OpenAI in Settings if you
+prefer cloud quality (you pay OpenAI directly, ~$0.15 / 100 emails).
+Push notifications go through ntfy.sh, also free.
 
 **Does it work offline?**
 Yes for reading what you've already synced. No for fetching new mail
