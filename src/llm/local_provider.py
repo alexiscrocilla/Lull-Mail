@@ -186,13 +186,17 @@ class LocalLLMProvider(LLMProvider):
         # JSON Schema strict garantisse déjà la cohérence, on garde le
         # garde-fou pour le jour où le schéma est ignoré côté serveur
         # (vieille version llama_cpp) ou où le modèle se rebelle.
+        # `importance_reason` reste vide en mode local : on ne fait pas
+        # générer de phrase d'explication par le modèle (pas dans le
+        # schema JSON pour rester court côté CPU), et le précédent
+        # template "Classifié X par Phi-3.5-mini (confiance 0.70)"
+        # était du jargon que personne ne veut lire. La catégorie +
+        # le summary suffisent à comprendre la classification ; le
+        # frontend masque la ligne quand la reason est vide.
         result: Dict[str, Any] = {
             "category": category,
             "importance_score": score,
-            "importance_reason": (
-                f"Classifié {category} par Phi-3.5-mini "
-                f"(confiance {confidence:.2f})"
-            ),
+            "importance_reason": "",
             "summary": parsed.get("summary", ""),
             "needs_reply": bool(parsed.get("needs_reply", False)),
             "draft_response": None,
@@ -240,6 +244,56 @@ class LocalLLMProvider(LLMProvider):
         except (json.JSONDecodeError, Exception) as e:
             logger.error("[LocalLLM] draft inférence échouée : %s", e)
         return existing_result
+
+    def stream_draft(
+        self, data: Dict[str, Any],
+    ):
+        """Variante streaming d'`enrich_draft`. Yield des chunks de texte
+        au fur et à mesure que le modèle les produit.
+
+        Utilité : sur Phi-3.5 / Qwen 3B CPU, une réponse complète prend
+        10-15 s. Avec ce stream le user voit les tokens arriver dans le
+        composer comme dans ChatGPT — la perception passe de "ça rame"
+        à "ça écrit". La latence brute est identique mais la latence
+        ressentie chute drastiquement.
+
+        Yield (str) : chaque chunk de texte (un token ou plus). Le
+        dernier yield est suivi de StopIteration ; l'appelant doit
+        cumuler les chunks pour avoir le texte final.
+
+        Pas de retour explicite : la persistance en DB est gérée par
+        l'appelant (api.py) parce que c'est lui qui possède le contexte
+        de la requête HTTP et qui décide quand le client a tout reçu.
+        """
+        client = self._ensure_drafter_running()
+        if client is None or self.drafter_server is None:
+            # Drafter indispo — le générateur est vide. L'endpoint API
+            # détectera et renverra une erreur HTTP claire.
+            return
+
+        self.drafter_server.touch()
+        payload = plocal.build_draft_stream_request(
+            data, model=self.drafter_model_id or "local",
+        )
+        try:
+            # client.chat.completions.create avec stream=True renvoie un
+            # itérable de ChatCompletionChunk. Chaque chunk a
+            # `.choices[0].delta.content` qui contient le texte nouveau
+            # depuis le chunk précédent (souvent 1-3 tokens).
+            stream = client.chat.completions.create(**payload)
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                content = getattr(delta, "content", None)
+                if content:
+                    yield content
+        except Exception as e:
+            logger.error("[LocalLLM] streaming draft échoué : %s", e)
+            # Le générateur s'arrête. L'endpoint a déjà reçu ce qui a
+            # été streamé avant l'erreur et peut décider de garder ou
+            # ignorer ce préfixe partiel.
+            return
 
     # ── Idle management ──────────────────────────────────────────────
 

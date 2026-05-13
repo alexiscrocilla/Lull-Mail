@@ -54,11 +54,21 @@ export const api = {
   },
 
   reanalyzeEmail(intId) {
-    return j(`/api/emails/${intId}/reanalyze`, { method: 'POST' });
+    // Wraps the AI call so the rail indicator (coin-flip loader) spins
+    // for the duration of the request. setAiBusy is a no-op if rail-toast
+    // hasn't loaded yet (rare — it's bundled early in index.html).
+    window.railToast?.setAiBusy?.(true);
+    return j(`/api/emails/${intId}/reanalyze`, { method: 'POST' })
+      .finally(() => window.railToast?.setAiBusy?.(false));
   },
 
   generateDraft(intId) {
-    return j(`/api/emails/${intId}/draft`, { method: 'POST' });
+    // Drafter is the heaviest local LLM call (~5-15 s cold start). The
+    // rail spinner is the only feedback for users not watching the
+    // composer pane.
+    window.railToast?.setAiBusy?.(true);
+    return j(`/api/emails/${intId}/draft`, { method: 'POST' })
+      .finally(() => window.railToast?.setAiBusy?.(false));
   },
 
   // ── Labels (Phase 3) ─────────────────────────────────────

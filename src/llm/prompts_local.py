@@ -260,3 +260,156 @@ def build_draft_request(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Variante streaming : raw text au lieu de JSON. Le JSON Schema force le
+# modèle à attendre la fin avant d'émettre un seul gros bloc, ce qui tue
+# tout intérêt du streaming. En raw text, le modèle peut commencer à
+# produire des tokens immédiatement.
+#
+# Risque : sans schéma le modèle peut ajouter un préambule ("Voici la
+# réponse :", "Bien sûr, voici…"). Le prompt explicite l'interdit, ET
+# le frontend trim une liste de prefixes connus en post-process. C'est
+# défendable parce que les drafts générés sont DESTINÉS à être édités
+# par l'utilisateur — un rare faux départ se corrige en 1 backspace.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+SYSTEM_DRAFT_STREAM = """Tu rédiges la réponse à un email reçu. Tu es le destinataire qui répond.
+
+Règles (toutes strictes) :
+- Tutoie si on te tutoie, vouvoie sinon.
+- Réponds VRAIMENT aux questions posées (n'écho pas la question, donne une vraie réponse).
+- N'invente PAS de faits qui ne sont pas dans l'email reçu.
+- Sois proportionnel : email court → réponse courte. Email long → réponse adaptée.
+- N'écris PAS de signature finale (pas de "Cordialement Marie", pas de prénom, pas de [Tu] ou [Votre nom], pas de placeholders).
+- Texte brut UNIQUEMENT. Pas de markdown, pas de crochets, pas d'intro ("Voici", "Bien sûr").
+
+EXEMPLE 1 (email court & informel) :
+Email reçu :
+De : Léa <lea@truc.fr>
+Salut, ça va ? Dispo demain pour un café ?
+
+Brouillon :
+Salut Léa,
+
+Oui ça va et toi ? Demain ça marche, 16h au café d'en bas ?
+
+À demain.
+
+EXEMPLE 2 (email pro tutoyé) :
+Email reçu :
+De : Jean Dupont <jean@example.com>
+Salut, t'as eu le temps de regarder le devis ? Il faut qu'on le valide avant vendredi.
+
+Brouillon :
+Salut Jean,
+
+Oui, je regarde ça aujourd'hui et je te fais un retour avant vendredi.
+
+À très vite."""
+
+
+USER_DRAFT_STREAM = """Voici l'email reçu. Rédige la réponse.
+
+──── EMAIL REÇU ────
+De : {sender}
+Objet : {subject}
+
+{body}
+──── FIN ────
+
+Réponse :
+"""
+
+
+def build_draft_stream_request(
+    row: Dict[str, Any],
+    *,
+    model: str = "local",
+    max_tokens: int = 400,
+    temperature: float = 0.3,
+) -> Dict[str, Any]:
+    """Payload pour streaming : `stream=True`, pas de response_format
+    (incompatible avec le streaming dans llama_cpp.server)."""
+    import re
+
+    body = (row.get("body_text") or "").strip()
+    if not body and row.get("body_html"):
+        html = row["body_html"]
+        html = re.sub(r"<style[^>]*>.*?</style>", " ", html, flags=re.S | re.I)
+        html = re.sub(r"<script[^>]*>.*?</script>", " ", html, flags=re.S | re.I)
+        html = re.sub(r"<[^>]+>", " ", html)
+        body = re.sub(r"\s+", " ", html).strip()
+    body = body[:4000]
+
+    user_msg = USER_DRAFT_STREAM.format(
+        sender=str(row.get("sender") or "")[:200],
+        recipient=str(row.get("recipient") or "")[:200],
+        subject=str(row.get("subject") or "")[:200],
+        body=body,
+    )
+
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_DRAFT_STREAM},
+            {"role": "user", "content": user_msg},
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": True,
+    }
+
+
+# Prefixes qu'on supprime côté post-process si le modèle déraille malgré
+# le system prompt. Pattern conservateur : strip-prefix uniquement.
+# Insensible casse + accent.
+_DRAFT_PREFIX_PATTERNS = (
+    r"^\s*voici\s+(?:la\s+|une\s+|votre\s+|ma\s+)?réponse\s*[:\-—]?\s*",
+    r"^\s*bien\s+sûr\s*[,.!]?\s*",
+    r"^\s*d['']accord\s*[,.!]?\s*",
+    r"^\s*je\s+vais\s+(?:vous\s+)?(?:rédiger|écrire|répondre)\s*[:\-—]?\s*",
+    r"^\s*pas\s+de\s+problème\s*[,.!]?\s*",
+    r"^\s*```[a-z]*\s*\n?",
+)
+
+# Placeholders du modèle (Qwen / Phi qui glissent un literal "[Tu]" ou
+# "[Votre nom]" parce qu'ils interprètent les instructions du system
+# prompt). Les supprimer partout dans le texte est sans risque : un
+# email réel ne contient quasiment jamais ces tokens entre crochets.
+_DRAFT_PLACEHOLDER_PATTERNS = (
+    r"\[\s*tu\s*\]",
+    r"\[\s*vous\s*\]",
+    r"\[\s*votre\s+nom\s*\]",
+    r"\[\s*ton\s+nom\s*\]",
+    r"\[\s*nom\s*\]",
+    r"\[\s*pr[ée]nom\s*\]",
+    r"\[\s*signature\s*\]",
+    r"\[\s*votre\s+signature\s*\]",
+    r"\[\s*name\s*\]",
+    r"\[\s*your\s+name\s*\]",
+)
+
+
+def strip_draft_prefix(text: str) -> str:
+    """Retire les préambules ET placeholders qu'un petit LLM peut
+    ajouter malgré le system prompt. Itère jusqu'à stabilité (cas
+    'Bien sûr, voici la réponse :'). Les placeholders sont strippés
+    n'importe où dans le texte, les préambules uniquement en tête."""
+    import re
+    prev = None
+    cur = text or ""
+    while prev != cur:
+        prev = cur
+        for pat in _DRAFT_PREFIX_PATTERNS:
+            cur = re.sub(pat, "", cur, count=1, flags=re.IGNORECASE | re.MULTILINE)
+        for pat in _DRAFT_PLACEHOLDER_PATTERNS:
+            cur = re.sub(pat, "", cur, flags=re.IGNORECASE)
+    # Re-collapse les lignes vides résiduelles laissées par le strip
+    # des placeholders en fin (ex. "À très vite,\n[Tu]" devient
+    # "À très vite,\n\n" puis "À très vite,").
+    cur = re.sub(r"\n{3,}", "\n\n", cur)
+    cur = re.sub(r"[ \t]+\n", "\n", cur)
+    return cur

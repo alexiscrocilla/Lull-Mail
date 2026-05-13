@@ -2699,25 +2699,31 @@ export async function mountMailbox(host, _opts) {
       </div>
     `;
 
-    // Build the body block. Three branches:
-    //   • plain-text body (already linkified for homograph URLs)
-    //   • HTML body in a sandboxed iframe — with optional image-blocker
-    //     banner above when remote images were stripped
+    // Build the body block. Three branches, priorité HTML d'abord :
+    //   • HTML body in a sandboxed iframe (95% des emails — MIME multipart)
+    //   • plain-text body (linkified) en fallback quand pas de HTML
     //   • empty placeholder
     //
-    // The image-blocker honours `em.sender_images_trusted` (provided by
-    // the API). When the sender is trusted, the iframe renders the
-    // original HTML untouched. Otherwise we run rewriteRemoteImages,
-    // count what got stripped, and surface a banner with two buttons:
-    //   – "Charger pour ce mail" : re-render this email's iframe
-    //     without the blocker (no DB write, one-shot).
-    //   – "Toujours pour cet expéditeur" : POST the trust flag and
-    //     re-render. Future emails from the same domain skip the
-    //     blocker automatically.
-    const body = em.body_text && em.body_text.trim().length
-      ? `<div class="mb-body-text">${linkify(em.body_text)}</div>`
-      : (em.body_html
-         ? buildHtmlBodyBlock(em)
+    // Avant ce changement, body_text était préféré quand il existait
+    // (présent dans presque tous les emails standards via multipart/
+    // alternative). Résultat : on perdait la mise en forme du sender
+    // (paragraphes, listes, citations, signature). L'iframe sandboxée
+    // gère toutes les protections (no scripts, image-blocker, suspicious
+    // links) ; aucune raison de la sacrifier pour économiser un iframe.
+    //
+    // Le fallback texte sert maintenant uniquement aux emails text-only
+    // (notifications GitHub anciennes, alertes CLI, etc.) — rare.
+    //
+    // L'image-blocker honore `em.sender_images_trusted`. Quand le sender
+    // est trusted, l'iframe rend le HTML original. Sinon rewriteRemoteImages
+    // strippe + banner avec deux boutons (one-shot ou toujours pour ce
+    // domaine).
+    const hasHtml = em.body_html && em.body_html.trim().length;
+    const hasText = em.body_text && em.body_text.trim().length;
+    const body = hasHtml
+      ? buildHtmlBodyBlock(em)
+      : (hasText
+         ? `<div class="mb-body-text">${linkify(em.body_text)}</div>`
          : `<div style="color:var(--muted);font-style:italic">${t('mb.read.empty_body')}</div>`);
 
     $('#read-pane').innerHTML = `
@@ -3398,12 +3404,14 @@ export async function mountMailbox(host, _opts) {
         });
         setSending('sent');
         window.toast(t('mb.toast.sent'));
-        // The user-typed draft (if any) is now stale — drop it so it
-        // doesn't reappear in Brouillons. The AI suggestion in
-        // emails.draft_response stays untouched: it's the LLM's
-        // contribution, not the user's, and a future "Modifier"
-        // workflow may still reference it.
-        deleteReplyDraft();
+        // Drop BOTH the user-typed draft AND the AI suggestion. Avant ce
+        // changement seul le user draft était nettoyé, ce qui laissait
+        // la box #mb-draft réapparaître après closeComposer (parce que
+        // em.draft_response était toujours en DB + dataset.loaded='1').
+        // Résultat : l'user voyait le brouillon "encore là" alors qu'il
+        // venait de l'envoyer, expérience confuse. La réponse est partie,
+        // le brouillon n'a plus aucune raison d'être.
+        await deleteReplyDraft({ alsoClearAi: true });
         // Backend already cleaned the staged uploads on success; clear
         // the local list so a re-open of the composer starts empty.
         stagedAttachments.length = 0;
@@ -3626,31 +3634,52 @@ export async function mountMailbox(host, _opts) {
       }
     });
 
-    // Composer-bar sparkles — generates a draft reply and drops it into
-    // the textarea above. The user can then edit before sending.
+    // Composer-bar sparkles — generates a draft reply and streams the
+    // tokens into the textarea as they arrive. Streaming endpoint is
+    // local-only ; en mode OpenAI on retombe sur l'endpoint non-streaming
+    // (api.generateDraft) qui renvoie le texte complet en un coup.
     $('#btn-ai-draft')?.addEventListener('click', async () => {
       const btn = $('#btn-ai-draft');
       const ta = $('#mb-composer textarea');
       if (!btn || !ta || btn.disabled) return;
       btn.disabled = true;
       btn.classList.add('loading');
+      // Vide la zone — on remplace par le draft généré. Si l'user
+      // tenait déjà à un brouillon perso, le bouton ne devrait pas
+      // exister (l'UI le cache quand draft_response est déjà défini)
+      // mais on protège quand même : on prévient avant d'écraser.
+      if (ta.value && !window.confirm(t('mb.ai.overwrite_confirm'))) {
+        btn.disabled = false;
+        btn.classList.remove('loading');
+        return;
+      }
+      ta.value = '';
+      window.railToast?.setAiBusy?.(true);
       try {
-        const res = await api.generateDraft(em.int_id);
-        const text = res.draft_response || '';
-        if (!text) {
-          window.toast(t('mb.ai.draft_fail'));
-          return;
+        const streamed = await _streamDraftInto(em.int_id, ta);
+        if (!streamed.ok) {
+          // Soit le streaming a refusé (provider OpenAI → 409), soit
+          // il a crashé en cours. Fallback non-streaming.
+          if (streamed.fallback) {
+            const res = await api.generateDraft(em.int_id);
+            const text = res.draft_response || '';
+            if (!text) { window.toast(t('mb.ai.draft_fail')); return; }
+            ta.value = text;
+          } else {
+            window.toast(t('mb.ai.draft_error'));
+            return;
+          }
         }
-        ta.value = text;
         ta.focus();
         // Mirror the new state locally (backend already flipped
         // needs_reply=1) so the list card icons stay coherent without a
         // full re-fetch.
-        em.draft_response = text;
+        const finalText = ta.value;
+        em.draft_response = finalText;
         em.needs_reply = 1;
         const idx = state.emails.findIndex((e) => e.int_id === em.int_id);
         if (idx >= 0) {
-          state.emails[idx].draft_response = text;
+          state.emails[idx].draft_response = finalText;
           state.emails[idx].needs_reply = 1;
         }
         _patchCardReplyIcon(em.int_id, true);
@@ -3658,6 +3687,7 @@ export async function mountMailbox(host, _opts) {
       } catch (_) {
         window.toast(t('mb.ai.draft_error'));
       } finally {
+        window.railToast?.setAiBusy?.(false);
         btn.disabled = false;
         btn.classList.remove('loading');
       }
@@ -3784,6 +3814,91 @@ export async function mountMailbox(host, _opts) {
    * moment — the marker shows up immediately even if Lucide is busy /
    * already finished its sweep.
    */
+
+  /**
+   * Stream a generated draft from the backend into `targetTextarea`.
+   * Returns `{ok: true}` when the stream completed cleanly, or
+   * `{ok: false, fallback: true}` when the server refused with 409
+   * (provider doesn't support streaming → caller can retry on the
+   * non-streaming endpoint), `{ok: false}` for unexpected failures.
+   *
+   * The SSE format is:
+   *    data: {"delta": "...chunk..."}
+   *    ...
+   *    data: {"done": true, "full_text": "...", "needs_reply": true}
+   *
+   * We don't try to parse the JSON incrementally — events arrive
+   * whole, one per `\n\n` boundary. Network-level chunking is handled
+   * by the loop via a buffer.
+   */
+  async function _streamDraftInto(intId, targetTextarea) {
+    let resp;
+    try {
+      resp = await fetch(`/api/emails/${intId}/draft/stream`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      return { ok: false };
+    }
+    if (resp.status === 409) {
+      // Provider doesn't support streaming — let caller fall back.
+      return { ok: false, fallback: true };
+    }
+    if (!resp.ok || !resp.body) {
+      return { ok: false };
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buf = '';
+    let finalText = '';
+    let sawError = false;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const evt = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const dataLine = evt.split('\n').find((l) => l.startsWith('data:'));
+        if (!dataLine) continue;
+        let payload;
+        try {
+          payload = JSON.parse(dataLine.slice(5).trim());
+        } catch {
+          continue;
+        }
+        if (payload.error) {
+          sawError = true;
+          continue;
+        }
+        if (payload.delta) {
+          // Append to textarea + autoscroll to bottom so the user sees
+          // the latest tokens. requestAnimationFrame avoids a layout
+          // thrash on each chunk (chunks can be ≤3 tokens, that's
+          // dozens of renders per second).
+          targetTextarea.value += payload.delta;
+          targetTextarea.scrollTop = targetTextarea.scrollHeight;
+        }
+        if (payload.done) {
+          // Use the server's final (post-strip-prefix) text as the
+          // authoritative value — we replace what was streamed because
+          // the backend may have trimmed a "Voici la réponse:" preamble.
+          if (typeof payload.full_text === 'string') {
+            finalText = payload.full_text;
+            if (targetTextarea.value !== finalText) {
+              targetTextarea.value = finalText;
+            }
+          } else {
+            finalText = targetTextarea.value;
+          }
+        }
+      }
+    }
+    if (sawError && !finalText) return { ok: false };
+    return { ok: true };
+  }
+
   function _patchCardReplyIcon(intId, on) {
     const card = host.querySelector(`.mb-card[data-id="${intId}"]`);
     if (!card) return;
