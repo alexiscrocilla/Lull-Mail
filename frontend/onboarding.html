@@ -491,6 +491,205 @@
   input[type="checkbox"] { accent-color: var(--accent); }
   input[type="range"]    { accent-color: var(--accent); }
 
+  /* ── Step 1 — Local hero panel (collapsible) ── */
+  .hero-local {
+    background: color-mix(in oklab, var(--accent-soft) 70%, var(--glass-bg-2));
+    border: 1.5px solid color-mix(in oklab, var(--accent) 35%, var(--glass-stroke));
+    border-radius: 16px;
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    overflow: hidden;
+  }
+  /* Override the global details marker for the hero (no ▸ prefix). */
+  .hero-local > summary::before { content: none; }
+  .hero-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 18px 22px;
+    cursor: pointer;
+    user-select: none;
+    flex-wrap: wrap;
+  }
+  .hero-summary-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+  }
+  .hero-summary-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  .hero-chev {
+    width: 16px; height: 16px;
+    color: var(--accent-ink);
+    transition: transform 280ms cubic-bezier(.4, 0, .2, 1);
+    flex-shrink: 0;
+  }
+  [data-theme="dark"] .hero-chev { color: var(--accent); }
+  /* Rotation pilotée par une classe (pas l'attribut [open]) pour que la
+     flèche tourne en même temps que le slide, pas après la fin de l'anim. */
+  .hero-local.is-expanded .hero-chev { transform: rotate(180deg); }
+  .hero-body {
+    padding: 0 22px 22px;
+  }
+  .hero-title {
+    font-weight: 700;
+    font-size: 16px;
+    color: var(--accent-ink);
+  }
+  [data-theme="dark"] .hero-title { color: var(--text); }
+  .hero-sub {
+    color: color-mix(in oklab, var(--accent-ink) 75%, var(--text));
+    line-height: 1.5;
+  }
+  [data-theme="dark"] .hero-sub { color: var(--muted); }
+
+  .hw-banner {
+    display: flex; align-items: center; gap: 6px;
+    color: var(--accent-ink);
+    background: color-mix(in oklab, var(--accent) 12%, transparent);
+    border: none;
+    border-image: none;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-weight: 500;
+    width: fit-content;
+  }
+  [data-theme="dark"] .hw-banner { color: var(--accent); }
+  .hw-banner i, .hw-banner svg { width: 13px; height: 13px; stroke-width: 2.25; }
+  .hw-banner .hw-arrow,
+  .hw-banner .hw-arrow svg {
+    width: 11px; height: 11px;
+    opacity: 0.65;
+  }
+
+  .role-pill {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--glass-stroke);
+    border-radius: 10px;
+  }
+  .role-pill .pill-ic {
+    width: 30px; height: 30px;
+    border-radius: 8px;
+    background: var(--accent-soft);
+    display: grid; place-items: center;
+    flex-shrink: 0;
+  }
+  .role-pill .pill-ic i, .role-pill .pill-ic svg {
+    width: 15px; height: 15px;
+    color: var(--accent-ink);
+    stroke-width: 2.25;
+  }
+  [data-theme="dark"] .role-pill .pill-ic i,
+  [data-theme="dark"] .role-pill .pill-ic svg { color: var(--accent); }
+  .role-pill .pill-role {
+    font-size: 13.5px; font-weight: 600; color: var(--text);
+    flex: 1;
+    line-height: 1.3;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .role-pill .pill-size {
+    font-size: 12.5px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+    font-weight: 500;
+  }
+  .role-pill.is-done { border-color: color-mix(in oklab, var(--success) 35%, var(--glass-stroke)); }
+  .role-pill.is-done .pill-size {
+    color: var(--success);
+    font-weight: 600;
+  }
+  .role-pill.is-active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+
+  /* ── Download progress bar ── */
+  .dl-progress { width: 100%; }
+  .dl-bar {
+    width: 100%;
+    height: 8px;
+    background: color-mix(in oklab, var(--text) 10%, transparent);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .dl-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), color-mix(in oklab, var(--accent) 70%, var(--info)));
+    width: 0%;
+    transition: width 200ms ease;
+    border-radius: 999px;
+  }
+
+  /* ── OpenAI collapsible section ── */
+  .ob-openai-toggle {
+    background: var(--glass-bg-2);
+    border: 1px solid var(--glass-stroke);
+    border-radius: 14px;
+    overflow: hidden;
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+  }
+  .ob-openai-summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 16px;
+    cursor: pointer;
+    color: var(--text);
+    font-weight: 500;
+    font-size: 13.5px;
+    transition: background .15s;
+    user-select: none;
+  }
+  .ob-openai-summary:hover { background: var(--surface); }
+  .ob-openai-summary > i:first-child {
+    width: 16px; height: 16px;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .ob-openai-summary > span { flex: 1; }
+  .ob-openai-chev {
+    width: 14px; height: 14px;
+    color: var(--muted);
+    transition: transform 280ms cubic-bezier(.4, 0, .2, 1);
+  }
+  .ob-openai-toggle.is-expanded .ob-openai-chev { transform: rotate(180deg); }
+  .ob-openai-toggle > summary::before { content: none; }
+  .ob-openai-body {
+    padding: 4px 16px 16px;
+    border-top: 1px solid var(--glass-stroke);
+  }
+
+  /* ── Skip link ── */
+  .ob-skip-link {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 14px;
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+    transition: color .15s;
+  }
+  .ob-skip-link:hover { color: var(--text); }
+  .ob-skip-link i, .ob-skip-link svg {
+    width: 14px; height: 14px;
+    stroke-width: 2;
+  }
+
   /* ── Toggle row (used for "Activer les notifications push") ── */
   .toggle-row {
     display: flex; align-items: center; justify-content: space-between;
@@ -593,51 +792,122 @@
       <div id="dot-4" class="step-dot">4</div>
     </div>
 
-    <!-- Step 1 — Welcome / OpenAI key -->
+    <!-- Step 1 — Choose AI provider (Local hero + OpenAI fallback) -->
     <section id="step-1" class="panel p-8">
-      <h2 class="text-2xl font-bold mb-2" data-i18n="ob.step1.title">Bienvenue</h2>
+      <h2 class="text-2xl font-bold mb-2" data-i18n="ob.step1.title">Configurez votre IA</h2>
       <p style="color: var(--muted);" class="mb-6 text-sm" data-i18n="ob.step1.desc">
-        Lull Mail trie, résume et priorise vos emails grâce à OpenAI.
-        On commence par votre clé API.
+        Lull Mail trie, résume et priorise vos emails. Choisissez l'IA locale (privée, gratuite) ou OpenAI (cloud, plus rapide).
       </p>
 
-      <label class="label" data-i18n="ob.step1.key_label">Clé API OpenAI</label>
-      <input id="openai-key" type="password" class="input font-mono" placeholder="sk-…" autocomplete="off" />
+      <!-- ── Local hero (collapsible, open by default) ───────────── -->
+      <details id="ob-local-section" class="hero-local" open>
+        <summary class="hero-summary">
+          <div class="hero-summary-left">
+            <i data-lucide="shield-check" style="color: var(--accent); width: 22px; height: 22px; flex-shrink: 0;"></i>
+            <span class="hero-title" data-i18n="ob.step1.local.title">IA locale et privée</span>
+            <span id="ob-hw-banner" class="hw-banner text-xs">
+              <i data-lucide="cpu"></i>
+              <span id="ob-hw-ram-text" data-i18n="ob.step1.local.hw_loading">Détection du matériel…</span>
+              <i data-lucide="arrow-right" class="hw-arrow" style="display:none"></i>
+              <span id="ob-hw-tier-text"></span>
+            </span>
+          </div>
+          <span class="hero-summary-right">
+            <span class="badge" data-i18n="ob.step1.local.badge">Recommandé</span>
+            <i data-lucide="chevron-down" class="hero-chev"></i>
+          </span>
+        </summary>
 
-      <div class="mt-3 text-xs" style="color: var(--muted);">
-        <span data-i18n="ob.step1.no_key_prefix">Pas encore de clé ?</span>
-        <a href="https://platform.openai.com/api-keys" target="_blank"
-           style="color: var(--accent);" class="underline font-medium"
-           data-i18n="ob.step1.no_key_link">
-          Créez-en une ici
-        </a>
-      </div>
+        <div class="hero-body">
+          <p class="hero-sub text-sm mb-4" data-i18n="ob.step1.local.subtitle">
+            Vos emails ne quittent jamais cet ordinateur. Une fois les modèles téléchargés, plus aucun appel à un serveur tiers.
+          </p>
 
-      <label class="label mt-5" data-i18n="ob.step1.model_label">Modèle (optionnel)</label>
-      <input type="hidden" id="openai-model" value="gpt-4o-mini" />
-      <div class="ob-drop-wrap" id="openai-model-wrap">
-        <button class="ob-drop-btn" id="openai-model-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
-          <span id="openai-model-label" data-i18n="ob.step1.model_mini">gpt-4o-mini — recommandé (rapide &amp; abordable)</span>
-          <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-        </button>
-        <div class="ob-drop-menu" id="openai-model-drop" role="listbox" style="display:none">
-          <div class="ob-drop-opt active" data-val="gpt-4o-mini" data-label-key="ob.step1.model_mini" role="option" aria-selected="true">gpt-4o-mini <span style="opacity:.6;font-size:11px">— <span data-i18n="ob.step1.model_mini_short">recommandé</span></span></div>
-          <div class="ob-drop-opt" data-val="gpt-4o" data-label-key="ob.step1.model_4o" role="option" aria-selected="false">gpt-4o <span style="opacity:.6;font-size:11px">— <span data-i18n="ob.step1.model_4o_short">plus précis, plus cher</span></span></div>
-          <div class="ob-drop-opt" data-val="gpt-4.1-mini" data-label-key="ob.step1.model_4o" role="option" aria-selected="false">gpt-4.1-mini</div>
+          <!-- Two model role pills (analyzer + drafter) -->
+          <div id="ob-models-pills" class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3"></div>
+
+          <!-- Total size + ETA -->
+          <div class="flex justify-between items-baseline text-xs mb-4" style="color: var(--muted);">
+            <span id="ob-total-size"></span>
+            <span id="ob-eta-hint"></span>
+          </div>
+
+          <!-- Action + progress -->
+          <button id="ob-local-btn" class="btn w-full" onclick="downloadAndActivateLocal()" disabled>
+            <i data-lucide="download"></i>
+            <span id="ob-local-btn-label" data-i18n="ob.step1.local.download_btn">Télécharger et activer</span>
+          </button>
+
+          <div id="ob-local-progress" class="dl-progress mt-3 hidden">
+            <div class="dl-bar"><div id="ob-dl-fill" class="dl-fill"></div></div>
+            <div class="flex justify-between text-xs mt-1.5" style="color: var(--muted);">
+              <span id="ob-dl-label"></span>
+              <span id="ob-dl-stats"></span>
+            </div>
+          </div>
+
+          <div id="ob-local-error" class="test-err mt-3 hidden"></div>
+
+          <div class="mt-3 text-xs text-center" style="color: var(--muted);" data-i18n="ob.step1.local.no_internet_hint">
+            Connexion internet requise pour le téléchargement initial uniquement.
+          </div>
         </div>
-      </div>
+      </details>
 
-      <div class="mt-4 text-xs" style="color: var(--muted);">
-        <span data-i18n="ob.step1.skip_hint">Pas de clé ? Vous pouvez utiliser Lull Mail sans IA — le tri restera basique mais fonctionnel.</span>
-      </div>
+      <!-- ── OpenAI alternative (collapsible) ───────────────────── -->
+      <details id="ob-openai-section" class="ob-openai-toggle mt-5">
+        <summary class="ob-openai-summary">
+          <i data-lucide="cloud"></i>
+          <span data-i18n="ob.step1.openai.toggle">Préférez OpenAI ? Utiliser GPT à la place</span>
+          <i data-lucide="chevron-down" class="ob-openai-chev"></i>
+        </summary>
+        <div class="ob-openai-body">
+          <p class="text-xs mb-3" style="color: var(--muted);" data-i18n="ob.step1.openai.desc">
+            Plus rapide à configurer si vous avez déjà un compte OpenAI. Vos emails transitent par leurs serveurs (chiffré en transit).
+          </p>
 
-      <div class="flex justify-between items-center mt-8 gap-3">
-        <button class="btn btn-ghost" onclick="skipOpenAIAndNext()">
-          <i data-lucide="zap-off"></i> <span data-i18n="ob.step1.skip_cta">Utiliser sans IA</span>
+          <label class="label" data-i18n="ob.step1.key_label">Clé API OpenAI</label>
+          <input id="openai-key" type="password" class="input font-mono" placeholder="sk-…" autocomplete="off" />
+
+          <div class="mt-2 text-xs" style="color: var(--muted);">
+            <span data-i18n="ob.step1.no_key_prefix">Pas encore de clé ?</span>
+            <a href="https://platform.openai.com/api-keys" target="_blank"
+               style="color: var(--accent);" class="underline font-medium"
+               data-i18n="ob.step1.no_key_link">
+              Créez-en une ici
+            </a>
+          </div>
+
+          <label class="label mt-4" data-i18n="ob.step1.model_label">Modèle (optionnel)</label>
+          <input type="hidden" id="openai-model" value="gpt-4o-mini" />
+          <div class="ob-drop-wrap" id="openai-model-wrap">
+            <button class="ob-drop-btn" id="openai-model-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
+              <span id="openai-model-label" data-i18n="ob.step1.model_mini">gpt-4o-mini — recommandé (rapide &amp; abordable)</span>
+              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="ob-drop-menu" id="openai-model-drop" role="listbox" style="display:none">
+              <div class="ob-drop-opt active" data-val="gpt-4o-mini" data-label-key="ob.step1.model_mini" role="option" aria-selected="true">gpt-4o-mini <span style="opacity:.6;font-size:11px">— <span data-i18n="ob.step1.model_mini_short">recommandé</span></span></div>
+              <div class="ob-drop-opt" data-val="gpt-4o" data-label-key="ob.step1.model_4o" role="option" aria-selected="false">gpt-4o <span style="opacity:.6;font-size:11px">— <span data-i18n="ob.step1.model_4o_short">plus précis, plus cher</span></span></div>
+              <div class="ob-drop-opt" data-val="gpt-4.1-mini" data-label-key="ob.step1.model_4o" role="option" aria-selected="false">gpt-4.1-mini</div>
+            </div>
+          </div>
+
+          <button class="btn mt-4 w-full" onclick="saveOpenAIAndNext()">
+            <span data-i18n="ob.step1.openai.continue_btn">Enregistrer et continuer</span>
+            <i data-lucide="arrow-right"></i>
+          </button>
+        </div>
+      </details>
+
+      <!-- ── Skip (no AI) ───────────────────────────────────────── -->
+      <div class="mt-4 text-center">
+        <button class="ob-skip-link" onclick="skipOpenAIAndNext()">
+          <i data-lucide="zap-off"></i>
+          <span data-i18n="ob.step1.skip_cta">Continuer sans IA</span>
         </button>
-        <button class="btn" onclick="saveOpenAIAndNext()">
-          <span data-i18n="ob.step1.cta">Continuer</span> <i data-lucide="arrow-right"></i>
-        </button>
+        <div class="text-xs mt-1.5" style="color: var(--muted);" data-i18n="ob.step1.skip_hint">
+          Sans IA, le tri restera basique mais fonctionnel.
+        </div>
       </div>
     </section>
 
