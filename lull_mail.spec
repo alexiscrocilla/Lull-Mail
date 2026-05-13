@@ -74,19 +74,43 @@ hiddenimports += [
     "uvicorn.lifespan.on",
 ]
 
-# Local LLM backend (opt-in). Bundle it ONLY when `llama_cpp` is
-# importable in the build environment. The `hooks/hook-llama_cpp.py`
-# script handles binaries + data files (native libllama + Metal
-# shaders) via `collect_dynamic_libs` and `collect_data_files`. Without
-# `llama_cpp` installed, the local provider is unreachable at runtime
-# anyway (LocalLLMProvider tries to spawn `python -m llama_cpp.server`
-# and surfaces a clear error) — but the OpenAI path keeps working,
-# which is the intended default ship state.
+# Local LLM backend. Bundle it when `llama_cpp` is importable in the build
+# environment. The `hooks/hook-llama_cpp.py` script handles binaries + data
+# files (native libllama + Metal shaders) via `collect_dynamic_libs` and
+# `collect_data_files`.
+#
+# Post-v0.7.0 note: the v0.7.0 installer shipped without llama_cpp because
+# the build venv (CI + scripts/build.bat) only installed `requirements.txt`,
+# not `requirements-local.txt`. The try/import silently skipped, the app
+# installed fine, then crashed at runtime on the first call to Local mode.
+# To prevent a repeat, the skip is now LOUD: a warning is always printed,
+# and LULLMAIL_REQUIRE_LOCAL=1 (set by CI and the build scripts) turns the
+# skip into a hard build failure.
 try:
     import llama_cpp  # noqa: F401
     _local_llm_available = True
 except ImportError:
     _local_llm_available = False
+
+if not _local_llm_available:
+    _msg = (
+        "\n"
+        "════════════════════════════════════════════════════════════════════\n"
+        " WARNING: llama-cpp-python is NOT installed in the build venv.\n"
+        " The resulting bundle will SKIP the local LLM backend, and the app\n"
+        " will crash with ModuleNotFoundError on Local mode at runtime.\n"
+        "\n"
+        " Fix:  pip install -r requirements-local.txt \\\n"
+        "         --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu\n"
+        "════════════════════════════════════════════════════════════════════\n"
+    )
+    print(_msg, file=_sys.stderr)
+    # CI and build scripts set LULLMAIL_REQUIRE_LOCAL=1 so a forgotten pip
+    # step fails the build instead of producing a broken installer.
+    if _os.environ.get("LULLMAIL_REQUIRE_LOCAL", "").strip() == "1":
+        raise SystemExit(
+            "LULLMAIL_REQUIRE_LOCAL=1 and llama_cpp not importable, aborting build."
+        )
 
 _hookspath: list[str] = []
 if _local_llm_available:

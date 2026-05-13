@@ -63,11 +63,24 @@ jobs:
           .venv\Scripts\pip install -r requirements.txt
           .venv\Scripts\pip install pyinstaller==6.11.1
 
+      # Local LLM backend (llama-cpp-python). Missing from the v0.7.0 build,
+      # which is why the installer crashed at runtime with ModuleNotFoundError.
+      # The wheel needs the abetlen extra index because PyPI doesn't have
+      # all cp311 wheels for the pinned 0.3.0.
+      - name: Install local LLM backend
+        shell: cmd
+        run: |
+          .venv\Scripts\pip install -r requirements-local.txt ^
+            --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+
       - name: Build app (PyInstaller)
         shell: cmd
         env:
           LULLMAIL_NOINTERACT: '1'
           LULLMAIL_VERSION: ${{ steps.ver.outputs.version }}
+          # Abort the build (instead of silently dropping llama_cpp) if the
+          # previous "Install local LLM backend" step somehow regressed.
+          LULLMAIL_REQUIRE_LOCAL: '1'
         run: call scripts\build.bat
 
       - name: Verify build output
@@ -149,6 +162,12 @@ jobs:
           .venv/bin/pip install -r requirements.txt
           .venv/bin/pip install pyinstaller==6.11.1
 
+      # Local LLM backend (llama-cpp-python). Same fix as Windows, see notes there.
+      - name: Install local LLM backend
+        run: |
+          .venv/bin/pip install -r requirements-local.txt \
+            --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+
       # Generate .icns from the 1024px light source using sips + iconutil (both
       # built-in on macOS — no external dependencies needed).
       - name: Generate .icns icon
@@ -168,6 +187,9 @@ jobs:
         env:
           LULLMAIL_NOINTERACT: '1'
           LULLMAIL_VERSION: ${{ steps.ver.outputs.version }}
+          # Abort the build (instead of silently dropping llama_cpp) if the
+          # previous "Install local LLM backend" step somehow regressed.
+          LULLMAIL_REQUIRE_LOCAL: '1'
         run: bash scripts/build.sh
 
       - name: Verify build output
@@ -259,10 +281,19 @@ jobs:
           .venv/bin/pip install -r requirements.txt
           .venv/bin/pip install pyinstaller==6.11.1
 
+      # Local LLM backend (llama-cpp-python). Same fix as Windows / macOS.
+      - name: Install local LLM backend
+        run: |
+          .venv/bin/pip install -r requirements-local.txt \
+            --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+
       - name: Build app (PyInstaller)
         env:
           LULLMAIL_NOINTERACT: '1'
           LULLMAIL_VERSION: ${{ steps.ver.outputs.version }}
+          # Abort the build (instead of silently dropping llama_cpp) if the
+          # previous "Install local LLM backend" step somehow regressed.
+          LULLMAIL_REQUIRE_LOCAL: '1'
         run: bash scripts/build.sh
 
       - name: Verify build output

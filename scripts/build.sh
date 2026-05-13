@@ -54,20 +54,47 @@ echo "__version__ = \"$_VER\"" > src/_version.py
 echo "[version] $_VER baked into src/_version.py"
 
 # ── Install / update deps ─────────────────────────────────────────────────────
-echo "[1/3] Updating dependencies..."
+echo "[1/4] Updating dependencies..."
 "$PIP" install -r requirements.txt -q
 "$PIP" install pyinstaller==6.11.1 -q
 
+# Local LLM backend. Without this wheel, the spec's `try: import llama_cpp`
+# falls through to `_local_llm_available = False` and the installer ships
+# unable to run Local mode (ModuleNotFoundError, observed in v0.7.0). Always
+# install unless LULLMAIL_SKIP_LOCAL=1 explicitly opts into an OpenAI-only build.
+if [[ "${LULLMAIL_SKIP_LOCAL:-0}" != "1" ]]; then
+    echo "[2/4] Local backend llama-cpp-python (CPU wheel)..."
+    "$PIP" install -r requirements-local.txt -q \
+        --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+else
+    echo "[2/4] LULLMAIL_SKIP_LOCAL=1, skipping local backend."
+fi
+
 # ── PyInstaller build ─────────────────────────────────────────────────────────
-echo "[2/3] Building with PyInstaller (may take 1-2 min)..."
+echo "[3/4] Building with PyInstaller (may take 1-2 min)..."
 rm -rf build dist
+# Unless explicit opt-out, force the spec to abort if llama_cpp is missing.
+# Avoids shipping another broken installer like v0.7.0.
+if [[ "${LULLMAIL_SKIP_LOCAL:-0}" != "1" ]]; then
+    export LULLMAIL_REQUIRE_LOCAL=1
+fi
 "$PYINSTALLER" lull_mail.spec --noconfirm --clean
 
 # ── Verify output ─────────────────────────────────────────────────────────────
-echo "[3/3] Verifying output..."
+echo "[4/4] Verifying output..."
 if [[ ! -f "dist/LullMail/LullMail" ]]; then
     echo "[ERREUR] dist/LullMail/LullMail not found after build."
     exit 1
+fi
+# Guard against the silent-skip failure mode that produced the broken v0.7.0
+# installer: if local backend was requested, llama_cpp MUST be in the bundle.
+if [[ "${LULLMAIL_SKIP_LOCAL:-0}" != "1" ]]; then
+    if [[ ! -d "dist/LullMail/_internal/llama_cpp" \
+       && ! -d "dist/LullMail.app/Contents/Frameworks/llama_cpp" ]]; then
+        echo "[ERREUR] llama_cpp absent du bundle."
+        echo "Verifie que requirements-local.txt a bien installe llama-cpp-python."
+        exit 1
+    fi
 fi
 
 # Clean up the intermediate build/ dir so a stale build/LullMail/ binary
