@@ -635,8 +635,13 @@ export async function mountDashboard(host, opts) {
   // ── Toolbar ───────────────────────────────────────────────
   $('#btn-run-queue').addEventListener('click', async () => {
     try {
-      const r = await api.triggerSync();
-      window.toast(r.message || t('dash.toast.analysis_started'));
+      await api.triggerSync();
+      // Pas de toast "Sync started" ici — le rail-toast.js a un toast
+      // persistant "Analyse IA en cours…" qui apparaît dès que le poll
+      // détecte le sync en cours. On force un poll immédiat pour ne pas
+      // attendre les 3 s d'intervalle (sinon trou visuel entre clic et
+      // toast).
+      window.railToast?.checkAiBusy?.();
     } catch (err) {
       window.toast(t('dash.toast.error', { msg: err.message }));
     }

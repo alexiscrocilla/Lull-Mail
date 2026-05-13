@@ -74,7 +74,12 @@
     inset 0 -1px 0 rgba(0,0,0,0.45);
 }
 
-/* Idle coin-flip runs when JS sets this class. */
+/* Idle coin-flip runs when JS sets this class (hover affordance only).
+   Pour l'indication d'activité IA on n'utilise PAS cette pièce : c'est
+   le toast persistant `variant: 'loading'` (voir rail-toast.js
+   _refreshBusyToast) qui prend le relais avec son propre spinner sur
+   .rt-icon — visuellement plus clair pour signaler "le LLM est en
+   train de traiter quelque chose". */
 #rail-toast-host.rt-idle-running .rt-placeholder .loader {
   animation-play-state: running;
 }

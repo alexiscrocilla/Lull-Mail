@@ -155,19 +155,18 @@ export async function mountSettings(host, opts = {}) {
             </div>
           </div>
 
-          <!-- Sous-panneau Local (mode 100% gratuit + privé, peuplé à la volée) -->
-          <div id="ai-panel-local" class="hidden" style="margin-top:10px">
-            <div id="llm-hw-banner" class="sub set-llm-banner">
-              <i data-lucide="cpu" class="w-4 h-4"></i>
-              <span id="llm-hw-text">${t('set.llm.hardware_loading')}</span>
-            </div>
+          <!-- Sous-panneau Local (mode 100% gratuit + privé, peuplé à la volée).
+               Le bandeau matériel a été retiré : quand on est ici, l'utilisateur
+               a déjà activé le local depuis l'onboarding et n'a plus besoin de
+               voir "Détecté : X GB RAM → tier Y" — seule la sélection compte. -->
+          <div id="ai-panel-local" class="hidden" style="margin-top:8px">
             <div id="llm-models-list" class="set-llm-models">
               <div class="sub" style="font-style:italic">${t('set.loading')}</div>
             </div>
             <div class="set-llm-footer">
               <span id="llm-disk-usage" class="sub"></span>
               <button class="mb-cta set-btn" id="btn-activate-local" disabled>
-                ${t('set.llm.activate_btn')}
+                ${t('set.llm.apply_btn')}
               </button>
             </div>
           </div>
@@ -179,13 +178,19 @@ export async function mountSettings(host, opts = {}) {
             <span style="display:flex;align-items:center;gap:8px">
               <i data-lucide="bell" class="w-4 h-4"></i>${t('set.notif.title')}
             </span>
-            <label class="set-toggle">
-              <input id="ntfy-enabled" type="checkbox" />
-              <span>${t('set.notif.toggle')}</span>
-            </label>
+            <div class="set-provider-radio set-notif-seg" role="radiogroup" aria-label="${escapeAttr(t('set.notif.seg_aria'))}">
+              <label class="set-prov-opt" title="${escapeAttr(t('set.notif.toggle_off_title'))}">
+                <input type="radio" name="ntfy-seg" id="ntfy-seg-off" value="0" />
+                <i data-lucide="bell-off" class="set-notif-seg-ic" aria-hidden="true"></i>
+              </label>
+              <label class="set-prov-opt" title="${escapeAttr(t('set.notif.toggle_on_title'))}">
+                <input type="radio" name="ntfy-seg" id="ntfy-seg-on" value="1" />
+                <i data-lucide="bell" class="set-notif-seg-ic" aria-hidden="true"></i>
+              </label>
+            </div>
           </h3>
-          <div style="display:flex;align-items:center;gap:16px;margin-top:10px">
-            <div class="set-grid" style="flex:1">
+          <div class="set-notif-fields-row">
+            <div class="set-grid" style="flex:1;min-width:0">
               <label class="set-field">
                 <span class="set-label">${t('set.notif.topic_label')}</span>
                 <input id="ntfy-topic" class="set-input mono" placeholder="lullmail-vous-x7k2p" />
@@ -197,7 +202,7 @@ export async function mountSettings(host, opts = {}) {
                 <span class="set-hint">${t('set.notif.min_hint')}</span>
               </label>
             </div>
-            <div class="set-actions" style="margin-top:0;padding-top:0;border-top:none;border-left:1px solid var(--border-2);padding-left:16px;flex-shrink:0">
+            <div class="set-actions set-actions--rail">
               <button class="mb-cta set-btn" id="btn-save-ntfy">${t('set.save')}</button>
             </div>
           </div>
@@ -210,7 +215,7 @@ export async function mountSettings(host, opts = {}) {
               <i data-lucide="refresh-cw" class="w-4 h-4"></i>${t('set.polling.title')}
             </span>
           </h3>
-          <div style="display:flex;align-items:center;gap:16px">
+          <div class="set-inline-save-row">
             <div class="set-grid" style="flex:1">
               <label class="set-field">
                 <span class="set-label">${t('set.polling.interval_label')}</span>
@@ -225,29 +230,34 @@ export async function mountSettings(host, opts = {}) {
                 <div id="set-services" class="set-status">…</div>
               </div>
             </div>
-            <div class="set-actions" style="margin-top:0;padding-top:0;border-top:none;border-left:1px solid var(--border-2);padding-left:16px;flex-shrink:0">
+            <div class="set-actions set-actions--rail">
               <button class="mb-cta set-btn" id="btn-save-general">${t('set.save')}</button>
             </div>
           </div>
         </section>
 
         <!-- Storage -->
-        <section class="card col-6">
+        <section class="card col-6 set-card--fill-body">
           <h3>
             <span style="display:flex;align-items:center;gap:8px">
               <i data-lucide="hard-drive" class="w-4 h-4"></i>${t('set.storage.title')}
             </span>
           </h3>
-          <div style="display:flex;align-items:center;gap:16px">
-            <div class="set-field" style="flex:1;min-width:0">
+          <div class="set-storage-body">
+            <div class="set-field set-field--grow">
               <span class="set-label">${t('set.storage.dir_label')}</span>
               <div id="set-data-dir" class="set-path mono">—</div>
               <span class="set-hint">${t('set.storage.dir_hint')}</span>
             </div>
-            <div class="set-actions" style="margin-top:0;padding-top:0;border-top:none;border-left:1px solid var(--border-2);padding-left:16px;flex-shrink:0;flex-direction:column;align-items:stretch">
+            <div class="set-actions set-actions--rail set-actions--stack">
               <button class="mb-cta set-btn-ghost" id="btn-open-data" type="button">
                 <i data-lucide="folder-open" class="w-4 h-4"></i>
                 <span>${t('set.storage.open_btn')}</span>
+              </button>
+              <button class="mb-cta set-btn-ghost" id="btn-wipe-ai" type="button"
+                      title="${t('set.storage.wipe_ai_hint')}">
+                <i data-lucide="sparkles" class="w-4 h-4"></i>
+                <span>${t('set.storage.wipe_ai_btn')}</span>
               </button>
               <button class="mb-cta set-btn-danger" id="btn-wipe-data" type="button">
                 <i data-lucide="trash-2" class="w-4 h-4"></i>
@@ -413,12 +423,11 @@ export async function mountSettings(host, opts = {}) {
     provRadioLocal:  host.querySelector('#llm-prov-local'),
     panelOpenAI:     host.querySelector('#ai-panel-openai'),
     panelLocal:      host.querySelector('#ai-panel-local'),
-    llmHwText:       host.querySelector('#llm-hw-text'),
-    llmHwBanner:     host.querySelector('#llm-hw-banner'),
     llmModelsList:   host.querySelector('#llm-models-list'),
     llmDiskUsage:    host.querySelector('#llm-disk-usage'),
     btnActivateLocal:host.querySelector('#btn-activate-local'),
-    ntfyEnabled: host.querySelector('#ntfy-enabled'),
+    ntfySegOff: host.querySelector('#ntfy-seg-off'),
+    ntfySegOn:  host.querySelector('#ntfy-seg-on'),
     ntfyTopic:   host.querySelector('#ntfy-topic'),
     ntfyMin:     host.querySelector('#ntfy-min'),
     genInterval: host.querySelector('#general-interval'),
@@ -553,17 +562,35 @@ export async function mountSettings(host, opts = {}) {
       state.hardware = hw;
       state.models = models;
       state.localLoaded = true;
-      // Pré-sélection des modèles recommandés depuis la config persistée,
-      // sinon défaut catalog pour le tier détecté.
+      // Pré-sélection : on respecte la config persistée UNIQUEMENT si le
+      // modèle qu'elle pointe est effectivement téléchargé. Sinon (cas
+      // typique : fresh install, ou config porte un défaut de skeleton
+      // obsolète qui pointe vers un modèle jamais downloadé), on tombe
+      // sur le modèle recommandé pour le tier détecté. Évite que le
+      // radio reste figé sur "Mistral 7B" quand l'user n'a rien
+      // installé encore.
       const llmLocal = (state.config.llm && state.config.llm.local) || {};
-      state.selectedAnalyzer = llmLocal.analyzer_model_id
-        || _defaultModelId(models, 'analyzer', hw.recommended_tier);
-      state.selectedDrafter = llmLocal.drafter_model_id
-        || _defaultModelId(models, 'drafter', hw.recommended_tier);
+      state.selectedAnalyzer = _initialSelection(
+        models, 'analyzer', hw.recommended_tier, llmLocal.analyzer_model_id,
+      );
+      state.selectedDrafter = _initialSelection(
+        models, 'drafter', hw.recommended_tier, llmLocal.drafter_model_id,
+      );
       renderLocalLLM();
     } catch (e) {
       els.llmModelsList.innerHTML = `<div class="sub" style="color:var(--danger)">${t('set.llm.load_error', { msg: e.message || e })}</div>`;
     }
+  }
+
+  function _initialSelection(models, role, tier, configId) {
+    // Si l'user a une valeur dans la config ET que le modèle correspondant
+    // est sur disque, c'est qu'il a activé ce modèle au moins une fois.
+    // On respecte son choix. Sinon, recommandé pour le tier.
+    if (configId) {
+      const m = models.find(x => x.id === configId && x.role === role);
+      if (m && m.downloaded) return configId;
+    }
+    return _defaultModelId(models, role, tier);
   }
 
   function _defaultModelId(models, role, tier) {
@@ -575,22 +602,32 @@ export async function mountSettings(host, opts = {}) {
     return compat ? compat.id : (models.find(m => m.role === role)?.id || null);
   }
 
+  // Transforme un nom de modèle "API" en libellé humain lisible.
+  // "Phi-3.5 Mini Instruct (Q4_K_M)"               → "Phi 3.5 Mini"
+  // "Qwen 2.5 3B Instruct (Q4_K_M) — Drafter léger" → "Qwen 2.5 3B"
+  // "Mistral 7B Instruct v0.3 (Q4_K_M)"             → "Mistral 7B"
+  //
+  // La quantif (Q4_K_M), le label "Instruct", la version mineure (v0.3) et
+  // les suffixes éditoriaux (" — Drafter léger") ne disent rien à un user
+  // lambda. On garde uniquement la famille + la taille (3B/7B), reconnaissables.
+  function _friendlyModelName(rawName) {
+    return String(rawName || '')
+      .replace(/\s+—\s+.*$/, '')              // " — Drafter léger"
+      .replace(/\s*\(Q\d+(?:_K_[A-Z])?\)$/i, '')  // " (Q4_K_M)" / " (Q5)"
+      .replace(/\s+Instruct\b/i, '')          // "Instruct"
+      .replace(/\s+v\d+\.\d+\b/i, '')         // "v0.3"
+      .replace(/-(\d)/g, ' $1')               // "Phi-3.5" → "Phi 3.5"
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   function renderLocalLLM() {
     const hw = state.hardware;
     const tier = hw.recommended_tier;
-    const tierLabel = t('set.llm.tier_' + tier);
-    // Le GPU NVIDIA est affiché en info MAIS marqué inactif tant que la
-    // wheel CUDA n'est pas activée (gpu_layers > 0, opt-in v2). Apple
-    // Silicon a Metal automatique, donc pas de "(inactif)" sur Mac ARM.
-    let gpuPart = '';
-    if (hw.is_apple_silicon) {
-      gpuPart = ' + Apple Silicon (Metal actif)';
-    } else if (hw.gpu) {
-      gpuPart = ` + ${hw.gpu} ${t('set.llm.gpu_cpu_mode')}`;
-    }
-    els.llmHwText.textContent = t('set.llm.hardware_detected', {
-      ram: hw.ram_gb.toFixed(1), gpu: gpuPart, tier: tierLabel,
-    });
+    // Hardware banner retiré : à ce stade l'utilisateur a déjà choisi
+    // d'utiliser le local et n'a plus besoin du rappel matériel. On
+    // garde `hw` en mémoire parce que le RAM warning et la pré-sélection
+    // du modèle recommandé continuent de s'en servir plus bas.
 
     // Estimation du RAM résident d'un modèle quand il tourne. C'est
     // l'overhead du wheel llama_cpp + KV cache + le poids du modèle.
@@ -624,19 +661,19 @@ export async function mountSettings(host, opts = {}) {
     };
     const html = ['analyzer', 'drafter'].map(role => {
       const roleLabel = t('set.llm.role_' + role);
+      const roleDesc  = t('set.llm.role_' + role + '_desc') || '';
       const items = state.models
         .filter(m => m.role === role)
         .map(m => {
           const overTier = _tierRank[m.tier] > userTierRank;
           const isRecommended = m.id === recommendedIds[role];
           const isSelected = (role === 'analyzer' ? state.selectedAnalyzer : state.selectedDrafter) === m.id;
-          const sizeMb = (m.size_bytes / 1024 / 1024).toFixed(0);
-          const langs = (m.languages || []).slice(0, 4).join(', ');
+          const sizeGb = (m.size_bytes / 1024 / 1024 / 1024).toFixed(1);
+          // Nom propre pour humains : "Phi-3.5 Mini Instruct (Q4_K_M)" → "Phi 3.5 Mini".
+          const friendlyName = _friendlyModelName(m.name);
+          const vendor = m.vendor || '';
 
-          // RAM warning : estime le pic résident pour CE modèle dans
-          // sa configuration d'usage (analyzer seul, ou drafter +
-          // analyzer en simultané). Si ça dépasse la RAM utilisable,
-          // on flag l'item en rouge avec un message clair.
+          // RAM warning identique à l'ancienne logique.
           const modelResidentGb = _estimatedResidentBytes(m) / 1024**3;
           const peakResidentGb = role === 'analyzer'
             ? modelResidentGb
@@ -651,19 +688,26 @@ export async function mountSettings(host, opts = {}) {
           const tooltip = exceedsRam ? ramWarningMsg
                        : overTier ? t('set.llm.heavy_warning')
                        : '';
+          // Le radio est TOUJOURS sélectionnable (même quand le GGUF n'est
+          // pas sur disque) : l'utilisateur choisit son modèle, puis le
+          // bouton "Télécharger" devient cliquable. Inverser le flow évite
+          // de surcharger l'UI avec 3 boutons Download cliquables en même
+          // temps et force l'utilisateur à un choix avant de DL 4 Go.
+          const dlBtnDisabled = !isSelected;
           return `
-            <div class="set-llm-model ${exceedsRam ? 'ram-warning' : ''} ${overTier && !exceedsRam ? 'disabled' : ''} ${isRecommended ? 'recommended' : ''}"
-                 data-model-id="${escapeAttr(m.id)}" data-role="${role}" title="${escapeAttr(tooltip)}">
+            <label class="set-llm-model ${exceedsRam ? 'ram-warning' : ''} ${overTier && !exceedsRam ? 'disabled' : ''} ${isRecommended ? 'recommended' : ''} ${isSelected ? 'is-selected' : ''} ${m.downloaded ? 'is-dl' : 'is-not-dl'}"
+                   data-model-id="${escapeAttr(m.id)}" data-role="${role}" title="${escapeAttr(tooltip)}">
+              <input type="radio" name="select-${role}" ${isSelected ? 'checked' : ''}
+                     class="set-llm-radio"
+                     data-select-id="${escapeAttr(m.id)}" data-select-role="${role}">
               <div class="set-llm-model-info">
-                <div class="set-llm-model-name">
-                  <input type="radio" name="select-${role}" ${isSelected ? 'checked' : ''}
-                         data-select-id="${escapeAttr(m.id)}" data-select-role="${role}"
-                         style="margin-right:6px;vertical-align:middle">
-                  ${escapeHtml(m.name)}
+                <div class="set-llm-model-line">
+                  <span class="set-llm-model-name">${escapeHtml(friendlyName)}</span>
+                  ${isRecommended ? `<span class="set-llm-pill set-llm-pill-recommend"><i data-lucide="star" class="w-3 h-3"></i>${t('set.llm.recommended_badge')}</span>` : ''}
+                  ${m.downloaded ? `<span class="set-llm-pill set-llm-pill-downloaded"><i data-lucide="check" class="w-3 h-3"></i>${t('set.llm.dl_done_short')}</span>` : ''}
                 </div>
                 <div class="set-llm-model-sub">
-                  ${sizeMb} Mo · ${escapeHtml(m.license)} · ${escapeHtml(langs)}
-                  ${isRecommended ? ' · ' + t('set.llm.recommended_badge') : ''}
+                  ${vendor ? `${escapeHtml(vendor)} · ` : ''}${sizeGb} GB${m.license ? ' · ' + escapeHtml(m.license) : ''}
                 </div>
                 ${exceedsRam ? `
                   <div class="set-llm-ram-warning">
@@ -677,17 +721,20 @@ export async function mountSettings(host, opts = {}) {
               </div>
               <div class="set-llm-model-action">
                 ${m.downloaded
-                  ? `<button class="set-llm-btn danger" data-act="delete" data-id="${escapeAttr(m.id)}">${t('set.llm.delete_btn')}</button>`
-                  : `<button class="set-llm-btn" data-act="download" data-id="${escapeAttr(m.id)}">${t('set.llm.download_btn')}</button>`
+                  ? `<button class="set-llm-btn danger" data-act="delete" data-id="${escapeAttr(m.id)}" title="${escapeAttr(t('set.llm.delete_btn'))}"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>`
+                  : `<button class="set-llm-btn primary" data-act="download" data-id="${escapeAttr(m.id)}" ${dlBtnDisabled ? 'disabled' : ''} title="${escapeAttr(dlBtnDisabled ? t('set.llm.select_first') : '')}"><i data-lucide="download" class="w-3.5 h-3.5"></i>${t('set.llm.download_btn')}</button>`
                 }
               </div>
-            </div>
+            </label>
           `;
         })
         .join('');
       return `
         <div class="set-llm-role-group">
-          <div class="sub" style="font-weight:600;margin:8px 0 4px">${roleLabel}</div>
+          <div class="set-llm-role-header">
+            <span class="set-llm-role-title">${escapeHtml(roleLabel)}</span>
+            ${roleDesc ? `<span class="set-llm-role-desc">${escapeHtml(roleDesc)}</span>` : ''}
+          </div>
           ${items}
         </div>
       `;
@@ -699,19 +746,40 @@ export async function mountSettings(host, opts = {}) {
     const totalGb = (totalBytes / 1024 / 1024 / 1024).toFixed(2);
     els.llmDiskUsage.textContent = t('set.llm.disk_usage', { size: totalGb });
 
-    // Bind buttons
+    // Bind buttons. Le `<label>` parent englobe la card entière (clic =
+    // sélectionne le radio), donc on stoppe la propagation côté bouton
+    // pour que cliquer "Télécharger" / "Supprimer" ne déclenche pas
+    // accidentellement la sélection.
     els.llmModelsList.querySelectorAll('[data-act]').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.setAttribute('type', 'button');
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         const id = btn.dataset.id;
         if (btn.dataset.act === 'download') downloadModel(id);
         if (btn.dataset.act === 'delete')   deleteModel(id);
       });
     });
-    // Bind radios (sélection analyzer/drafter)
+    // Bind radios (sélection analyzer/drafter). En plus de mettre à jour
+    // l'état, on toggle la classe `is-selected` sur la ligne courante du
+    // rôle et on (dés)active les boutons Download pour que seule la ligne
+    // sélectionnée soit cliquable. Évite de re-render toute la liste.
     els.llmModelsList.querySelectorAll('[data-select-id]').forEach(rad => {
       rad.addEventListener('change', () => {
-        if (rad.dataset.selectRole === 'analyzer') state.selectedAnalyzer = rad.dataset.selectId;
-        else                                       state.selectedDrafter = rad.dataset.selectId;
+        const role = rad.dataset.selectRole;
+        const id = rad.dataset.selectId;
+        if (role === 'analyzer') state.selectedAnalyzer = id;
+        else                     state.selectedDrafter = id;
+        els.llmModelsList.querySelectorAll(`label.set-llm-model[data-role="${role}"]`).forEach(lbl => {
+          const isThis = lbl.dataset.modelId === id;
+          lbl.classList.toggle('is-selected', isThis);
+          // Le Download n'est cliquable que sur la ligne sélectionnée.
+          const dlBtn = lbl.querySelector('button[data-act="download"]');
+          if (dlBtn) {
+            dlBtn.disabled = !isThis;
+            dlBtn.title = isThis ? '' : t('set.llm.select_first');
+          }
+        });
         _updateActivateButtonState();
       });
     });
@@ -721,18 +789,48 @@ export async function mountSettings(host, opts = {}) {
   }
 
   function _updateActivateButtonState() {
-    // Activate dispo seulement quand l'analyzer choisi est téléchargé,
-    // aucun DL en cours, et au moins un drafter (downloadable on-demand
-    // mais souhaitable pour que enrich_draft marche tout de suite).
+    // Trois états explicites pour clarifier l'utilité du bouton :
+    //   1. "clean"   — le provider est déjà local ET la sélection radio
+    //                 matche la config persistée. Le bouton affiche
+    //                 "Mode local actif ✓" en disabled : signal clair que
+    //                 rien à faire.
+    //   2. "dirty"  — l'utilisateur a changé sa sélection (ou bascule
+    //                 d'OpenAI vers local). Bouton activé en accent avec
+    //                 "Appliquer les changements".
+    //   3. "blocked"— l'analyzer choisi n'est pas téléchargé OU un DL est
+    //                 en cours. Bouton disabled avec tooltip explicatif.
     const a = state.models.find(m => m.id === state.selectedAnalyzer);
-    const canActivate = !!(a && a.downloaded) && state.downloadsInFlight.size === 0;
-    els.btnActivateLocal.disabled = !canActivate;
-    if (!canActivate && a && !a.downloaded) {
-      els.btnActivateLocal.title = t('set.llm.need_download');
-    } else if (state.downloadsInFlight.size > 0) {
-      els.btnActivateLocal.title = t('set.llm.dl_in_progress');
+    const downloaded = !!(a && a.downloaded);
+    const dlInFlight = state.downloadsInFlight.size > 0;
+
+    const cfgLlm   = (state.config && state.config.llm) || {};
+    const cfgLocal = cfgLlm.local || {};
+    const isLocalProvider = cfgLlm.provider === 'local';
+    const matchesPersisted =
+      isLocalProvider
+      && state.selectedAnalyzer === cfgLocal.analyzer_model_id
+      && state.selectedDrafter  === cfgLocal.drafter_model_id;
+
+    const btn = els.btnActivateLocal;
+    btn.classList.remove('is-active-state');
+
+    if (!downloaded) {
+      btn.disabled = true;
+      btn.textContent = t('set.llm.apply_btn');
+      btn.title = t('set.llm.need_download');
+    } else if (dlInFlight) {
+      btn.disabled = true;
+      btn.textContent = t('set.llm.apply_btn');
+      btn.title = t('set.llm.dl_in_progress');
+    } else if (matchesPersisted) {
+      btn.disabled = true;
+      btn.textContent = t('set.llm.applied_state');
+      btn.title = t('set.llm.applied_hint');
+      btn.classList.add('is-active-state');
     } else {
-      els.btnActivateLocal.title = '';
+      btn.disabled = false;
+      btn.textContent = t('set.llm.apply_btn');
+      btn.title = '';
     }
   }
 
@@ -819,7 +917,6 @@ export async function mountSettings(host, opts = {}) {
     } catch (e) {
       alert(t('set.llm.activate_failed') + ' — ' + (e.message || e));
     } finally {
-      els.btnActivateLocal.textContent = t('set.llm.activate_btn');
       _updateActivateButtonState();
     }
   }
@@ -947,7 +1044,9 @@ export async function mountSettings(host, opts = {}) {
 
     // ntfy
     const ntfy = state.config.ntfy || {};
-    els.ntfyEnabled.checked = !!ntfy.topic;
+    els.ntfySegOn.checked = !!ntfy.topic;
+    els.ntfySegOff.checked = !ntfy.topic;
+    _syncNtfySegActive();
     els.ntfyTopic.value = ntfy.topic || '';
     els.ntfyMin.value = ntfy.min_importance || 7;
 
@@ -999,7 +1098,7 @@ export async function mountSettings(host, opts = {}) {
   }
 
   async function saveNtfy() {
-    const enabled = els.ntfyEnabled.checked;
+    const enabled = els.ntfySegOn.checked;
     const topic = els.ntfyTopic.value.trim();
     const min = parseInt(els.ntfyMin.value, 10) || 7;
     setBusy(els.btnSaveNt, true, t('set.busy.saving'));
@@ -1370,7 +1469,16 @@ export async function mountSettings(host, opts = {}) {
     } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
   }
 
+  function _syncNtfySegActive() {
+    host.querySelectorAll('.set-notif-seg .set-prov-opt').forEach(opt => {
+      const inp = opt.querySelector('input');
+      opt.classList.toggle('is-active', !!(inp && inp.checked));
+    });
+  }
+
   // ── Wire events ──
+  els.ntfySegOff?.addEventListener('change', _syncNtfySegActive);
+  els.ntfySegOn?.addEventListener('change', _syncNtfySegActive);
   els.btnAdd.addEventListener('click', openModal);
   els.btnSaveOA.addEventListener('click', saveOpenAI);
   // Provider radio (OpenAI / Local) — bascule le sous-panneau visible
@@ -1414,6 +1522,25 @@ export async function mountSettings(host, opts = {}) {
   function closeWipeModal() { wipeModal.classList.add('hidden'); }
 
   host.querySelector('#btn-wipe-data')?.addEventListener('click', openWipeModal);
+
+  // Wipe IA seul — moins destructif que le wipe global (les emails sont
+  // gardés, seuls les champs analysés par l'IA sont remis à zéro). Au
+  // prochain sync le scheduler retraitera tout via le provider actif.
+  // Confirmation simple via window.confirm (pas de modal type-à-confirmer
+  // — l'opération est réversible : re-faire un sync restaure tout).
+  host.querySelector('#btn-wipe-ai')?.addEventListener('click', async () => {
+    if (!window.confirm(t('set.storage.wipe_ai_confirm'))) return;
+    const btn = host.querySelector('#btn-wipe-ai');
+    setBusy(btn, true, t('set.busy.deleting'));
+    try {
+      const r = await api('POST', '/api/setup/wipe-ai-analyses', { confirm: 'SUPPRIMER' });
+      window.toast?.(t('set.storage.wipe_ai_done', { count: r.reset_count || 0 }), 'ok');
+    } catch (e) {
+      window.toast?.(t('set.toast.load_failed', { msg: e.message }), 'err');
+    } finally {
+      setBusy(btn, false);
+    }
+  });
   host.querySelector('#wipe-close')?.addEventListener('click', closeWipeModal);
   host.querySelector('#wipe-cancel')?.addEventListener('click', closeWipeModal);
   wipeModal?.addEventListener('click', e => { if (e.target === wipeModal) closeWipeModal(); });
@@ -1591,6 +1718,67 @@ function injectStyles() {
     @media (max-width: 720px) { .set-grid, .set-grid-3 { grid-template-columns: 1fr; } }
 
     .set-field { display: flex; flex-direction: column; gap: 4px; }
+    .set-field--grow { flex: 1; min-width: 0; }
+    .set-notif-fields-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-top: 10px;
+    }
+    .set-notif-fields-row .set-grid { min-width: 0; }
+
+    .set-inline-save-row {
+      display: flex; align-items: center; gap: 16px;
+    }
+
+    .set-actions--rail {
+      margin-top: 0 !important; padding-top: 0 !important; border-top: none !important;
+      border-left: 1px solid var(--border-2);
+      padding-left: 16px;
+      flex-shrink: 0;
+      align-self: center;
+    }
+    .set-actions--stack {
+      flex-direction: column;
+      align-items: stretch;
+    }
+    .set-card--fill-body {
+      min-height: 0;
+    }
+    .set-card--fill-body > :not(h3) {
+      flex: 1;
+      min-height: 0;
+      width: 100%;
+      display: flex;
+      align-items: center;
+    }
+    .set-storage-body {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      width: 100%;
+      flex: 1;
+      min-width: 0;
+    }
+    .set-storage-body .set-field--grow { flex: 1; min-width: 0; }
+    .set-storage-body .set-actions--rail.set-actions--stack {
+      align-self: center;
+    }
+
+    .set-notif-seg .set-prov-opt {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 12px;
+      min-width: 40px;
+    }
+    .set-notif-seg .set-prov-opt .set-notif-seg-ic,
+    .set-notif-seg .set-prov-opt i,
+    .set-notif-seg .set-prov-opt svg {
+      width: 18px; height: 18px;
+      stroke-width: 2.25;
+    }
+
     .set-label {
       font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
       text-transform: uppercase; color: var(--muted);
@@ -1707,12 +1895,6 @@ function injectStyles() {
     .set-btn-danger:active:not(:disabled) { transform: translateY(1px); }
     .set-btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    .set-toggle {
-      display: inline-flex; align-items: center; gap: 8px;
-      font-size: 13px; color: var(--text); cursor: pointer;
-      user-select: none;
-    }
-
     /* ── Provider radio (OpenAI / Local) ──────────────────────────
        Pattern visuel : segmented control. Le label sélectionné est
        souligné par un fond accent ; les autres restent surface-2. */
@@ -1739,58 +1921,214 @@ function injectStyles() {
     }
 
     /* ── Sous-panneau LLM local ───────────────────────────────── */
+    /* Bandeau matériel : chips au lieu d'une longue phrase qui wrap. */
     .set-llm-banner {
       display: flex; align-items: center; gap: 8px;
-      padding: 8px 12px; margin-bottom: 12px;
-      background: var(--surface-2); border-radius: 9px;
+      padding: 10px 12px; margin-bottom: 14px;
+      background: var(--surface-2); border-radius: 10px;
       border: 1px solid var(--border);
-      font-size: 13px;
+      flex-wrap: wrap;
     }
-    .set-llm-banner i { color: var(--muted-2); flex-shrink: 0; }
-    .set-llm-banner.warn { border-left: 3px solid var(--warning); }
+    .set-hw-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 12.5px; font-weight: 500;
+      color: var(--text);
+      white-space: nowrap;
+    }
+    .set-hw-chip i, .set-hw-chip svg {
+      color: var(--muted-2);
+      flex-shrink: 0;
+    }
+    .set-hw-chip-muted { color: var(--muted); }
+    .set-hw-chip-muted i, .set-hw-chip-muted svg { color: var(--muted); opacity: 0.7; }
+    .set-hw-chip-tier {
+      background: var(--accent-soft);
+      border-color: color-mix(in oklab, var(--accent) 30%, transparent);
+      color: var(--accent-ink);
+      font-weight: 600;
+    }
+    [data-theme="dark"] .set-hw-chip-tier { color: var(--accent); }
+    .set-hw-chip-tier i, .set-hw-chip-tier svg { color: var(--accent-ink); opacity: 1; }
+    [data-theme="dark"] .set-hw-chip-tier i, [data-theme="dark"] .set-hw-chip-tier svg { color: var(--accent); }
+    .set-hw-arrow {
+      width: 13px; height: 13px;
+      color: var(--muted); opacity: 0.55;
+      flex-shrink: 0;
+    }
 
+    /* Groupes Analyseur / Rédacteur avec en-tête lisible.
+       Compaction : gap réduit (10px au lieu de 16px), header serré contre
+       la première ligne, padding/font sizes plus petits pour faire tenir
+       3 cartes (Notifications / Sync / Storage) à droite. */
     .set-llm-models {
-      display: flex; flex-direction: column; gap: 8px;
+      display: flex; flex-direction: column; gap: 10px;
     }
+    .set-llm-role-group {
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .set-llm-role-header {
+      display: flex; align-items: baseline; gap: 6px;
+      margin: 2px 2px 2px;
+      flex-wrap: wrap;
+    }
+    .set-llm-role-title {
+      font-size: 11.5px; font-weight: 700;
+      color: var(--text);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .set-llm-role-desc {
+      font-size: 11.5px; color: var(--muted);
+      font-weight: 400;
+    }
+
+    /* Carte modèle individuelle : grille radio + texte + action.
+       Le label englobe l'input pour que cliquer n'importe où sélectionne. */
     .set-llm-model {
-      display: grid; grid-template-columns: 24px 1fr auto;
-      align-items: center; gap: 12px;
-      padding: 10px 12px;
+      display: grid; grid-template-columns: auto 1fr auto;
+      align-items: center; gap: 11px;
+      padding: 9px 11px;
       background: var(--surface-2); border-radius: 9px;
       border: 1px solid var(--border);
+      cursor: pointer;
+      transition: border-color 140ms ease, background 140ms ease;
     }
-    .set-llm-model.disabled { opacity: 0.5; }
-    .set-llm-model.recommended { border-color: var(--accent); border-width: 1px; }
-    .set-llm-model.recommended::before {
-      content: ""; width: 6px; height: 6px; border-radius: 50%;
-      background: var(--accent); justify-self: center;
+    .set-llm-model:hover:not(.disabled) {
+      border-color: color-mix(in oklab, var(--accent) 35%, var(--border));
     }
-    .set-llm-model:not(.recommended)::before {
-      content: ""; width: 6px; height: 6px; border-radius: 50%;
-      background: transparent; justify-self: center;
+    /* Sélection : fond légèrement teinté + bordure accent, sans box-shadow
+       qui agressait l'œil. */
+    .set-llm-model.is-selected {
+      border-color: color-mix(in oklab, var(--accent) 55%, var(--border));
+      background: color-mix(in oklab, var(--accent-soft) 22%, var(--surface-2));
     }
+    .set-llm-model.disabled {
+      opacity: 0.65;
+      cursor: default;
+    }
+
+    /* Radio custom — accessible, gros, visible. */
+    .set-llm-radio {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 18px; height: 18px;
+      border: 2px solid var(--border);
+      border-radius: 50%;
+      background: var(--surface);
+      cursor: pointer;
+      margin: 0;
+      flex-shrink: 0;
+      transition: border-color 140ms ease, background 140ms ease;
+      position: relative;
+    }
+    .set-llm-radio:hover:not(:disabled) { border-color: var(--accent); }
+    .set-llm-radio:checked {
+      border-color: var(--accent);
+      background: var(--accent);
+    }
+    .set-llm-radio:checked::after {
+      content: "";
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--surface);
+    }
+    .set-llm-radio:disabled { cursor: not-allowed; opacity: 0.5; }
+    .set-llm-radio:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+
     .set-llm-model-info {
       display: flex; flex-direction: column; gap: 2px; min-width: 0;
     }
+    .set-llm-model-line {
+      display: flex; align-items: center; gap: 7px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
     .set-llm-model-name {
-      font-size: 13px; font-weight: 600; color: var(--text);
+      font-size: 13.5px; font-weight: 600; color: var(--text);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .set-llm-model-sub {
-      font-size: 11px; color: var(--muted);
+      font-size: 11.5px; color: var(--muted);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
+
+    /* Pills inline (recommandé, téléchargé). Petits, calmes, scannables. */
+    .set-llm-pill {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 10.5px; font-weight: 600;
+      letter-spacing: 0.02em;
+      flex-shrink: 0;
+    }
+    .set-llm-pill i, .set-llm-pill svg {
+      width: 11px; height: 11px;
+      stroke-width: 2.5;
+    }
+    .set-llm-pill-recommend {
+      background: var(--accent-soft);
+      color: var(--accent-ink);
+    }
+    [data-theme="dark"] .set-llm-pill-recommend { color: var(--accent); }
+    .set-llm-pill-downloaded {
+      background: color-mix(in oklab, var(--success) 14%, transparent);
+      color: var(--success);
+    }
+
     .set-llm-model-action {
       flex-shrink: 0;
     }
     .set-llm-btn {
-      padding: 5px 10px; font-size: 12px; font-weight: 600;
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 6px 11px;
+      font-size: 12px; font-weight: 600;
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 7px; color: var(--text); cursor: pointer;
-      transition: background 120ms ease, border-color 120ms ease;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
     }
-    .set-llm-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
-    .set-llm-btn.danger:hover { background: rgba(239,68,68,.1); border-color: var(--danger); color: var(--danger); }
+    .set-llm-btn i, .set-llm-btn svg { flex-shrink: 0; }
+    .set-llm-btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+    [data-theme="dark"] .set-llm-btn:hover { color: var(--accent); }
+    .set-llm-btn.primary {
+      background: var(--accent);
+      color: var(--accent-on);
+      border-color: var(--accent);
+    }
+    .set-llm-btn.primary:hover:not(:disabled) {
+      filter: brightness(1.08);
+      color: var(--accent-on);
+    }
+    .set-llm-btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+      background: var(--surface);
+      color: var(--muted);
+      border-color: var(--border);
+    }
+    .set-llm-btn.primary:disabled {
+      /* override l'accent fill quand disabled pour donner un signal clair. */
+      background: var(--surface);
+      color: var(--muted);
+    }
+    .set-llm-btn.danger {
+      padding: 6px 8px;
+      color: var(--muted);
+    }
+    .set-llm-btn.danger:hover {
+      background: color-mix(in oklab, var(--danger) 10%, transparent);
+      border-color: var(--danger);
+      color: var(--danger);
+    }
     .set-llm-model.ram-warning {
       /* Bordure orange + fond légèrement teinté pour signaler que ce
          modèle va swapper sur la RAM système de l'utilisateur. */
@@ -1820,8 +2158,39 @@ function injectStyles() {
     }
     .set-llm-footer {
       display: flex; justify-content: space-between; align-items: center;
-      margin-top: 14px; padding-top: 12px;
+      margin-top: auto; padding-top: 12px;
       border-top: 1px solid var(--border-2);
+    }
+    /* Bouton "Activer/Appliquer" en mode déjà-actif : signal vert
+       passif au lieu de l'aspect "disabled gris" qui faisait croire à
+       un bouton cassé. La main reste "default" pour signaler qu'aucune
+       action n'est dispo. */
+    #btn-activate-local.is-active-state {
+      background: color-mix(in oklab, var(--success) 14%, transparent) !important;
+      color: var(--success) !important;
+      border: 1px solid color-mix(in oklab, var(--success) 35%, transparent) !important;
+      opacity: 1 !important;
+      cursor: default;
+    }
+    #btn-activate-local.is-active-state::before {
+      content: "✓";
+      margin-right: 6px;
+      font-weight: 700;
+    }
+    /* Le panel local devient un flex-col qui remplit la card, pour que
+       le footer (Activer + disque) reste ancré au bas même quand l'IA
+       section est étirée par le grid-row: span 3. */
+    #ai-panel-local:not(.hidden) {
+      display: flex; flex-direction: column; flex: 1; min-height: 0;
+    }
+    #llm-models-list { flex: 0 0 auto; }
+
+    /* Layout Settings : AI prend la colonne gauche pleine hauteur, et
+       Notifications + Sync + Storage s'empilent à droite. Activé seulement
+       quand on a 2 colonnes (≥ 721px) — en mobile, chaque card prend une
+       row complète, span 3 n'aurait aucun sens. */
+    @media (min-width: 721px) {
+      #ai-section { grid-row: span 3; }
     }
 
     .set-status {
@@ -2009,8 +2378,7 @@ function injectStyles() {
        the Settings modal (IMAP/SMTP toggles + the "Boîte active" row).
        The :checked state fills with the accent colour and draws a
        pseudo-element checkmark; nothing else changes the markup. */
-    .set-checks input[type="checkbox"],
-    .set-toggle input[type="checkbox"] {
+    .set-checks input[type="checkbox"] {
       appearance: none;
       -webkit-appearance: none;
       width: 16px;
@@ -2024,17 +2392,14 @@ function injectStyles() {
       flex-shrink: 0;
       transition: background 120ms ease, border-color 120ms ease;
     }
-    .set-checks input[type="checkbox"]:hover,
-    .set-toggle input[type="checkbox"]:hover {
+    .set-checks input[type="checkbox"]:hover {
       border-color: var(--accent);
     }
-    .set-checks input[type="checkbox"]:checked,
-    .set-toggle input[type="checkbox"]:checked {
+    .set-checks input[type="checkbox"]:checked {
       background: var(--accent);
       border-color: var(--accent);
     }
-    .set-checks input[type="checkbox"]:checked::after,
-    .set-toggle input[type="checkbox"]:checked::after {
+    .set-checks input[type="checkbox"]:checked::after {
       content: '';
       position: absolute;
       top: 50%;
@@ -2049,8 +2414,7 @@ function injectStyles() {
          centred. */
       transform: translate(-50%, -60%) rotate(45deg);
     }
-    .set-checks input[type="checkbox"]:focus-visible,
-    .set-toggle input[type="checkbox"]:focus-visible {
+    .set-checks input[type="checkbox"]:focus-visible {
       outline: 2px solid var(--accent);
       outline-offset: 2px;
     }

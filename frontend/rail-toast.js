@@ -335,11 +335,82 @@ function createRailToast() {
 
 const railToast = createRailToast();
 
+// ── AI-busy indicator ────────────────────────────────────────────────────
+// Affiche un toast persistant `variant: 'loading'` dans le rail tant que
+// l'IA travaille. On préfère le spinner du toast (.rt > .rt-icon) à la
+// pièce coin-flip du placeholder parce qu'il est plus lisible : forme
+// d'attente standard, message texte visible au hover.
+//
+// Deux sources alimentent l'indicateur :
+//   1. Sync background poll — couvre le travail de l'AnalyzerServer
+//      pendant un sync (manuel ou auto toutes les 10 min).
+//   2. Wraps explicites via `railToast.setAiBusy(true/false)` pour les
+//      opérations on-demand qui ne passent pas par un sync (ex. génération
+//      de brouillon, re-analyse d'un email).
+// Le compteur on-demand est indépendant du flag sync pour que deux
+// opérations simultanées ne s'annulent pas.
+let _onDemandBusyCount = 0;
+let _syncBusy = false;
+let _busyToast = null;
+
+function _busyMessage() {
+  // Pull i18n lazily — i18n.js may not be loaded yet when this module
+  // runs (onboarding pages, settings opened immediately). Fall back to FR.
+  if (typeof window !== 'undefined' && typeof window.t === 'function') {
+    return window.t('rt.ai_busy') || 'Analyse IA en cours…';
+  }
+  return 'Analyse IA en cours…';
+}
+
+function _refreshBusyToast() {
+  const want = _syncBusy || _onDemandBusyCount > 0;
+  if (want && (!_busyToast || _busyToast.destroyed)) {
+    // Spawn a persistent loading toast. duration:0 = no auto-dismiss,
+    // collapseAfter:1500 = morph to circle after a second so it doesn't
+    // hog the rail with a full pill while still being visible.
+    _busyToast = railToast.show({
+      variant: 'loading',
+      message: _busyMessage(),
+      duration: 0,
+      collapseAfter: 1500,
+    });
+  } else if (!want && _busyToast && !_busyToast.destroyed) {
+    _busyToast.dismiss();
+    _busyToast = null;
+  }
+}
+
+function setAiBusy(busy) {
+  if (busy) _onDemandBusyCount++;
+  else      _onDemandBusyCount = Math.max(0, _onDemandBusyCount - 1);
+  _refreshBusyToast();
+}
+
+async function checkAiBusy() {
+  try {
+    const r = await fetch('/api/sync/status');
+    if (!r.ok) return;
+    const s = await r.json();
+    const next = !!s.running;
+    if (next !== _syncBusy) {
+      _syncBusy = next;
+      _refreshBusyToast();
+    }
+  } catch (_) {
+    // Network hiccup or backend down — leave the previous state alone.
+  }
+}
+
 if (typeof window !== 'undefined') {
   window.railToast = railToast;
-  // Ensure the host is wired even before any toast is shown, so the idle
-  // hover animation works immediately.
+  window.railToast.setAiBusy = setAiBusy;
+  // Permet à un appelant (ex. dashboard.js après un POST /api/sync) de
+  // forcer un poll immédiat sans attendre les 3 s de l'intervalle —
+  // évite le gap visuel entre le clic et l'apparition du toast.
+  window.railToast.checkAiBusy = checkAiBusy;
   try { ensureHost(); } catch (_) {}
+  setInterval(checkAiBusy, 3000);
+  checkAiBusy();
 }
 
 export { railToast, createRailToast };
