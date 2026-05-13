@@ -42,8 +42,11 @@ if errorlevel 1 (
 :: de llama_cpp et l'installeur publie une app inutilisable en mode Local
 :: (ModuleNotFoundError au runtime, observe sur la v0.7.0). On installe
 :: systematiquement sauf si LULLMAIL_SKIP_LOCAL=1 (build OpenAI-only).
+:: NB : a l'interieur d'un bloc IF (...), CMD parse les ( et ) des chaines
+:: echo comme des delimiteurs de bloc. Toujours echapper avec ^( ^) sinon
+:: erreur "... was unexpected at this time" (vu sur le run v0.7.1).
 if not "%LULLMAIL_SKIP_LOCAL%"=="1" (
-    echo [2/4] Backend local llama-cpp-python (CPU wheel)...
+    echo [2/4] Backend local llama-cpp-python ^(CPU wheel^)...
     .venv\Scripts\pip install -r requirements-local.txt -q ^
         --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
     if errorlevel 1 (
