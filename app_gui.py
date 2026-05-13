@@ -23,6 +23,28 @@ import time
 from pathlib import Path
 from typing import Optional
 
+
+# ── LLM subprocess hand-off ──────────────────────────────────────────────────
+# When LullMail.exe is invoked with `--serve-llm`, we route the process to
+# llama_cpp.server's CLI instead of bootstrapping the GUI. This is the
+# PyInstaller workaround : a frozen exe cannot do `python -m llama_cpp.server`
+# (PyInstaller's bootloader has no `-m` support and sys.executable points at
+# the LullMail.exe wrapper, not python). The same binary therefore acts as
+# both the desktop app and its own python launcher for the LLM subprocess.
+#
+# Detected as early as possible — BEFORE heavy imports / data-dir migration
+# / logging setup — so the subprocess starts clean and doesn't conflict
+# with the parent's state. Works in dev too (the dev path also routes here
+# if `--serve-llm` is passed), which makes the new branch testable without
+# a frozen build.
+if "--serve-llm" in sys.argv:
+    sys.argv.remove("--serve-llm")
+    # Cosmetic : llama_cpp.server's argparse uses argv[0] in help / errors.
+    sys.argv[0] = "llama_cpp.server"
+    from llama_cpp.server.__main__ import main as _llama_serve_main
+    sys.exit(_llama_serve_main())
+
+
 # ── Working directory ────────────────────────────────────────────────────────
 # When launched from a Start-menu shortcut or double-clicked from anywhere,
 # the cwd may not be the project root. Anchor everything (config.yaml,

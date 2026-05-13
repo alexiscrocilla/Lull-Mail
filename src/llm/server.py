@@ -22,11 +22,13 @@ Patterns réutilisés :
     Ferme la surface attack sur les autres processus locaux (notamment
     Windows multi-session).
 
-Frozen exe : `python -m llama_cpp.server` ne fonctionne pas dans un
-binaire PyInstaller (pas de `-m`). Phase 2D ajoutera un sous-mode au
-main de l'exe (`LullMail.exe --serve-llm <model>`) qui re-démarre le
-serveur in-process. Phase 2B (ce module) cible le mode dev où on a un
-interpréteur Python complet.
+Frozen exe : PyInstaller n'a pas de `-m`, et sys.executable pointe sur
+LullMail.exe — donc `python -m llama_cpp.server` ne marche pas dans un
+build frozen. Solution : le main de `app_gui.py` détecte `--serve-llm`
+en argv AVANT le bootstrap GUI et hand off vers `llama_cpp.server.__main__.main()`.
+Ce module construit alors la commande `[LullMail.exe, --serve-llm, …]`
+(frozen) ou `[python, -m, llama_cpp.server, …]` (dev). Même binaire,
+deux entry points selon argv.
 """
 
 from __future__ import annotations
@@ -178,8 +180,24 @@ class LLMServer:
             self.port = _pick_ephemeral_port()
 
         py = self.python_exe or sys.executable
-        cmd = [
-            py, "-m", "llama_cpp.server",
+        # Build the subprocess command. Two modes :
+        #
+        #  - DEV (running from a venv) : `python -m llama_cpp.server …`.
+        #    Standard PyPI entry point, works out of the box.
+        #
+        #  - FROZEN (PyInstaller bundle) : `LullMail.exe --serve-llm …`.
+        #    The exe checks for that sentinel in app_gui.py BEFORE the GUI
+        #    bootstrap and routes itself to llama_cpp.server's CLI main().
+        #    Required because PyInstaller's bootloader has no `-m` support
+        #    and sys.executable points at LullMail.exe, not python.
+        #
+        # In both cases the rest of the argv is forwarded to llama_cpp.server's
+        # argparse verbatim (--model, --port, etc.).
+        if getattr(sys, "frozen", False):
+            cmd = [py, "--serve-llm"]
+        else:
+            cmd = [py, "-m", "llama_cpp.server"]
+        cmd += [
             "--model", str(self.model_path),
             "--host", self.host,
             "--port", str(self.port),

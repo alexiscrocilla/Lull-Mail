@@ -134,6 +134,41 @@ def test_start_passes_n_gpu_layers_when_set(tmp_model, monkeypatch):
     server._proc = None
 
 
+def test_start_uses_serve_llm_sentinel_when_frozen(tmp_model, monkeypatch):
+    """Dans un build PyInstaller, sys.executable = LullMail.exe, et le
+    bootloader ne supporte pas `-m`. server.py doit alors construire la
+    commande `[exe, --serve-llm, ...]` au lieu de `[python, -m, llama_cpp.server, ...]`.
+    Le sentinel est détecté par app_gui.py qui hand off vers le main de
+    llama_cpp.server. Sans ce switch, le subprocess crasherait au boot."""
+    captured_cmd = []
+
+    def fake_popen(cmd, **kwargs):
+        captured_cmd[:] = cmd
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.stdout = iter([])
+        return proc
+
+    monkeypatch.setattr(srv.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(srv, "_wait_for_port", lambda *a, **k: True)
+    monkeypatch.setattr(srv, "_http_get_models",
+                        lambda *a, **k: {"data": [{"id": "fake"}]})
+    # Simule un build frozen : sys.frozen est posé par PyInstaller au
+    # runtime, on le force en test via setattr.
+    monkeypatch.setattr(srv.sys, "frozen", True, raising=False)
+
+    server = srv.LLMServer(model_path=tmp_model, port=51000)
+    server.start(ready_timeout=2)
+    # Mode frozen : --serve-llm en place de -m
+    assert "--serve-llm" in captured_cmd
+    assert "-m" not in captured_cmd
+    assert "llama_cpp.server" not in captured_cmd
+    # Les autres flags restent identiques
+    assert "--model" in captured_cmd
+    assert "--port" in captured_cmd
+    server._proc = None
+
+
 def test_start_raises_on_port_timeout(tmp_model, monkeypatch):
     """Si le port ne s'ouvre pas dans le délai imparti, on doit raise
     `LLMServerError` ET tuer le subprocess pour ne pas laisser un zombie."""
