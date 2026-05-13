@@ -12,12 +12,20 @@
 ; Build this script via scripts\build_installer.bat (which runs
 ; build.bat first to refresh the bundle, then invokes ISCC).
 ;
-; Bumping versions: edit MyAppVersion below — the same value flows into
-; OutputBaseFilename so each release is uniquely named.
+; Bumping versions: prefer passing /DMyAppVersion=X.Y.Z to ISCC (this is what
+; the GitHub Actions workflow does — see .github/workflows/release.yml).
+; The #ifndef fallback below only kicks in for ad-hoc local builds where
+; nobody injected the version. Keep it in sync with src/_version.py.
+;
+; Why the #ifndef guard: Inno Setup applies the LAST #define wins, so a
+; bare `#define MyAppVersion "0.7.0"` here silently overrode the /D from
+; the workflow and shipped LullMail-Setup-0.7.0.exe on a v0.7.1 tag build.
 ; ───────────────────────────────────────────────────────────────────────────
 
 #define MyAppName        "Lull Mail"
-#define MyAppVersion     "0.7.0"
+#ifndef MyAppVersion
+  #define MyAppVersion   "0.7.0"
+#endif
 #define MyAppPublisher   "Lull Mail"
 #define MyAppExeName     "LullMail.exe"
 ; AppId is the immutable identity of this product in Add/Remove Programs.
