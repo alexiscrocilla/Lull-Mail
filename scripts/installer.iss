@@ -17,7 +17,7 @@
 ; ───────────────────────────────────────────────────────────────────────────
 
 #define MyAppName        "Lull Mail"
-#define MyAppVersion     "0.6.7"
+#define MyAppVersion     "0.7.0"
 #define MyAppPublisher   "Lull Mail"
 #define MyAppExeName     "LullMail.exe"
 ; AppId is the immutable identity of this product in Add/Remove Programs.
