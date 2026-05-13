@@ -65,14 +65,14 @@ jobs:
 
       # Local LLM backend (llama-cpp-python). Missing from the v0.7.0 build,
       # which is why the installer crashed at runtime with ModuleNotFoundError.
-      # PyPI has cp311 wheels for win_amd64 (and manylinux on Linux, macOS_x86_64
-      # on macOS), so no extra index is needed here — adding the abetlen index
-      # actually backfired on Linux (pip picked a musllinux wheel that couldn't
-      # load on Ubuntu's glibc). The extra index stays in build.bat / build.sh
-      # for local devs on Python 3.13 where PyPI is incomplete.
+      # PyPI doesn't publish a cp311 win_amd64 wheel for 0.3.0, so pip falls
+      # back to building from source (long, fragile under MSVC). The abetlen
+      # extra index serves a pre-built win_amd64 wheel that we use here.
       - name: Install local LLM backend
         shell: cmd
-        run: .venv\Scripts\pip install -r requirements-local.txt
+        run: |
+          .venv\Scripts\pip install -r requirements-local.txt ^
+            --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 
       - name: Build app (PyInstaller)
         shell: cmd
@@ -163,10 +163,12 @@ jobs:
           .venv/bin/pip install -r requirements.txt
           .venv/bin/pip install pyinstaller==6.11.1
 
-      # Local LLM backend (llama-cpp-python). PyPI has cp311 macOS wheels;
-      # see notes on the Windows step about why no extra-index here.
+      # Local LLM backend (llama-cpp-python). Same as Windows — PyPI doesn't
+      # publish cp311 macOS wheels for 0.3.0, abetlen does.
       - name: Install local LLM backend
-        run: .venv/bin/pip install -r requirements-local.txt
+        run: |
+          .venv/bin/pip install -r requirements-local.txt \
+            --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 
       # Generate .icns from the 1024px light source using sips + iconutil (both
       # built-in on macOS — no external dependencies needed).
