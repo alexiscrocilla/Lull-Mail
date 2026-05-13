@@ -7,6 +7,10 @@ data/
 *.log
 .env
 
+# Local LLM models (GGUF files, several GB each — never committed).
+models/
+*.gguf
+
 # ── Python ──
 __pycache__/
 *.pyc
