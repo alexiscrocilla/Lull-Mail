@@ -38,12 +38,18 @@ datas = collect_data_files("llama_cpp")
 
 # Lazy imports the server side pulls in. Bundling these keeps the smoke
 # test (and the eventual src/llm/server.py) importable in the frozen exe.
+#
+# numpy is pulled by llama_cpp.llama_chat_format at module import time.
+# Declaring it explicitly here belts-and-suspenders the unexclusion in
+# lull_mail.spec — if a future refactor drops numpy from excludes by
+# accident, the hook still keeps it bundled.
 hiddenimports = [
     "llama_cpp",
     "llama_cpp._C",
     "llama_cpp.server",
     "llama_cpp.server.app",
     "llama_cpp.server.settings",
+    "numpy",
     "uvicorn",
     "fastapi",
     "sse_starlette",

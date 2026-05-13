@@ -125,7 +125,14 @@ a = Analysis(
     hookspath=_hookspath,
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "numpy", "pandas", "pytest"],
+    # numpy is a transitive dep of llama_cpp.llama_chat_format and MUST stay
+    # bundled — excluding it caused 'No module named numpy' at runtime on
+    # v0.7.1. When LULLMAIL_SKIP_LOCAL is set (OpenAI-only build) we can
+    # safely drop numpy to shave the bundle.
+    excludes=(
+        ["tkinter", "matplotlib", "pandas", "pytest"]
+        + (["numpy"] if not _local_llm_available else [])
+    ),
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
