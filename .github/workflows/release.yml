@@ -212,11 +212,28 @@ jobs:
           STAGING=$(mktemp -d)
           cp -r dist/LullMail.app "$STAGING/"
           ln -s /Applications "$STAGING/Applications"
-          hdiutil create \
-            -volname "Lull Mail ${VERSION}" \
-            -srcfolder "$STAGING" \
-            -ov -format UDZO \
-            "$DMG"
+          # hdiutil create on GitHub macOS runners is racy with Spotlight
+          # indexing the freshly-copied tree — fails intermittently with
+          # 'Resource busy'. Mark the staging dir as not-indexed where we
+          # can (sudo not always available) and retry the call up to 3
+          # times with backoff.
+          xattr -w com.apple.metadata:com_apple_backup_excludeItem "com.apple.backupd.IndexExcludedItems" "$STAGING" 2>/dev/null || true
+          for attempt in 1 2 3; do
+            if hdiutil create \
+                -volname "Lull Mail ${VERSION}" \
+                -srcfolder "$STAGING" \
+                -ov -format UDZO \
+                "$DMG"; then
+              break
+            fi
+            if [[ $attempt -lt 3 ]]; then
+              echo "hdiutil failed on attempt $attempt, retrying after backoff..."
+              sleep $((attempt * 5))
+            else
+              echo "[ERROR] hdiutil failed after 3 attempts."
+              exit 1
+            fi
+          done
           rm -rf "$STAGING"
           echo "DMG created: $DMG"
 

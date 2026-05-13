@@ -28,13 +28,25 @@ This file is enabled by adding `--additional-hooks-dir=hooks` to the
 PyInstaller invocation, or `hookspath=['hooks']` in lull_mail.spec.
 """
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_dynamic_libs
 
 # Native libllama + every other dynamic library that ships in the wheel.
 binaries = collect_dynamic_libs("llama_cpp")
 
 # ggml-metal.metal on macOS, any future grammar files, etc.
 datas = collect_data_files("llama_cpp")
+
+# numpy 2.x renamed its private internals from numpy.core to numpy._core.
+# PyInstaller's stock hook for numpy doesn't always pick up the new
+# submodule tree (e.g. numpy._core._exceptions), which then crashes the
+# frozen app with ImportError at numpy load time. We belt-and-suspender
+# with collect_all here so every numpy submodule, native .pyd / .so, and
+# data file lands in the bundle. Only triggered when llama_cpp is on
+# (i.e., when the local LLM backend is enabled), since the OpenAI-only
+# build doesn't import numpy anywhere.
+_numpy_datas, _numpy_binaries, _numpy_hidden = collect_all("numpy")
+datas += _numpy_datas
+binaries += _numpy_binaries
 
 # Lazy imports the server side pulls in. Bundling these keeps the smoke
 # test (and the eventual src/llm/server.py) importable in the frozen exe.
@@ -49,11 +61,10 @@ hiddenimports = [
     "llama_cpp.server",
     "llama_cpp.server.app",
     "llama_cpp.server.settings",
-    "numpy",
     "uvicorn",
     "fastapi",
     "sse_starlette",
     "sse_starlette.sse",
     "pydantic_settings",
     "starlette_context",
-]
+] + _numpy_hidden
