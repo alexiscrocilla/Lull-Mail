@@ -399,11 +399,17 @@ def setup_status() -> Dict[str, Any]:
     enabled = [a for a in accounts if a.get("enabled", True)]
     has_openai = bool((data.get("openai") or {}).get("api_key"))
     has_ntfy = bool((data.get("ntfy") or {}).get("topic"))
+    # `ai_enabled` couvre les deux providers (clé OpenAI OU analyzer
+    # local téléchargé). Le frontend doit lire CE champ — pas
+    # `has_openai` — pour décider d'afficher résumé, bouton draft,
+    # badge de score, etc. `has_openai` reste exposé pour le panneau
+    # de réglages qui en a un usage spécifique (provider radio).
     return {
         "configured": cfg.is_configured(),
         "accounts": len(accounts),
         "accounts_enabled": len(enabled),
         "has_openai": has_openai,
+        "ai_enabled": cfg.ai_enabled(),
         "has_ntfy": has_ntfy,
         "data_dir": str(paths.APP_DATA_DIR),
         "services_running": lifecycle.is_running(),
@@ -907,6 +913,34 @@ def open_data_dir(locale: str = Depends(get_locale)) -> Dict[str, Any]:
 
 class WipeConfirm(BaseModel):
     confirm: str  # must equal "SUPPRIMER" — defensive against accidental calls
+
+
+@router.post("/wipe-ai-analyses")
+@limiter.limit("3/minute")
+def wipe_ai_analyses_endpoint(
+    request: Request,
+    payload: WipeConfirm = Body(...),
+    locale: str = Depends(get_locale),
+) -> Dict[str, Any]:
+    """Efface les champs d'analyse IA (category, score, résumé, brouillon)
+    sur tous les emails et les remet en file d'attente. Les emails eux-
+    mêmes (subject, body, état utilisateur) sont conservés. Au prochain
+    sync, le scheduler les retraitera via le provider actif.
+
+    Utilisé par le bouton "Supprimer les analyses IA" dans Settings →
+    Stockage. Confirmation obligatoire avec `{"confirm": "SUPPRIMER"}`
+    pour empêcher un misclick.
+    """
+    from src import database as db
+    if payload.confirm != "SUPPRIMER":
+        raise HTTPException(400, tr("setup.confirm_missing", locale))
+    try:
+        count = db.wipe_ai_analyses()
+    except Exception as e:
+        logger.exception("wipe_ai_analyses failed")
+        raise HTTPException(500, str(e))
+    logger.info("AI analyses wiped: %d emails reset to pending", count)
+    return {"ok": True, "reset_count": count}
 
 
 @router.post("/wipe")

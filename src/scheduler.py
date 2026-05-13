@@ -54,10 +54,21 @@ def run_sync():
     _running = True
     try:
         conf = cfg.get()
-        api_key = (conf.get("openai") or {}).get("api_key", "")
-        ai_on = bool(api_key)
+        provider = (conf.get("llm") or {}).get("provider", "openai")
+        # `cfg.ai_enabled()` comprend les deux providers : OpenAI (clé non
+        # vide) ET local (GGUF analyzer présent sur disque). Avant ce fix
+        # on testait uniquement `bool(api_key)`, donc en mode local le
+        # scheduler tombait dans le fallback no-AI et les emails étaient
+        # marqués "Non classé" sans jamais être soumis au LLM local —
+        # le bouton "Analyse" du dashboard ne faisait rien d'utile.
+        ai_on = cfg.ai_enabled()
         if ai_on:
-            init_client(api_key)
+            # init_client n'est nécessaire que pour OpenAI ; en mode local
+            # l'AnalyzerServer a déjà été démarré par lifecycle au boot
+            # (ou par /api/llm/activate après un switch de provider).
+            if provider == "openai":
+                api_key = (conf.get("openai") or {}).get("api_key", "")
+                init_client(api_key)
             # Re-queue any emails that were classified by the no-AI
             # fallback during a prior run. They were marked as 'other'
             # to keep them visible in the inbox, but the user has now

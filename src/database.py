@@ -476,6 +476,36 @@ def skip_pending_emails() -> int:
         return cur.rowcount
 
 
+def wipe_ai_analyses() -> int:
+    """Efface toutes les données d'analyse IA et remet les emails en
+    file d'attente. Garde le contenu brut (subject, body, sender, …) et
+    l'état utilisateur (is_read, is_favourite, folder, label) — seuls
+    les champs alimentés par l'analyseur ou le drafter sont réinitialisés.
+
+    Utilisé par le bouton "Supprimer les analyses IA" dans Settings →
+    Stockage. Au prochain sync, le scheduler retraitera chaque email
+    via le provider actif (OpenAI ou local).
+
+    Retourne le nombre d'emails impactés."""
+    with _conn() as con:
+        cur = con.execute(
+            "UPDATE emails SET "
+            "  category = 'pending', "
+            "  importance_score = 0, "
+            "  importance_reason = '', "
+            "  summary = '', "
+            "  needs_reply = 0, "
+            "  draft_response = NULL, "
+            "  processed_at = NULL, "
+            "  tokens_in = 0, "
+            "  tokens_out = 0, "
+            "  local_classified = 0, "
+            "  ai_attempts = 0, "
+            "  is_notified = 0"
+        )
+        return cur.rowcount
+
+
 def requeue_emails_by_reason(reason: str) -> int:
     """Reset emails matching `reason` back to the pending queue so the next
     sync re-processes them. Used when AI gets re-enabled and we want to

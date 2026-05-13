@@ -429,6 +429,90 @@ def generate_draft(int_id: int, locale: str = Depends(get_locale)):
     }
 
 
+@app.post("/api/emails/{int_id}/draft/stream")
+def generate_draft_stream(int_id: int, locale: str = Depends(get_locale)):
+    """Variante streaming de `generate_draft`. Réservée au provider local
+    parce que c'est là où la latence brute (10-15 s) tue l'UX. Renvoie
+    un flux SSE où chaque event est `{"delta": "...mot..."}` puis un
+    event final `{"done": true, "full_text": "..."}`.
+
+    Le frontend (mailbox.js btn-ai-draft) consomme le flux et append
+    les deltas au textarea du composer au fur et à mesure. À la fin,
+    le backend persiste `draft_response` dans la DB et flippe
+    `needs_reply=1`, exactement comme la version non-streaming.
+
+    Si le provider actif n'est PAS local, on renvoie 409 — le frontend
+    fait alors un fallback sur l'endpoint non-streaming /draft.
+    """
+    em = db.get_email_by_id(int_id)
+    if not em:
+        raise HTTPException(404, tr("email.not_found", locale))
+    if em.get("draft_response"):
+        # Idempotent : on renvoie un mini-flux qui annonce direct le
+        # texte déjà persisté. Permet au frontend de garder le même
+        # code (toujours stream) sans cas particulier.
+        cached = em["draft_response"]
+        if not em.get("needs_reply"):
+            db.set_needs_reply(em["message_id"], True)
+        def cached_stream():
+            yield f"data: {json.dumps({'delta': cached})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'full_text': cached, 'needs_reply': True})}\n\n"
+        return StreamingResponse(
+            cached_stream(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    if not cfg.ai_enabled():
+        raise HTTPException(409, tr("email.ai_disabled.draft", locale))
+
+    from src.llm.registry import get_provider
+    provider = get_provider()
+    if provider.name != "local":
+        raise HTTPException(
+            409,
+            tr("email.streaming_not_supported", locale,
+               default="Streaming non disponible avec le provider actif. Utilisez /draft."),
+        )
+
+    from src.llm import prompts_local as plocal
+
+    def event_stream():
+        accumulated = []
+        try:
+            for chunk in provider.stream_draft(dict(em)):
+                accumulated.append(chunk)
+                # Wrap each chunk in an SSE event. We don't trim the
+                # accumulated prefix mid-stream — strip_draft_prefix is
+                # applied ONCE at the end on the full text so a partial
+                # match doesn't gobble valid content.
+                payload = json.dumps({"delta": chunk})
+                yield f"data: {payload}\n\n"
+        except Exception as e:
+            logger.exception("draft stream error")
+            err = json.dumps({"error": str(e)})
+            yield f"data: {err}\n\n"
+            return
+
+        full_text = plocal.strip_draft_prefix("".join(accumulated)).rstrip()
+        if full_text:
+            try:
+                db.set_draft_response(em["message_id"], full_text)
+                db.set_needs_reply(em["message_id"], True)
+            except Exception:
+                logger.exception("persist streamed draft failed")
+        final = json.dumps({
+            "done": True,
+            "full_text": full_text,
+            "needs_reply": bool(full_text),
+        })
+        yield f"data: {final}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/api/emails/{int_id}/reanalyze")
 def reanalyze_email(int_id: int, locale: str = Depends(get_locale)):
     from src.ai_processor import process_email, init_client
@@ -1963,11 +2047,13 @@ def llm_activate(request: Request, payload: _LLMActivatePayload,
     local_sect["drafter_model_id"] = payload.drafter_model_id
     _persist(data)
 
-    # Restart services pour booter l'AnalyzerServer.
+    # Restart services pour booter l'AnalyzerServer. Import local pour éviter
+    # un cycle d'import au boot (lifecycle → ai_processor → llm → api).
     from src.llm.registry import reset as _reset_llm
+    from src import lifecycle as _lifecycle
     _reset_llm()
     try:
-        lifecycle.start_email_services(restart=True)
+        _lifecycle.start_email_services(restart=True)
     except Exception:
         logger.exception("Restart après activation local LLM a échoué")
         raise HTTPException(500, tr("llm.activate_restart_failed", locale,
@@ -2229,6 +2315,10 @@ def diagnostics():
         config_error = type(exc).__name__
     has_openai = bool(openai_conf.get("api_key"))
     model = openai_conf.get("model") if has_openai else None
+    # `ai_enabled` couvre les deux providers (OpenAI clé + local GGUF).
+    # `has_openai` reste exposé séparément pour les diagnostics qui veulent
+    # distinguer le provider.
+    ai_enabled = cfg.ai_enabled()
 
     try:
         from src.scheduler import get_last_sync, is_running as sync_running
@@ -2258,7 +2348,8 @@ def diagnostics():
         "config": {
             "accounts_total": len(accounts),
             "accounts_enabled": len(enabled_accounts),
-            "ai_enabled": has_openai,
+            "ai_enabled": ai_enabled,
+            "has_openai": has_openai,
             "ai_model": model,
             "has_ntfy": has_ntfy,
             "error": config_error,
