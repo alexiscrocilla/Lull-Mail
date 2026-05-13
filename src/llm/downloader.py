@@ -123,15 +123,27 @@ def stream_download(
     try:
         with urlopen(req, timeout=60) as resp:
             total = int(resp.headers.get("Content-Length") or 0)
-            if expected_size and total and abs(total - expected_size) > 1024:
-                # Plus de 1 ko d'écart entre Content-Length et catalog →
-                # probablement une mauvaise URL ou un fichier changé.
-                yield ProgressEvent(
-                    downloaded_bytes=0, total_bytes=total, speed_mbps=0,
-                    eta_sec=None, done=True, sha_ok=False,
-                    error=f"Taille inattendue : {total} octets vs {expected_size} attendus",
-                )
-                return
+            # Sanity check sur la taille. Le catalog stocke une valeur
+            # approximative (cf. "~1.9 Go" dans le commentaire des entries) ;
+            # HuggingFace peut re-uploader un fichier avec quelques Ko à
+            # quelques Mo de diff sans que ce soit un problème d'intégrité.
+            # Le vrai garde-fou est le SHA256 calculé en fin de download.
+            #
+            # On garde un sanity guard généreux pour catcher les redirects
+            # vers une mauvaise URL (ex: index HTML 4 Ko renvoyé au lieu
+            # du GGUF) : si la diff dépasse 5 % de la taille attendue OU
+            # 50 Mo (le plus petit des deux), on bail. Un GGUF de 1,9 Go
+            # avec 3 Ko d'écart passe désormais sans souci ; un index HTML
+            # est immédiatement détecté.
+            if expected_size and total:
+                tolerance = min(max(int(expected_size * 0.05), 1_000_000), 50_000_000)
+                if abs(total - expected_size) > tolerance:
+                    yield ProgressEvent(
+                        downloaded_bytes=0, total_bytes=total, speed_mbps=0,
+                        eta_sec=None, done=True, sha_ok=False,
+                        error=f"Taille inattendue : {total} octets vs {expected_size} attendus",
+                    )
+                    return
 
             with open(tmp, "wb") as f:
                 while True:
