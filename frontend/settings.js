@@ -569,13 +569,21 @@ export async function mountSettings(host, opts = {}) {
       // sur le modèle recommandé pour le tier détecté. Évite que le
       // radio reste figé sur "Mistral 7B" quand l'user n'a rien
       // installé encore.
+      //
+      // IMPORTANT : loadLocalLLM est aussi rappelé après chaque
+      // download/delete pour rafraîchir l'état `downloaded`. Dans ce
+      // cas, l'utilisateur peut avoir déjà changé son radio en pending
+      // (sans avoir cliqué Appliquer) — on doit PRÉSERVER cette
+      // sélection in-memory, sinon le radio retombe sur la valeur
+      // persistée à chaque refresh et l'utilisateur perd son choix.
       const llmLocal = (state.config.llm && state.config.llm.local) || {};
-      state.selectedAnalyzer = _initialSelection(
-        models, 'analyzer', hw.recommended_tier, llmLocal.analyzer_model_id,
-      );
-      state.selectedDrafter = _initialSelection(
-        models, 'drafter', hw.recommended_tier, llmLocal.drafter_model_id,
-      );
+      const modelIds = new Set(models.map(m => m.id));
+      state.selectedAnalyzer = (state.selectedAnalyzer && modelIds.has(state.selectedAnalyzer))
+        ? state.selectedAnalyzer
+        : _initialSelection(models, 'analyzer', hw.recommended_tier, llmLocal.analyzer_model_id);
+      state.selectedDrafter = (state.selectedDrafter && modelIds.has(state.selectedDrafter))
+        ? state.selectedDrafter
+        : _initialSelection(models, 'drafter', hw.recommended_tier, llmLocal.drafter_model_id);
       renderLocalLLM();
     } catch (e) {
       els.llmModelsList.innerHTML = `<div class="sub" style="color:var(--danger)">${t('set.llm.load_error', { msg: e.message || e })}</div>`;
@@ -688,12 +696,13 @@ export async function mountSettings(host, opts = {}) {
           const tooltip = exceedsRam ? ramWarningMsg
                        : overTier ? t('set.llm.heavy_warning')
                        : '';
-          // Le radio est TOUJOURS sélectionnable (même quand le GGUF n'est
-          // pas sur disque) : l'utilisateur choisit son modèle, puis le
-          // bouton "Télécharger" devient cliquable. Inverser le flow évite
-          // de surcharger l'UI avec 3 boutons Download cliquables en même
-          // temps et force l'utilisateur à un choix avant de DL 4 Go.
-          const dlBtnDisabled = !isSelected;
+          // Téléchargement et sélection sont DÉCOUPLÉS : un user veut
+          // pouvoir tester plusieurs rédacteurs avant de figer son choix
+          // dans Appliquer. Forcer un select-then-download créait un piège
+          // (le radio repassait sur l'ancienne valeur après échec d'apply
+          // sur un modèle pas encore DL, et l'utilisateur ne pouvait
+          // jamais lancer le DL). Le bouton Download reste accessible
+          // sur chaque ligne tant que le modèle n'est pas déjà sur disque.
           return `
             <label class="set-llm-model ${exceedsRam ? 'ram-warning' : ''} ${overTier && !exceedsRam ? 'disabled' : ''} ${isRecommended ? 'recommended' : ''} ${isSelected ? 'is-selected' : ''} ${m.downloaded ? 'is-dl' : 'is-not-dl'}"
                    data-model-id="${escapeAttr(m.id)}" data-role="${role}" title="${escapeAttr(tooltip)}">
@@ -722,7 +731,7 @@ export async function mountSettings(host, opts = {}) {
               <div class="set-llm-model-action">
                 ${m.downloaded
                   ? `<button class="set-llm-btn danger" data-act="delete" data-id="${escapeAttr(m.id)}" title="${escapeAttr(t('set.llm.delete_btn'))}"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>`
-                  : `<button class="set-llm-btn primary" data-act="download" data-id="${escapeAttr(m.id)}" ${dlBtnDisabled ? 'disabled' : ''} title="${escapeAttr(dlBtnDisabled ? t('set.llm.select_first') : '')}"><i data-lucide="download" class="w-3.5 h-3.5"></i>${t('set.llm.download_btn')}</button>`
+                  : `<button class="set-llm-btn primary" data-act="download" data-id="${escapeAttr(m.id)}"><i data-lucide="download" class="w-3.5 h-3.5"></i>${t('set.llm.download_btn')}</button>`
                 }
               </div>
             </label>
@@ -760,10 +769,11 @@ export async function mountSettings(host, opts = {}) {
         if (btn.dataset.act === 'delete')   deleteModel(id);
       });
     });
-    // Bind radios (sélection analyzer/drafter). En plus de mettre à jour
-    // l'état, on toggle la classe `is-selected` sur la ligne courante du
-    // rôle et on (dés)active les boutons Download pour que seule la ligne
-    // sélectionnée soit cliquable. Évite de re-render toute la liste.
+    // Bind radios (sélection analyzer/drafter). On met à jour l'état et
+    // on toggle la classe `is-selected` sur la ligne courante du rôle,
+    // sans toucher aux boutons Download — chaque ligne garde le sien
+    // accessible indépendamment, pour qu'un user puisse télécharger
+    // plusieurs rédacteurs avant de figer son choix dans Appliquer.
     els.llmModelsList.querySelectorAll('[data-select-id]').forEach(rad => {
       rad.addEventListener('change', () => {
         const role = rad.dataset.selectRole;
@@ -771,14 +781,7 @@ export async function mountSettings(host, opts = {}) {
         if (role === 'analyzer') state.selectedAnalyzer = id;
         else                     state.selectedDrafter = id;
         els.llmModelsList.querySelectorAll(`label.set-llm-model[data-role="${role}"]`).forEach(lbl => {
-          const isThis = lbl.dataset.modelId === id;
-          lbl.classList.toggle('is-selected', isThis);
-          // Le Download n'est cliquable que sur la ligne sélectionnée.
-          const dlBtn = lbl.querySelector('button[data-act="download"]');
-          if (dlBtn) {
-            dlBtn.disabled = !isThis;
-            dlBtn.title = isThis ? '' : t('set.llm.select_first');
-          }
+          lbl.classList.toggle('is-selected', lbl.dataset.modelId === id);
         });
         _updateActivateButtonState();
       });
