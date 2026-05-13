@@ -201,8 +201,12 @@
   code { font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 0.85em; padding: 1px 6px; background: var(--surface-2); border-radius: 4px; color: var(--text); }
   .wrap { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; }
 
-  /* Page sections: tighter vertical rhythm (nested mock <section>s are not direct children of body). */
-  body > section { padding: 65px 0; background: transparent; }
+  /* Page sections: tighter vertical rhythm. Targets sections that are
+     direct children of <main> (the page-level layout) — nested mock
+     <section>s inside cards / privacy items are NOT direct children of
+     main and therefore keep their own spacing. Was scoped to `body >`
+     before, which matched nothing once the layout was wrapped in <main>. */
+  main > section { padding: 65px 0; background: transparent; }
   section.demo { padding-top: 48px; padding-bottom: 56px; }
   header.hero { background: transparent; }
   footer { padding: 56px 0; background: transparent; }
