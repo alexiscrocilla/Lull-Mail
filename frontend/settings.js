@@ -591,12 +591,17 @@ export async function mountSettings(host, opts = {}) {
   }
 
   function _initialSelection(models, role, tier, configId) {
-    // Si l'user a une valeur dans la config ET que le modèle correspondant
-    // est sur disque, c'est qu'il a activé ce modèle au moins une fois.
-    // On respecte son choix. Sinon, recommandé pour le tier.
+    // Si l'user a une valeur dans la config, on la respecte — qu'elle soit
+    // déjà téléchargée ou non. Précédemment on gatait sur `m.downloaded`,
+    // ce qui faisait silencieusement reverter la sélection vers le modèle
+    // recommandé après un Appliquer + reload sur un drafter non DL : le
+    // user voyait sa préférence ignorée sans message, le radio se figeait
+    // de force sur la reco. On ne replie sur la reco que si la config est
+    // vide ou pointe vers un modèle qui n'existe plus dans le catalogue
+    // (typique d'un schéma renommé entre versions).
     if (configId) {
       const m = models.find(x => x.id === configId && x.role === role);
-      if (m && m.downloaded) return configId;
+      if (m) return configId;
     }
     return _defaultModelId(models, role, tier);
   }
@@ -851,12 +856,31 @@ export async function mountSettings(host, opts = {}) {
     const btn = host.querySelector(`[data-act="download"][data-id="${CSS.escape(modelId)}"]`);
     if (btn) { btn.disabled = true; btn.textContent = t('set.llm.downloading'); }
 
+    // Toast persistant pendant le DL. Sans ça, un échec silencieux
+    // (HTTP 4xx, rate-limit 429, perte réseau) laissait juste un mini
+    // message dans le panneau, immédiatement écrasé par le refresh du
+    // catalogue → l'user voyait "rien ne se passe".
+    const friendly = _friendlyModelName((state.models.find(m => m.id === modelId) || {}).name) || modelId;
+    const toast = (typeof window !== 'undefined' && window.railToast)
+      ? window.railToast.show({
+          variant: 'loading',
+          message: t('set.llm.downloading') + ' — ' + friendly,
+          progress: 0,
+          duration: 0,
+          collapseAfter: 0,
+        })
+      : null;
+
+    let succeeded = false;
+
     try {
       const resp = await fetch(`/api/llm/models/${encodeURIComponent(modelId)}/download`, {
         method: 'POST',
       });
       if (!resp.ok || !resp.body) {
-        throw new Error(`HTTP ${resp.status}`);
+        let detail = '';
+        try { detail = (await resp.text()).slice(0, 200); } catch {}
+        throw new Error(`HTTP ${resp.status}${detail ? ' — ' + detail : ''}`);
       }
       // Parse SSE stream manuellement (pas d'EventSource pour POST)
       const reader = resp.body.getReader();
@@ -874,10 +898,13 @@ export async function mountSettings(host, opts = {}) {
           if (data.error) {
             throw new Error(data.error);
           }
-          if (bar) bar.style.width = `${Math.round(data.progress * 100)}%`;
+          const pct = Math.round((data.progress || 0) * 100);
+          if (bar) bar.style.width = `${pct}%`;
+          if (toast) toast.update({ progress: pct });
           if (textEl) {
             if (data.done) {
               textEl.textContent = data.sha_ok ? t('set.llm.dl_done') : t('set.llm.dl_failed');
+              succeeded = !!data.sha_ok;
             } else {
               textEl.textContent = `${(data.downloaded_bytes / 1024 / 1024).toFixed(0)} / ${(data.total_bytes / 1024 / 1024).toFixed(0)} Mo · ${data.speed_mbps?.toFixed(1) || 0} Mo/s`;
             }
@@ -885,11 +912,31 @@ export async function mountSettings(host, opts = {}) {
         }
       }
     } catch (e) {
-      if (textEl) textEl.textContent = t('set.llm.dl_failed') + ' — ' + (e.message || e);
+      const msg = t('set.llm.dl_failed') + ' — ' + (e.message || e);
+      if (textEl) textEl.textContent = msg;
+      // Le toast d'erreur est SURTOUT là parce que le finally appelle
+      // loadLocalLLM() côté succès, ce qui re-render la liste et écrase
+      // le textEl ci-dessus. Côté erreur, on skip ce reload pour ne pas
+      // perdre le message inline, mais un toast garantit la visibilité
+      // même quand l'user a déjà scrollé ailleurs.
+      if (toast) toast.error(msg);
+      else if (typeof window !== 'undefined' && window.railToast) window.railToast.show({ variant: 'error', message: msg });
     } finally {
       state.downloadsInFlight.delete(modelId);
-      // Re-fetch le catalog pour avoir l'état downloaded à jour
-      await loadLocalLLM();
+      if (succeeded) {
+        if (toast) toast.success(t('set.llm.dl_done') + ' — ' + friendly);
+        // Re-fetch le catalog pour avoir l'état downloaded à jour
+        await loadLocalLLM();
+      } else {
+        // Échec : ne PAS rappeler loadLocalLLM qui detruirait le textEl
+        // d'erreur et le state.downloadsInFlight déjà vidé. On restaure
+        // juste le bouton Download pour que l'user puisse réessayer.
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = t('set.llm.download_btn');
+        }
+        _updateActivateButtonState();
+      }
     }
   }
 
