@@ -1,3 +1,7 @@
+# macOS PyInstaller SSL fix: system cert store unreachable from bundle sandbox.
+# rthook_certifi.py sets SSL_CERT_FILE at startup. Works transparently on Windows.
+certifi>=2024.2.2
+
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
 openai==1.57.0

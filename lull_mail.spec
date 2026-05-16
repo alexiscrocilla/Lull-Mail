@@ -42,6 +42,10 @@ datas = []
 datas += [("frontend", "frontend")]
 datas += collect_data_files("webview")           # bundled JS/HTML used by pywebview
 datas += collect_data_files("apscheduler")
+datas += collect_data_files("certifi")           # CA bundle — needed on macOS where the
+                                                 # system cert store is not reachable from
+                                                 # the PyInstaller sandbox (rthook_certifi.py
+                                                 # sets SSL_CERT_FILE at runtime)
 
 hiddenimports = []
 hiddenimports += collect_submodules("apscheduler")
@@ -124,7 +128,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=_hookspath,
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=["hooks/rthook_certifi.py"],
     # numpy is a transitive dep of llama_cpp.llama_chat_format and MUST stay
     # bundled — excluding it caused 'No module named numpy' at runtime on
     # v0.7.1. When LULLMAIL_SKIP_LOCAL is set (OpenAI-only build) we can
