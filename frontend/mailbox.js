@@ -493,7 +493,7 @@ export async function mountMailbox(host, _opts) {
           <div class="mb-section-title" id="title-folders">
             <span>${t('mb.sidebar.folders')}</span>
             <div style="display:flex;align-items:center;gap:4px">
-              <button class="icon-btn" id="btn-add-folder" style="width:24px;height:24px" aria-label="${t('mb.folder.create')}" onclick="event.stopPropagation()">
+              <button class="icon-btn" id="btn-add-folder" aria-label="${t('mb.folder.create')}" onclick="event.stopPropagation()">
                 <i data-lucide="plus" class="w-4 h-4"></i>
               </button>
               <svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
@@ -522,7 +522,7 @@ export async function mountMailbox(host, _opts) {
           <div class="mb-section-title" id="title-userlabels">
             <span>${t('mb.sidebar.labels')}</span>
             <div style="display:flex;align-items:center;gap:4px">
-              <button class="icon-btn" id="btn-add-label" style="width:24px;height:24px" aria-label="${t('mb.label.add')}" onclick="event.stopPropagation()">
+              <button class="icon-btn" id="btn-add-label" aria-label="${t('mb.label.add')}" onclick="event.stopPropagation()">
                 <i data-lucide="plus" class="w-4 h-4"></i>
               </button>
               <svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
@@ -549,7 +549,13 @@ export async function mountMailbox(host, _opts) {
             <input type="text" id="search" data-role="search" placeholder="${t('mb.search.placeholder')}" aria-label="${t('mb.search.label')}" />
           </div>
           <div class="mb-chips" id="filter-chips"></div>
-          <div class="sort-select" id="sort-select-wrap"></div>
+          <div class="mb-search-actions">
+            <button class="mb-select-all-btn" id="sel-all-global" title="${t('mb.sel.all')}" aria-label="${t('mb.sel.all')}">
+              <i data-lucide="check-square" class="w-4 h-4"></i>
+              <span>${t('mb.sel.all_short')}</span>
+            </button>
+            <div class="sort-select" id="sort-select-wrap"></div>
+          </div>
         </div>
         <div class="mb-sel-bar" id="sel-bar" hidden>
           <div class="sel-left">
@@ -557,10 +563,6 @@ export async function mountMailbox(host, _opts) {
               <i data-lucide="x" class="w-4 h-4"></i>
             </button>
             <span class="sel-count"><strong id="sel-count-num">0</strong> ${t('mb.sel.count_label')}</span>
-            <button class="sel-btn sel-btn-all" id="sel-all-btn" data-act="select-all" title="${t('mb.sel.all')}" aria-label="${t('mb.sel.all')}">
-              <i data-lucide="check-square" class="w-4 h-4"></i>
-              <span id="sel-all-label">${t('mb.sel.all_short')}</span>
-            </button>
           </div>
           <div class="sel-actions">
             <button class="sel-btn" id="sel-btn-read" data-act="read" title="${t('mb.action.mark_read')}" aria-label="${t('mb.action.mark_read')}">
@@ -816,29 +818,48 @@ export async function mountMailbox(host, _opts) {
     renderFolders();
   }
 
+  let _labelsFingerprint = '';
+
   function renderLabels() {
     const cont = $('#mb-labels');
+    // Compute category unread counts from loaded emails
+    const catCounts = {};
+    for (const em of state.emails || []) {
+      const c = em.category || 'other';
+      if (!em.is_read) catCounts[c] = (catCounts[c] || 0) + 1;
+    }
+    const totalUnread = state.emails?.filter((e) => !e.is_read).length || 0;
+    const fp = state.category + '|' + totalUnread + '|' + LABELS.map((l) => l.id + ':' + (catCounts[l.id] || 0)).join(',');
+    if (fp === _labelsFingerprint && cont.firstElementChild) {
+      // Only active class sync when counts unchanged
+      cont.querySelectorAll('.mb-label').forEach((b) => {
+        b.classList.toggle('active', b.dataset.cat === state.category);
+      });
+      return;
+    }
+    _labelsFingerprint = fp;
     cont.innerHTML = `
       <button class="mb-label ${state.category === '' ? 'active' : ''}" data-cat="">
         <i data-lucide="inbox" class="cat-icon" style="color:var(--muted-2)"></i>
         <span class="lab">Toutes</span>
+        ${totalUnread > 0 ? `<span class="mb-label-count">${totalUnread}</span>` : ''}
       </button>
-    ` + LABELS.map((l) => `
+    ` + LABELS.map((l) => {
+      const cnt = catCounts[l.id] || 0;
+      return `
       <button class="mb-label ${state.category === l.id ? 'active' : ''}" data-cat="${l.id}">
         <i data-lucide="${l.icon}" class="cat-icon" style="color:${l.color}"></i>
         <span class="lab">${l.label}</span>
+        ${cnt > 0 ? `<span class="mb-label-count">${cnt}</span>` : ''}
       </button>
-    `).join('');
+    `}).join('');
     window.lucide?.createIcons({ el: cont });
     cont.querySelectorAll('.mb-label').forEach((b) => {
       b.addEventListener('click', () => {
         state.category = b.dataset.cat;
         _filterDidChange = true;
         renderLabels();
-        // Category is a client-side narrowing of the already-loaded
-        // dataset — no API round-trip needed, the chip should feel
-        // instant. Same pattern as the quick chips below.
-        applyFilter();
+        applyFilter(true); // skip chips re-render, applyFilter will call it
       });
     });
   }
@@ -1316,7 +1337,9 @@ export async function mountMailbox(host, _opts) {
       // view is the cleaner starting point. Once toggled, the explicit
       // '0' / '1' wins.
       const storedSub = localStorage.getItem(subKey);
-      const collapsed = storedSub === null ? true : storedSub === '1';
+      const collapsed = storedSub === null
+        ? state.accounts.length > 5
+        : storedSub === '1';
       const groupUnread = accs.reduce((sum, a) => sum + (state.accountStats[a.email]?.unread ?? 0), 0);
 
       const items = accs.map((a) => {
@@ -1470,11 +1493,32 @@ export async function mountMailbox(host, _opts) {
     _sortDropCleanup = () => document.removeEventListener('click', onSortOutside);
   }
 
+  function _anyFilterActive() {
+    return state.onlyUnread || state.onlyReply || state.category !== '' || state.query.trim() !== '' || state.accountFilters.size > 0 || state.labelFilter != null;
+  }
+
+  function _clearAllFilters() {
+    state.onlyUnread = false;
+    state.onlyReply = false;
+    state.category = '';
+    state.query = '';
+    state.accountFilters.clear();
+    state.labelFilter = null;
+    const inp = $('#search');
+    if (inp) inp.value = '';
+    _filterDidChange = true;
+    renderChips();
+    renderLabels();
+    applyFilter();
+  }
+
   function renderChips() {
     const el = $('#filter-chips');
     const existing = el.querySelectorAll('[data-quick]');
+    const anyActive = _anyFilterActive();
 
-    // Already rendered — only sync active classes, no DOM rebuild.
+    // Refresh the reset button visibility
+    const resetBtn = el.querySelector('[data-reset]');
     if (existing.length === 3) {
       const noQuick = !state.onlyUnread && !state.onlyReply;
       existing.forEach((b) => {
@@ -1485,6 +1529,7 @@ export async function mountMailbox(host, _opts) {
           k === 'reply'  ? state.onlyReply  : false
         );
       });
+      if (resetBtn) resetBtn.classList.toggle('visible', anyActive);
       return;
     }
 
@@ -1494,6 +1539,9 @@ export async function mountMailbox(host, _opts) {
       <button class="mb-chip ${noQuick ? 'active' : ''}" data-quick="all">${t('mb.chip.all')}</button>
       <button class="mb-chip ${state.onlyUnread ? 'active' : ''}" data-quick="unread">${t('mb.chip.unread')}</button>
       <button class="mb-chip ${state.onlyReply ? 'active' : ''}" data-quick="reply">${t('mb.chip.reply')}</button>
+      <button class="mb-chip mb-chip-reset ${anyActive ? 'visible' : ''}" data-reset title="${t('mb.chip.reset_tip')}">
+        <i data-lucide="x" class="w-3 h-3"></i> ${t('mb.chip.reset')}
+      </button>
     `;
     el.querySelectorAll('[data-quick]').forEach((b) => {
       b.addEventListener('click', () => {
@@ -1503,13 +1551,10 @@ export async function mountMailbox(host, _opts) {
         if (k === 'reply')  { state.onlyReply  = !state.onlyReply;  state.onlyUnread = false; }
         _filterDidChange = true;
         renderChips();
-        // Quick filters narrow the already-loaded dataset — no need
-        // to round-trip the API. applyFilter() honours is_read /
-        // needs_reply now, so the chip toggle is instant instead of
-        // waiting on a ~500 ms DB query.
         applyFilter();
       });
     });
+    el.querySelector('[data-reset]')?.addEventListener('click', _clearAllFilters);
   }
 
   // ── Render: list ──────────────────────────────────────────
@@ -1529,7 +1574,8 @@ export async function mountMailbox(host, _opts) {
     }
   }
 
-  function applyFilter() {
+  function applyFilter(_skipChips) {
+    if (!_skipChips) renderChips();
     const q = state.query.trim().toLowerCase();
     const activeEmails = new Set(state.accounts.map((a) => a.email));
     const cat = state.category || '';
@@ -1552,6 +1598,7 @@ export async function mountMailbox(host, _opts) {
     const items = sortEmails(filtered);
     state.filteredIds = items.map((e) => e.int_id);
     renderList(items);
+    refreshGlobalSelectAll();
     updateBadge();
   }
 
@@ -1598,7 +1645,7 @@ export async function mountMailbox(host, _opts) {
   let _lastLoadAt = 0;
 
   // ── Infinite scroll (virtual list) ───────────────────────
-  const PAGE_SIZE = 40;
+  const PAGE_SIZE = 80;
   let _listAllItems  = [];   // full filtered+sorted dataset
   let _listRendered  = 0;    // # cards currently in the DOM
   let _listObserver  = null; // IntersectionObserver on the sentinel
@@ -1607,37 +1654,20 @@ export async function mountMailbox(host, _opts) {
     if (_listObserver) { _listObserver.disconnect(); _listObserver = null; }
   }
 
-  function _attachCardHandlers(list, fromIdx, toIdx) {
+  function _attachCardAvatarKeydown(list, fromIdx, toIdx) {
     const cards = list.querySelectorAll('.mb-card');
     for (let i = fromIdx; i < toIdx && i < cards.length; i++) {
-      const el = cards[i];
-      const id = parseInt(el.dataset.id, 10);
-      el.addEventListener('click', (e) => {
-        if (e.ctrlKey || e.metaKey) {
-          // Ctrl/Cmd+click — toggle this card without opening it
-          e.preventDefault();
-          toggleSelection(id);
-        } else if (e.shiftKey && _lastCheckedId != null) {
-          // Shift+click — range-select from last anchor to here
-          e.preventDefault();
-          rangeSelect(id);
-        } else {
-          openEmail(id);
-        }
-      });
-      const avatar = el.querySelector('.mb-avatar');
-      if (avatar) {
-        const onAvatar = (e) => {
+      const avatar = cards[i].querySelector('.mb-avatar');
+      if (!avatar) continue;
+      const id = parseInt(cards[i].dataset.id, 10);
+      avatar.addEventListener('keydown', (e) => {
+        if (e.key === ' ' || e.key === 'Enter') {
           e.stopPropagation();
           e.preventDefault();
           if (e.shiftKey && _lastCheckedId != null) rangeSelect(id);
           else toggleSelection(id);
-        };
-        avatar.addEventListener('click', onAvatar);
-        avatar.addEventListener('keydown', (e) => {
-          if (e.key === ' ' || e.key === 'Enter') onAvatar(e);
-        });
-      }
+        }
+      });
     }
   }
 
@@ -1655,8 +1685,9 @@ export async function mountMailbox(host, _opts) {
       cardHtml(em, animate && from === 0 ? from + relIdx : -1, newIds?.has(em.int_id), isPage2Plus)
     ).join('');
     list.insertAdjacentHTML('beforeend', html);
-    _attachCardHandlers(list, from, to);
-    window.lucide?.createIcons();
+    _attachCardAvatarKeydown(list, from, to);
+    // Scope to the list container to avoid full-DOM traversal.
+    window.lucide?.createIcons({ el: list });
     _listRendered = to;
 
     if (_listRendered < _listAllItems.length) {
@@ -1885,7 +1916,7 @@ export async function mountMailbox(host, _opts) {
 
     return `
       <article class="mb-card${animClass} ${isUnread ? 'unread' : ''} ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''}" data-id="${em.int_id}" role="listitem" tabindex="0"${animStyle}>
-        <div class="mb-avatar" style="background:${col}" role="checkbox" aria-checked="${isChecked}" aria-label="${t('mb.list.select_aria')}" tabindex="0">
+        <div class="mb-avatar" style="background:${col}" role="checkbox" aria-checked="${isChecked}" aria-label="${t('mb.list.select_aria')}" title="${t('mb.list.select_title')}" tabindex="0">
           <span class="av-text">${escapeHtml(ini)}</span>
           ${logoImg}
           <span class="av-check"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
@@ -1932,6 +1963,13 @@ export async function mountMailbox(host, _opts) {
   }
 
   // ── Multi-selection (avatar-click) ────────────────────────
+  function _selectCard(intId) {
+    const prev = host.querySelector('.mb-card.selected');
+    if (prev) prev.classList.remove('selected');
+    const next = host.querySelector(`.mb-card[data-id="${intId}"]`);
+    if (next) next.classList.add('selected');
+  }
+
   function selectAll() {
     const allIds = state.filteredIds;
     const allSelected = allIds.length > 0 && allIds.every((id) => state.selectedIds.has(id));
@@ -1949,6 +1987,7 @@ export async function mountMailbox(host, _opts) {
         if (av) av.setAttribute('aria-checked', 'true');
       }
     });
+    refreshGlobalSelectAll();
     renderSelectionBar();
   }
 
@@ -1963,6 +2002,7 @@ export async function mountMailbox(host, _opts) {
       if (av) av.setAttribute('aria-checked', on ? 'true' : 'false');
     }
     _lastCheckedId = id;
+    refreshGlobalSelectAll();
     renderSelectionBar();
   }
 
@@ -1990,6 +2030,34 @@ export async function mountMailbox(host, _opts) {
     renderSelectionBar();
   }
 
+  function refreshGlobalSelectAll() {
+    const btn = $('#sel-all-global');
+    if (!btn) return;
+    const total = state.filteredIds.length;
+    const allSelected = total > 0 && state.selectedIds.size >= total
+      && state.filteredIds.every((id) => state.selectedIds.has(id));
+    const someSelected = state.selectedIds.size > 0 && !allSelected;
+    const label = allSelected ? t('mb.sel.none_short') : someSelected ? t('mb.sel.cancel_short') : t('mb.sel.all_short');
+    const icon = allSelected ? 'square' : someSelected ? 'x' : 'check-square';
+    const title = allSelected ? t('mb.sel.deselect_all') : someSelected ? t('mb.sel.clear') : t('mb.sel.all');
+    const span = btn.querySelector('span');
+    if (span) span.textContent = label;
+    btn.title = title;
+    btn.setAttribute('aria-label', title);
+    const iconEl = btn.querySelector('i, svg');
+    if (iconEl) {
+      const isSvg = iconEl.tagName === 'SVG';
+      if (isSvg) {
+        const parent = iconEl.parentNode;
+        parent.innerHTML = `<i data-lucide="${icon}" class="w-4 h-4"></i>`;
+        window.lucide?.createIcons({ el: parent });
+      } else {
+        iconEl.setAttribute('data-lucide', icon);
+        window.lucide?.createIcons();
+      }
+    }
+  }
+
   function clearSelection() {
     closePopover();
     if (!state.selectedIds.size) return;
@@ -2000,6 +2068,7 @@ export async function mountMailbox(host, _opts) {
       const av = c.querySelector('.mb-avatar');
       if (av) av.setAttribute('aria-checked', 'false');
     });
+    refreshGlobalSelectAll();
     renderSelectionBar();
   }
 
@@ -2019,18 +2088,7 @@ export async function mountMailbox(host, _opts) {
     bar.hidden = false;
     const num = $('#sel-count-num');
     if (num) num.textContent = String(n);
-    // Update the select-all button label: "Tout" / "Aucun"
-    const allLabel = $('#sel-all-label');
-    const allBtn   = $('#sel-all-btn');
-    if (allLabel && allBtn) {
-      const total = state.filteredIds.length;
-      const allSelected = total > 0 && state.selectedIds.size >= total
-        && state.filteredIds.every((id) => state.selectedIds.has(id));
-      allLabel.textContent = allSelected ? t('mb.sel.none_short') : t('mb.sel.all_short');
-      allBtn.title = allSelected ? t('mb.sel.deselect_all') : t('mb.sel.all');
-      allBtn.setAttribute('aria-label', allBtn.title);
-      allBtn.classList.toggle('active', allSelected);
-    }
+    refreshGlobalSelectAll();
     refreshReadButton();
   }
 
@@ -2439,7 +2497,6 @@ export async function mountMailbox(host, _opts) {
     if (!btn) return;
     const act = btn.dataset.act;
     if (act === 'clear')       return clearSelection();
-    if (act === 'select-all')  return selectAll();
     if (act === 'read')        return bulkSetRead(true);
     if (act === 'unread')      return bulkSetRead(false);
     if (act === 'delete')      return bulkSetTarget('deleted');
@@ -2475,13 +2532,21 @@ export async function mountMailbox(host, _opts) {
 
     if (layoutChanging && chips) chips.dataset.hiding = '1';
 
+    const listWrap = host.querySelector('.mb-list-wrap');
+
     if (hasSelection) {
-      // Opening: clear any leftover width lock first.
+      // Opening: lock list-wrap width to its current size so cards don't
+      // reflow while the pane expands. Clear any leftover lock first.
       if (inner) inner.style.width = '';
+      if (layoutChanging && listWrap) {
+        const lw = listWrap.getBoundingClientRect().width;
+        if (lw > 0) listWrap.style.width = lw + 'px';
+      }
       mailbox.classList.remove('no-selection');
-      // Reveal chips in their new position once layout has settled.
+      // Reveal chips and release list-wrap lock once layout has settled.
       requestAnimationFrame(() => requestAnimationFrame(() => {
         if (chips) delete chips.dataset.hiding;
+        if (listWrap) listWrap.style.width = '';
       }));
       return;
     }
@@ -2501,9 +2566,35 @@ export async function mountMailbox(host, _opts) {
     if (layoutChanging) {
       _selModeTimer = setTimeout(() => {
         if (chips) delete chips.dataset.hiding;
+        if (listWrap) listWrap.style.width = '';
         _selModeTimer = null;
       }, PANE_ANIM_MS + 20);
     }
+  }
+
+  function renderSkeleton() {
+    const list = $('#email-list');
+    if (!list) return;
+    const rows = Array.from({ length: 8 }, () => `
+      <div class="mb-card mb-card-skeleton">
+        <div class="mb-avatar sk-avatar"></div>
+        <div class="mb-card-body">
+          <div class="mb-card-row">
+            <div class="sk-line sk-line-short"></div>
+            <div class="sk-line sk-line-xs"></div>
+          </div>
+          <div class="mb-subj">
+            <div class="sk-line sk-line-med"></div>
+          </div>
+          <div class="mb-summary-sk">
+            <div class="sk-line sk-line-long"></div>
+          </div>
+        </div>
+        <div class="mb-card-meta">
+          <div class="sk-line sk-line-tiny"></div>
+        </div>
+      </div>`).join('');
+    list.innerHTML = rows;
   }
 
   function renderEmpty() {
@@ -2826,6 +2917,7 @@ export async function mountMailbox(host, _opts) {
               <button class="icon-btn" id="btn-attach-image" title="${t('mb.composer.attach_image')}" aria-label="${t('mb.composer.attach_image')}"><i data-lucide="image" class="w-4 h-4"></i></button>
             </div>
             <div style="display:flex;gap:8px;align-items:center;margin-left:auto">
+              <span class="mb-compose-savetag" id="mb-compose-savetag-reply" aria-live="polite"></span>
               ${aiOn ? `<button class="mb-ai-draft-btn" id="btn-ai-draft" title="${t('mb.ai.draft_btn_title')}">
                 <i data-lucide="sparkles" class="w-4 h-4"></i>
                 ${t('mb.ai.draft_btn')}
@@ -2852,7 +2944,7 @@ export async function mountMailbox(host, _opts) {
     bindAttachmentHandlers(em);
 
     $('#btn-close-read').addEventListener('click', () => {
-      host.querySelectorAll('.mb-card').forEach((c) => c.classList.remove('selected'));
+      host.querySelector('.mb-card.selected')?.classList.remove('selected');
       renderEmpty();
     });
 
@@ -3125,6 +3217,11 @@ export async function mountMailbox(host, _opts) {
     // create or update. Without that gate, two scheduled saves with
     // `replyDraft.id == null` both fire createDraft in parallel and
     // produce duplicate rows.
+    const flagSavingReply = (txt) => {
+      const tag = $('#mb-compose-savetag-reply');
+      if (tag) tag.textContent = txt;
+    };
+
     async function saveReplyDraft() {
       // Chain onto any in-flight save so they run sequentially.
       const prior = replyDraft.inflight;
@@ -3144,6 +3241,7 @@ export async function mountMailbox(host, _opts) {
         if (snap === replyDraft.lastSnapshot) return;
         const isEmpty = !to && !subject && !body.trim();
         if (isEmpty && replyDraft.id == null) return;
+        flagSavingReply(t('mb.draft.saving'));
         try {
           let row = null;
           if (replyDraft.id == null) {
@@ -3168,10 +3266,13 @@ export async function mountMailbox(host, _opts) {
             id: replyDraft.id, account_email: fromAcc, to, subject, body_text: body,
           };
           refreshDraftBox();
+          flagSavingReply(t('mb.draft.saved'));
+          setTimeout(() => flagSavingReply(''), 2000);
           // If the visible folder is Brouillons, refresh so the row
           // updated_at hops back to the top.
           if (state.folder === 'draft') loadEmails();
         } catch (_) {
+          flagSavingReply(t('mb.draft.save_fail'));
           // Network/validation failure — keep going; next keystroke
           // schedules another attempt.
         }
@@ -3231,6 +3332,11 @@ export async function mountMailbox(host, _opts) {
     function closeComposer({ skipDraftSync = false } = {}) {
       const composer = $('#mb-composer');
       if (!composer) return;
+      // Confirm close if the user typed something
+      const ta = composer.querySelector('textarea');
+      if (ta && ta.value.trim().length > 0) {
+        if (!window.confirm(t('mb.composer.confirm_discard'))) return;
+      }
       const draft = $('#mb-draft');
       $('#btn-reply-toggle')?.classList.remove('active');
       // Flush any pending autosave so the user doesn't lose the last
@@ -3367,6 +3473,34 @@ export async function mountMailbox(host, _opts) {
       e.target.value = '';
       handleFilePick(files, 'inline');
     });
+    // Drag-and-drop files onto the composer (uses delegation on read-pane
+    // so it covers both the inline reply composer and the standalone new composer).
+    const onDropFiles = (e) => {
+      const composer = e.target.closest('#mb-composer');
+      if (!composer) return;
+      e.preventDefault();
+      composer.classList.remove('mb-composer-dragover');
+      const files = [...(e.dataTransfer?.files || [])];
+      if (!files.length) return;
+      // Detect which composer is active: new compose has its own handler
+      const isNew = composer.classList.contains('mb-composer-standalone');
+      handleFilePick(files, 'attachment');
+    };
+    host.addEventListener('dragenter', (e) => {
+      if (!e.target.closest('#mb-composer')) return;
+      e.preventDefault();
+      e.target.closest('#mb-composer')?.classList.add('mb-composer-dragover');
+    });
+    host.addEventListener('dragover', (e) => {
+      if (!e.target.closest('#mb-composer')) return;
+      e.preventDefault();
+    });
+    host.addEventListener('dragleave', (e) => {
+      const composer = e.target.closest('#mb-composer');
+      if (!composer) return;
+      if (!composer.contains(e.relatedTarget)) composer.classList.remove('mb-composer-dragover');
+    });
+    host.addEventListener('drop', onDropFiles);
 
     async function sendCurrentMessage({ trigger, replyToIntId, bodyOverride } = {}) {
       const fromSel = $('#mbc-from');
@@ -3705,22 +3839,22 @@ export async function mountMailbox(host, _opts) {
       if (row && row._draft) {
         state.selectedId = intId;
         setSelectionMode(true);
-        host.querySelectorAll('.mb-card').forEach((c) => {
-          c.classList.toggle('selected', parseInt(c.dataset.id, 10) === intId);
-        });
+        _selectCard(intId);
         renderComposeNew({ draft: row._draft });
         return;
       }
     }
     state.selectedId = intId;
     setSelectionMode(true);
-    // Reflect selection in list
-    host.querySelectorAll('.mb-card').forEach((c) => {
-      c.classList.toggle('selected', parseInt(c.dataset.id, 10) === intId);
-    });
+    // Reflect selection in list (targeted, not full iteration)
+    _selectCard(intId);
     try {
       const em = await api.getEmail(intId);
+      // Prevent re-animation when switching between emails: brief fade
+      const pane = $('#read-pane');
+      if (pane && pane.innerHTML.trim()) pane.classList.add('mb-read-swap');
       renderEmail(em);
+      if (pane) setTimeout(() => pane.classList.remove('mb-read-swap'), 280);
       const idx = state.emails.findIndex((e) => e.int_id === intId);
       // Mark read locally + remotely
       if (!em.is_read) {
@@ -4050,7 +4184,11 @@ export async function mountMailbox(host, _opts) {
     updateBadge();
   }
 
-  async function loadEmails() {
+  async function loadEmails(opts) {
+    const isBackground = opts?.background;
+    // On background refresh skip skeleton (visual flash) and chip re-render.
+    if (!isBackground) renderSkeleton();
+
     // Capture a fresh token. Any in-flight call with an older token is
     // considered stale and its response is dropped — a slow response
     // must never overwrite the state set by a more recent call.
@@ -4102,12 +4240,12 @@ export async function mountMailbox(host, _opts) {
           }
           renderSelectionBar();
         }
-        applyFilter();
+        applyFilter(isBackground);
         return;
       }
 
       const params = {
-        limit: 2000,
+        limit: 500,
         account: singleAcc,
         accounts: multiAccs,
         // category / is_read / needs_reply are applied client-side in
@@ -4128,7 +4266,7 @@ export async function mountMailbox(host, _opts) {
         }
         renderSelectionBar();
       }
-      applyFilter();
+      applyFilter(isBackground);
 
       // Auto-focus from URL ?focus=. Always open — even if the email is
       // outside the visible list (older than the 300 row cap, in another
@@ -4219,9 +4357,11 @@ export async function mountMailbox(host, _opts) {
   }
 
   // ── Search ────────────────────────────────────────────────
+  let _searchTimer;
   $('#search').addEventListener('input', (e) => {
     state.query = e.target.value;
-    applyFilter();
+    if (_searchTimer) clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(() => applyFilter(), 150);
   });
 
   // Honour `#/inbox?q=...` so other pages (notably the cleanup workspace)
@@ -4268,7 +4408,7 @@ export async function mountMailbox(host, _opts) {
     if (!opts.draft) state.selectedId = null;
     setSelectionMode(true);
     if (!opts.draft) {
-      host.querySelectorAll('.mb-card').forEach((c) => c.classList.remove('selected'));
+      host.querySelector('.mb-card.selected')?.classList.remove('selected');
     }
     const defaultAccount = (opts.draft?.account_email)
       || state.accounts[0]?.email
@@ -4475,6 +4615,11 @@ export async function mountMailbox(host, _opts) {
     });
 
     pane.querySelector('#btn-close-compose')?.addEventListener('click', async () => {
+      // Confirm close if the user typed something
+      const ta = pane.querySelector('textarea');
+      if (ta && ta.value.trim().length > 0 && !draftId) {
+        if (!window.confirm(t('mb.composer.confirm_discard'))) return;
+      }
       // Flush any pending edit before closing so the user doesn't lose
       // a draft they typed during the last 1.5s.
       if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
@@ -4545,17 +4690,32 @@ export async function mountMailbox(host, _opts) {
   // ── Keyboard ──────────────────────────────────────────────
   function onKey(e) {
     const k = e.detail.key;
+    const sel = state.selectedId;
     if (k === 'j') moveSelection(1);
     else if (k === 'k') moveSelection(-1);
-    else if (k === 'Enter') {
-      if (state.selectedId == null && state.filteredIds.length) openEmail(state.filteredIds[0]);
-    } else if (k === 'e') {
-      if (state.selectedId != null) {
-        api.patchEmail(state.selectedId, { is_read: true }).catch(() => {});
-        const c = host.querySelector(`.mb-card[data-id="${state.selectedId}"]`);
-        if (c) c.classList.remove('unread');
-      }
+    else if (k === 'Enter' && sel == null && state.filteredIds.length) openEmail(state.filteredIds[0]);
+    else if (k === 'e' && sel != null) {
+      api.patchEmail(sel, { is_read: true }).catch(() => {});
+      const c = host.querySelector(`.mb-card[data-id="${sel}"]`);
+      if (c) c.classList.remove('unread');
     }
+    // Gmail-like shortcuts (only when no input is focused)
+    else if (k === 'r' && sel != null) $('#btn-reply-toggle')?.click();
+    else if (k === '#' && sel != null) {
+      const cur = state.folder || 'inbox';
+      let target = cur === 'deleted' ? 'inbox' : 'deleted';
+      if (state.selectedIds.size > 1) { bulkSetTarget(target); } else { bulkSetTarget(target); }
+    }
+    else if (k === 's' && sel != null) $('#btn-fav-toggle')?.click();
+    else if (k === 'u') { triggerSync().catch(() => {}); }
+    else if (k === 'c') $('#cta-compose')?.click();
+    else if (k === 'm' && sel != null) {
+      const cur = state.folder || 'inbox';
+      if (cur === 'deleted') return;
+      bulkSetTarget('archived');
+    }
+    else if (k === 'v' && sel != null) openMovePopover($(`.mb-card[data-id="${sel}"]`) || undefined);
+    else if (k === '*') selectAll();
   }
   window.addEventListener('app:key', onKey);
 
@@ -4592,7 +4752,7 @@ export async function mountMailbox(host, _opts) {
 
   function _backgroundRefresh() {
     if (_userIsBusy()) return;
-    loadEmails().catch(() => {});
+    loadEmails({ background: true }).catch(() => {});
     loadAccounts().catch(() => {});
   }
 
@@ -4651,6 +4811,62 @@ export async function mountMailbox(host, _opts) {
 
   $('#btn-sync').addEventListener('click', triggerSync);
   $('#sel-bar').addEventListener('click', onSelBarClick);
+  // Swipe-back gesture on the reading pane (mobile)
+  let _swipeStartX = 0, _swipeStartY = 0;
+  const readPane = $('#read-pane');
+  if (readPane) {
+    readPane.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      _swipeStartX = e.touches[0].clientX;
+      _swipeStartY = e.touches[0].clientY;
+    }, { passive: true });
+    readPane.addEventListener('touchmove', (e) => {
+      if (e.touches.length !== 1) return;
+      const dx = e.touches[0].clientX - _swipeStartX;
+      const dy = e.touches[0].clientY - _swipeStartY;
+      // Only horizontal swipes, ignore vertical scrolling
+      if (Math.abs(dx) > Math.abs(dy) * 1.5 && dx > 60) {
+        e.preventDefault();
+        host.querySelector('.mb-card.selected')?.classList.remove('selected');
+        renderEmpty();
+        _swipeStartX = 0;
+      }
+    }, { passive: false });
+  }
+
+  // Event delegation for card clicks (avoids per-card listeners).
+  $('#email-list').addEventListener('click', (e) => {
+    const card = e.target.closest('.mb-card');
+    if (!card) return;
+    const id = parseInt(card.dataset.id, 10);
+    if (!Number.isFinite(id)) return;
+    // Avatar click = toggle selection; body click = open.
+    if (e.target.closest('.mb-avatar')) {
+      e.stopPropagation();
+      e.preventDefault();
+      if (e.shiftKey && _lastCheckedId != null) rangeSelect(id);
+      else toggleSelection(id);
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      toggleSelection(id);
+    } else if (e.shiftKey && _lastCheckedId != null) {
+      e.preventDefault();
+      rangeSelect(id);
+    } else {
+      openEmail(id);
+    }
+  });
+
+  $('#sel-all-global').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const total = state.filteredIds.length;
+    const allSelected = total > 0 && state.filteredIds.every((id) => state.selectedIds.has(id));
+    if (state.selectedIds.size > 0 && !allSelected) { clearSelection(); return; }
+    if (allSelected) { clearSelection(); return; }
+    selectAll();
+  });
 
   // Materialise every static <i data-lucide> placeholder baked into
   // host.innerHTML (Sync button, Compose CTA, section "+" buttons,
