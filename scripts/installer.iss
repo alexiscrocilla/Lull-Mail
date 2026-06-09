@@ -24,7 +24,7 @@
 
 #define MyAppName        "Lull Mail"
 #ifndef MyAppVersion
-  #define MyAppVersion   "0.7.0"
+  #define MyAppVersion   "0.0.0"
 #endif
 #define MyAppPublisher   "Lull Mail"
 #define MyAppExeName     "LullMail.exe"
