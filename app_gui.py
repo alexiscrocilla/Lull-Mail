@@ -223,10 +223,31 @@ def _pick_stable_port() -> int:
     return port
 
 
+# ── App mutex (Windows) ──────────────────────────────────────────────────────
+# The installer (Inno Setup) uses this mutex to detect a running instance and
+# close it before overwriting files.  Must match `AppMutex` in installer.iss.
+_APP_MUTEX_NAME = "Local\LullMail-{5933D412-CD2C-42ED-BCB4-9809CF1683F2}"
+_APP_MUTEX_HANDLE = None  # keep alive for the lifetime of the process
+
+
+def _create_app_mutex():
+    global _APP_MUTEX_HANDLE
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        _APP_MUTEX_HANDLE = ctypes.windll.kernel32.CreateMutexW(
+            None, 0, _APP_MUTEX_NAME
+        )
+    except Exception:
+        pass  # non-fatal — installer fallback kills the process anyway
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
 def main() -> int:
+    _create_app_mutex()
     logger.info("═══════════════════════════════")
     logger.info("       Lull Mail (desktop)      ")
     logger.info("═══════════════════════════════")

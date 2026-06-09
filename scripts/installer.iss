@@ -40,6 +40,7 @@ AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 VersionInfoVersion={#MyAppVersion}
+AppMutex=Local\LullMail-{#MyAppId}
 
 ; Per-user install — no admin prompt, mirrors how Slack / VS Code / Notion
 ; install themselves on Windows.
