@@ -28,9 +28,39 @@ logger = logging.getLogger(__name__)
 GITHUB_REPO = "alexiscrocilla/Lull-Mail"
 _CACHE_TTL_SECONDS = 6 * 3600  # 6 hours
 
+# Named mutex the installer (Inno Setup) checks via AppMutex to detect a
+# running instance.  MUST match the ISS value exactly.
+_APP_MUTEX_NAME = "Global\\LullMail-{5933D412-CD2C-42ED-BCB4-9809CF1683F2}"
+
 _lock = threading.Lock()
 _cached_result: Optional[dict] = None
 _cached_at: float = 0.0
+
+# ── Platform helpers ───────────────────────────────────────────────────────────
+
+_SHUTDOWN_REQUESTED = threading.Event()
+
+
+def _get_platform_extension() -> str:
+    if sys.platform == "win32":
+        return ".exe"
+    elif sys.platform == "darwin":
+        return ".dmg"
+    return ".AppImage"
+
+
+def _release_app_mutex() -> None:
+    """Close the AppMutex handle so the installer can proceed immediately."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        h = ctypes.windll.kernel32.OpenMutexW(0x0001, False, _APP_MUTEX_NAME)
+        if h:
+            ctypes.windll.kernel32.ReleaseMutex(h)
+            ctypes.windll.kernel32.CloseHandle(h)
+    except Exception:
+        pass
 
 
 # ── Version helpers ────────────────────────────────────────────────────────────
@@ -46,7 +76,7 @@ def get_current_version() -> str:
 
 def _parse_semver(v: str) -> tuple[int, ...]:
     """Parse 'X.Y.Z' (or 'vX.Y.Z') into an integer tuple for comparison."""
-    clean = v.lstrip("v").split("-")[0]  # strip leading 'v' and pre-release suffix
+    clean = v.lstrip("v").split("-")[0]
     parts = clean.split(".")
     result = []
     for p in parts[:3]:
@@ -88,10 +118,11 @@ def _fetch_latest_release() -> Optional[dict]:
 
 
 def _extract_installer_url(release: dict) -> Optional[str]:
-    """Return the browser_download_url of the first .exe asset, or None."""
+    """Return the download URL of the first asset matching this platform."""
+    ext = _get_platform_extension()
     for asset in release.get("assets", []):
         name: str = asset.get("name", "")
-        if name.lower().endswith(".exe"):
+        if name.lower().endswith(ext):
             return asset.get("browser_download_url")
     return None
 
@@ -132,6 +163,8 @@ def check_for_update() -> dict:
         latest_tag: str = release.get("tag_name", "")
         latest_version = latest_tag.lstrip("v")
         download_url = _extract_installer_url(release)
+        # Only show as available when there is a matching installer for THIS
+        # platform — avoids downloading a .exe on macOS or a .dmg on Windows.
         available = bool(download_url) and _is_newer(latest_version, current)
 
         result = {
@@ -154,30 +187,14 @@ def invalidate_cache() -> None:
         _cached_at = 0.0
 
 
-# ── Download & install ─────────────────────────────────────────────────────────
+# ── Download helpers ───────────────────────────────────────────────────────────
 
-def download_and_install() -> None:
-    """Download the latest installer to %TEMP% and launch it silently.
-
-    Intended to be called as a FastAPI BackgroundTask so the HTTP response
-    is returned to the frontend before the process exits.
-
-    Flow:
-        1. Fetch current update info (uses cache if fresh).
-        2. Download the .exe to a temp directory.
-        3. Launch the installer with /SILENT (Inno Setup silent mode).
-        4. Exit the current process — Inno Setup will close and replace it.
-    """
-    info = check_for_update()
-    url = info.get("download_url")
-    if not url:
-        logger.error("download_and_install: no download URL available")
-        return
-
-    version = info.get("latest_version", "update")
+def _download_installer(url: str, version: str) -> Optional[str]:
+    """Download the installer asset to a temp directory; return its path."""
+    ext = _get_platform_extension()
     tmp_dir = os.path.join(tempfile.gettempdir(), "LullMail-Update")
     os.makedirs(tmp_dir, exist_ok=True)
-    dest = os.path.join(tmp_dir, f"LullMail-Setup-{version}.exe")
+    dest = os.path.join(tmp_dir, f"LullMail-Setup-{version}{ext}")
 
     logger.info("Téléchargement mise à jour %s → %s", version, dest)
     try:
@@ -191,21 +208,91 @@ def download_and_install() -> None:
                 if not chunk:
                     break
                 f.write(chunk)
+        return dest
     except Exception as exc:
         logger.error("Échec téléchargement mise à jour: %s", exc)
-        return
+        return None
 
+
+# ── Platform installers ────────────────────────────────────────────────────────
+
+def _install_windows(dest: str) -> None:
+    """Launch Inno Setup installer silently, release mutex, close window, exit."""
     logger.info("Installation silencieuse: %s /SILENT", dest)
     try:
-        # /SILENT = progress window, no questions.
-        # Inno Setup's CloseApplications=yes will handle closing the current
-        # process; we also exit proactively so file handles are released.
         subprocess.Popen([dest, "/SILENT"], close_fds=True)
     except Exception as exc:
         logger.error("Échec lancement installeur: %s", exc)
         return
 
-    # Give the frontend a moment to receive the HTTP 200 before we exit.
-    time.sleep(1)
-    logger.info("Fermeture de l'app pour laisser l'installeur prendre la main.")
+    # Give the installer time to initialise and the frontend time to
+    # receive the HTTP 200 response before we tear down the process.
+    time.sleep(4)
+    _release_app_mutex()
+    logger.info("Fermeture de l'app — l'installeur prend la main.")
+
+    # Close the webview window from the background thread so the
+    # main loop's `finally:` block runs cleanup (server stop, etc.)
+    try:
+        import webview
+        for w in list(webview.windows):
+            try:
+                w.destroy()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     os._exit(0)
+
+
+def _install_macos(dest: str) -> None:
+    """Open the .dmg (user drags the .app manually) then exit."""
+    logger.info("Ouverture du .dmg : %s", dest)
+    try:
+        subprocess.Popen(["open", dest], close_fds=True)
+    except Exception as exc:
+        logger.error("Échec ouverture .dmg: %s", exc)
+        return
+
+    time.sleep(3)
+    os._exit(0)
+
+
+def _install_linux(dest: str) -> None:
+    """Make .AppImage executable and launch it."""
+    logger.info("Lancement AppImage : %s", dest)
+    try:
+        os.chmod(dest, 0o755)
+        subprocess.Popen([dest], close_fds=True)
+    except Exception as exc:
+        logger.error("Échec lancement AppImage: %s", exc)
+        return
+
+    time.sleep(3)
+    os._exit(0)
+
+
+def download_and_install() -> None:
+    """Download the platform installer, launch it, then exit the process.
+
+    Called as a FastAPI BackgroundTask so the HTTP response is returned
+    to the frontend before the process shuts down.
+    """
+    info = check_for_update()
+    url = info.get("download_url")
+    if not url:
+        logger.error("download_and_install: no download URL available")
+        return
+
+    version = info.get("latest_version", "update")
+    dest = _download_installer(url, version)
+    if not dest:
+        return
+
+    if sys.platform == "win32":
+        _install_windows(dest)
+    elif sys.platform == "darwin":
+        _install_macos(dest)
+    else:
+        _install_linux(dest)
