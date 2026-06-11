@@ -244,21 +244,28 @@ export async function mountSettings(host, opts = {}) {
             </span>
           </h3>
           <div class="set-storage-body">
-            <div class="set-storage-field-wrap">
-              <div class="set-field" style="flex:1;min-width:0">
-                <span class="set-label">${t('set.storage.dir_label')}</span>
-                <div id="set-data-dir" class="set-path mono">—</div>
-                <span class="set-hint">${t('set.storage.dir_hint')}</span>
-              </div>
-              <div class="set-actions-rail">
-                <button class="mb-cta set-btn-ghost" id="btn-storage-actions" type="button">
-                  <i data-lucide="menu" class="w-4 h-4"></i>
-                  <span>${t('set.storage.actions_btn')}</span>
-                </button>
+            <div id="view-storage-main" class="set-storage-view">
+              <div class="set-storage-field-wrap">
+                <div class="set-field" style="flex:1;min-width:0">
+                  <span class="set-label">${t('set.storage.dir_label')}</span>
+                  <div id="set-data-dir" class="set-path mono">—</div>
+                  <span class="set-hint">${t('set.storage.dir_hint')}</span>
+                </div>
+                <div class="set-actions-rail">
+                  <button class="mb-cta set-btn-ghost" id="btn-storage-actions" type="button">
+                    <i data-lucide="menu" class="w-4 h-4"></i>
+                    <span>${t('set.storage.actions_btn')}</span>
+                  </button>
+                </div>
               </div>
             </div>
-            <div id="storage-overlay" class="set-storage-overlay hidden">
-              <div class="set-storage-overlay__arrow"></div>
+            <div id="view-storage-actions" class="set-storage-view hidden">
+              <div class="set-storage-view__head">
+                <span class="set-storage-view__title">${t('set.storage.actions_btn')}</span>
+                <button class="set-icon-btn" id="btn-storage-actions-back" type="button" aria-label="${t('set.close')}">
+                  <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+              </div>
               <button class="mb-cta set-btn-ghost" id="btn-open-data" type="button">
                 <i data-lucide="folder-open" class="w-3.5 h-3.5"></i>
                 <span>${t('set.storage.open_btn')}</span>
@@ -276,7 +283,7 @@ export async function mountSettings(host, opts = {}) {
                 <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
                 <span>${t('set.storage.wipe_ai_btn')}</span>
               </button>
-              <div class="set-storage-overlay__sep"></div>
+              <hr class="set-storage-view__sep">
               <button class="mb-cta set-btn-danger" id="btn-wipe-data" type="button">
                 <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
                 <span>${t('set.storage.wipe_btn')}</span>
@@ -1678,23 +1685,15 @@ export async function mountSettings(host, opts = {}) {
     input.click();
   });
 
-  // ── Storage actions overlay ──────────────────────────────────────────
-  const actionsBtn = host.querySelector('#btn-storage-actions');
-  const overlay = host.querySelector('#storage-overlay');
-  function toggleOverlay(show) {
-    if (show === undefined) { overlay?.classList.toggle('hidden'); }
-    else { overlay?.classList.toggle('hidden', !show); }
+  // ── Storage actions view swap ─────────────────────────────────────
+  const viewMain = host.querySelector('#view-storage-main');
+  const viewActions = host.querySelector('#view-storage-actions');
+  function showActionsView(show) {
+    viewMain?.classList.toggle('hidden', show);
+    viewActions?.classList.toggle('hidden', !show);
   }
-  actionsBtn?.addEventListener('click', e => {
-    e.stopPropagation();
-    toggleOverlay();
-  });
-  overlay?.addEventListener('click', () => toggleOverlay(false));
-  document.addEventListener('click', e => {
-    if (overlay && !overlay.classList.contains('hidden') && !overlay.contains(e.target) && e.target !== actionsBtn && !actionsBtn?.contains(e.target)) {
-      toggleOverlay(false);
-    }
-  });
+  host.querySelector('#btn-storage-actions')?.addEventListener('click', () => showActionsView(true));
+  host.querySelector('#btn-storage-actions-back')?.addEventListener('click', () => showActionsView(false));
   // Provider tiles wire their own click handlers in render()
   els.mClose.addEventListener('click', closeModal);
   els.mCancel.addEventListener('click', closeModal);
@@ -1884,10 +1883,10 @@ function injectStyles() {
     .set-storage-body {
       display: flex;
       flex-direction: column;
+      gap: 0;
       width: 100%;
       flex: 1;
       min-width: 0;
-      position: relative;
     }
     .set-storage-body .set-path { font-size: 12px; }
     .set-storage-body .set-hint { font-size: 10.5px; }
@@ -1903,45 +1902,36 @@ function injectStyles() {
     .set-actions-rail .mb-cta {
       white-space: nowrap;
     }
-    /* ── Overlay ── */
-    .set-storage-overlay {
-      position: absolute;
-      top: 100%;
-      right: 2px;
-      margin-top: 6px;
-      background: var(--surface-2);
-      border: 1px solid var(--border-2);
-      border-radius: 10px;
-      padding: 6px;
+    /* ── View swap ── */
+    .set-storage-view {
       display: flex;
       flex-direction: column;
-      gap: 2px;
-      min-width: 200px;
-      z-index: 100;
-      box-shadow: 0 8px 30px rgba(0,0,0,.35);
+      gap: 4px;
+      flex: 1;
     }
-    .set-storage-overlay .mb-cta {
+    .set-storage-view.hidden { display: none; }
+    .set-storage-view__head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 4px;
+    }
+    .set-storage-view__title {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .set-storage-view .mb-cta {
       justify-content: flex-start;
-      padding: 8px 12px;
+      padding: 10px 12px;
       font-size: 13px;
-      border-radius: 7px;
+      border-radius: 8px;
       width: 100%;
     }
-    .set-storage-overlay__arrow {
-      position: absolute;
-      top: -6px;
-      right: 16px;
-      width: 10px;
-      height: 10px;
-      background: var(--surface-2);
-      border-left: 1px solid var(--border-2);
-      border-top: 1px solid var(--border-2);
-      transform: rotate(45deg);
-    }
-    .set-storage-overlay__sep {
+    .set-storage-view__sep {
+      border: none;
       height: 1px;
       background: var(--border-2);
-      margin: 4px 6px;
+      margin: 4px 0;
     }
 
     .set-notif-seg .set-prov-opt {
