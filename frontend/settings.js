@@ -244,37 +244,33 @@ export async function mountSettings(host, opts = {}) {
             </span>
           </h3>
           <div class="set-storage-body">
-            <div class="set-field set-field--grow">
+            <div class="set-field">
               <span class="set-label">${t('set.storage.dir_label')}</span>
               <div id="set-data-dir" class="set-path mono">—</div>
               <span class="set-hint">${t('set.storage.dir_hint')}</span>
             </div>
-            <div class="set-actions set-actions--rail">
-              <div class="set-storage-act-group">
-                <button class="mb-cta set-btn-ghost" id="btn-export-config" type="button">
-                  <i data-lucide="download" class="w-4 h-4"></i>
-                  <span>${t('set.storage.export_btn')}</span>
-                </button>
-                <button class="mb-cta set-btn-ghost" id="btn-import-config" type="button">
-                  <i data-lucide="upload" class="w-4 h-4"></i>
-                  <span>${t('set.storage.import_btn')}</span>
-                </button>
-                <button class="mb-cta set-btn-ghost" id="btn-open-data" type="button">
-                  <i data-lucide="folder-open" class="w-4 h-4"></i>
-                  <span>${t('set.storage.open_btn')}</span>
-                </button>
-              </div>
-              <div class="set-storage-act-group set-storage-act-group--danger">
-                <button class="mb-cta set-btn-ghost" id="btn-wipe-ai" type="button"
-                        title="${t('set.storage.wipe_ai_hint')}">
-                  <i data-lucide="sparkles" class="w-4 h-4"></i>
-                  <span>${t('set.storage.wipe_ai_btn')}</span>
-                </button>
-                <button class="mb-cta set-btn-danger" id="btn-wipe-data" type="button">
-                  <i data-lucide="trash-2" class="w-4 h-4"></i>
-                  <span>${t('set.storage.wipe_btn')}</span>
-                </button>
-              </div>
+            <div class="set-storage-actions">
+              <button class="mb-cta set-btn-ghost" id="btn-export-config" type="button">
+                <i data-lucide="download" class="w-4 h-4"></i>
+                <span>${t('set.storage.export_btn')}</span>
+              </button>
+              <button class="mb-cta set-btn-ghost" id="btn-import-config" type="button">
+                <i data-lucide="upload" class="w-4 h-4"></i>
+                <span>${t('set.storage.import_btn')}</span>
+              </button>
+              <button class="mb-cta set-btn-ghost" id="btn-open-data" type="button">
+                <i data-lucide="folder-open" class="w-4 h-4"></i>
+                <span>${t('set.storage.open_btn')}</span>
+              </button>
+              <button class="mb-cta set-btn-ghost" id="btn-wipe-ai" type="button"
+                      title="${t('set.storage.wipe_ai_hint')}">
+                <i data-lucide="sparkles" class="w-4 h-4"></i>
+                <span>${t('set.storage.wipe_ai_btn')}</span>
+              </button>
+              <button class="mb-cta set-btn-danger" id="btn-wipe-data" type="button">
+                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                <span>${t('set.storage.wipe_btn')}</span>
+              </button>
             </div>
           </div>
         </section>
@@ -1847,10 +1843,6 @@ function injectStyles() {
       flex-shrink: 0;
       align-self: center;
     }
-    .set-actions--stack {
-      flex-direction: column;
-      align-items: stretch;
-    }
     .set-card--fill-body {
       min-height: 0;
     }
@@ -1863,26 +1855,20 @@ function injectStyles() {
     }
     .set-storage-body {
       display: flex;
-      align-items: center;
-      gap: 16px;
+      flex-direction: column;
+      gap: 12px;
       width: 100%;
       flex: 1;
       min-width: 0;
+      align-items: stretch;
     }
-    .set-storage-body .set-field--grow { flex: 1; min-width: 0; }
-    .set-storage-body .set-actions--rail {
-      flex-direction: column;
-      gap: 12px;
-      align-self: center;
-    }
-    .set-storage-act-group {
+    .set-storage-actions {
       display: flex;
-      flex-direction: column;
+      flex-wrap: wrap;
       gap: 4px;
     }
-    .set-storage-act-group--danger {
-      padding-top: 8px;
-      border-top: 1px solid var(--border-2);
+    .set-storage-actions .mb-cta {
+      flex: 1 0 auto;
     }
 
     .set-notif-seg .set-prov-opt {
