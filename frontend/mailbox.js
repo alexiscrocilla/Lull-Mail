@@ -2738,6 +2738,22 @@ export async function mountMailbox(host, _opts) {
     }
   }
 
+  function buildForwardBody(em) {
+    const sName = senderName(em.sender);
+    const sEmail = senderEmail(em.sender);
+    const date = em.date_received ? longDate(em.date_received) : '';
+    const body = (em.body_text || '').trim() || '';
+    return (
+      '---------- ' + t('mb.forward.header') + ' ----------\n' +
+      t('mb.composer.from') + ': ' + sName + ' <' + sEmail + '>\n' +
+      t('mb.composer.to') + ': ' + (em.account_email || '') + '\n' +
+      t('mb.composer.subject') + ': ' + (em.subject || t('mb.no_subject')) + '\n' +
+      (date ? t('mb.forward.date') + ': ' + date + '\n' : '') +
+      '\n' +
+      body
+    );
+  }
+
   function renderEmail(em) {
     const cat = em.category || 'pending';
     const sName = senderName(em.sender);
@@ -2875,6 +2891,9 @@ export async function mountMailbox(host, _opts) {
               </button>` : ''}
               <button class="read-action-btn" id="btn-reply-toggle" title="${t('mb.action.reply')}">
                 <i data-lucide="reply" class="w-4 h-4"></i>
+              </button>
+              <button class="read-action-btn" id="btn-forward" title="${t('mb.action.forward')}">
+                <i data-lucide="forward" class="w-4 h-4"></i>
               </button>
             </div>
           </div>
@@ -3592,6 +3611,20 @@ export async function mountMailbox(host, _opts) {
         // via dataset flag so re-opening doesn't stack listeners.
         bindReplyAutosave();
       }
+    });
+
+    $('#btn-forward').addEventListener('click', () => {
+      const subj = em.subject
+        ? (em.subject.toLowerCase().startsWith('fw:') ? em.subject : 'Fw: ' + em.subject)
+        : '';
+      renderComposeNew({
+        draft: {
+          account_email: em.account_email || '',
+          to: '',
+          subject: subj,
+          body_text: buildForwardBody(em),
+        },
+      });
     });
 
     $('#btn-composer-close')?.addEventListener('click', () => closeComposer());
@@ -4701,6 +4734,7 @@ export async function mountMailbox(host, _opts) {
     }
     // Gmail-like shortcuts (only when no input is focused)
     else if (k === 'r' && sel != null) $('#btn-reply-toggle')?.click();
+    else if (k === 'f' && sel != null) $('#btn-forward')?.click();
     else if (k === '#' && sel != null) {
       const cur = state.folder || 'inbox';
       let target = cur === 'deleted' ? 'inbox' : 'deleted';
