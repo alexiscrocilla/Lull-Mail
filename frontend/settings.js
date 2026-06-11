@@ -249,28 +249,32 @@ export async function mountSettings(host, opts = {}) {
               <div id="set-data-dir" class="set-path mono">—</div>
               <span class="set-hint">${t('set.storage.dir_hint')}</span>
             </div>
-            <div class="set-actions set-actions--rail set-actions--stack">
-              <button class="mb-cta set-btn-ghost" id="btn-export-config" type="button">
-                <i data-lucide="download" class="w-4 h-4"></i>
-                <span>${t('set.storage.export_btn')}</span>
-              </button>
-              <button class="mb-cta set-btn-ghost" id="btn-import-config" type="button">
-                <i data-lucide="upload" class="w-4 h-4"></i>
-                <span>${t('set.storage.import_btn')}</span>
-              </button>
-              <button class="mb-cta set-btn-ghost" id="btn-open-data" type="button">
-                <i data-lucide="folder-open" class="w-4 h-4"></i>
-                <span>${t('set.storage.open_btn')}</span>
-              </button>
-              <button class="mb-cta set-btn-ghost" id="btn-wipe-ai" type="button"
-                      title="${t('set.storage.wipe_ai_hint')}">
-                <i data-lucide="sparkles" class="w-4 h-4"></i>
-                <span>${t('set.storage.wipe_ai_btn')}</span>
-              </button>
-              <button class="mb-cta set-btn-danger" id="btn-wipe-data" type="button">
-                <i data-lucide="trash-2" class="w-4 h-4"></i>
-                <span>${t('set.storage.wipe_btn')}</span>
-              </button>
+            <div class="set-actions set-actions--rail">
+              <div class="set-storage-act-group">
+                <button class="mb-cta set-btn-ghost" id="btn-export-config" type="button">
+                  <i data-lucide="download" class="w-4 h-4"></i>
+                  <span>${t('set.storage.export_btn')}</span>
+                </button>
+                <button class="mb-cta set-btn-ghost" id="btn-import-config" type="button">
+                  <i data-lucide="upload" class="w-4 h-4"></i>
+                  <span>${t('set.storage.import_btn')}</span>
+                </button>
+                <button class="mb-cta set-btn-ghost" id="btn-open-data" type="button">
+                  <i data-lucide="folder-open" class="w-4 h-4"></i>
+                  <span>${t('set.storage.open_btn')}</span>
+                </button>
+              </div>
+              <div class="set-storage-act-group set-storage-act-group--danger">
+                <button class="mb-cta set-btn-ghost" id="btn-wipe-ai" type="button"
+                        title="${t('set.storage.wipe_ai_hint')}">
+                  <i data-lucide="sparkles" class="w-4 h-4"></i>
+                  <span>${t('set.storage.wipe_ai_btn')}</span>
+                </button>
+                <button class="mb-cta set-btn-danger" id="btn-wipe-data" type="button">
+                  <i data-lucide="trash-2" class="w-4 h-4"></i>
+                  <span>${t('set.storage.wipe_btn')}</span>
+                </button>
+              </div>
             </div>
           </div>
         </section>
@@ -1866,8 +1870,19 @@ function injectStyles() {
       min-width: 0;
     }
     .set-storage-body .set-field--grow { flex: 1; min-width: 0; }
-    .set-storage-body .set-actions--rail.set-actions--stack {
+    .set-storage-body .set-actions--rail {
+      flex-direction: column;
+      gap: 12px;
       align-self: center;
+    }
+    .set-storage-act-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .set-storage-act-group--danger {
+      padding-top: 8px;
+      border-top: 1px solid var(--border-2);
     }
 
     .set-notif-seg .set-prov-opt {
