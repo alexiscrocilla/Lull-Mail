@@ -225,8 +225,9 @@ def _pick_stable_port() -> int:
 
 # ── App mutex (Windows) ──────────────────────────────────────────────────────
 # The installer (Inno Setup) uses this mutex to detect a running instance and
-# close it before overwriting files.  Must match `AppMutex` in installer.iss.
-_APP_MUTEX_NAME = "Local\LullMail-{5933D412-CD2C-42ED-BCB4-9809CF1683F2}"
+# close it before overwriting files.  Must match `AppMutex` in installer.iss
+# AND `_APP_MUTEX_NAME` in src/updater.py.
+_APP_MUTEX_NAME = "Global\\LullMail-{5933D412-CD2C-42ED-BCB4-9809CF1683F2}"
 _APP_MUTEX_HANDLE = None  # keep alive for the lifetime of the process
 
 
