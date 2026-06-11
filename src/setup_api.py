@@ -449,6 +449,82 @@ def list_providers() -> List[Dict[str, Any]]:
     return PROVIDERS
 
 
+# ── Export / Import ──────────────────────────────────────────────────────────
+
+
+@router.post("/export")
+def export_config() -> Dict[str, Any]:
+    """Return the full config (masked) as a JSON blob for download.
+
+    Passwords keep their ``keyring:...`` sentinel so the same-machine
+    import can resolve them.  The OpenAI API key is masked.
+    """
+    data = _load_or_default()
+    data.pop("server", None)
+
+    # Mask OpenAI key
+    if data.get("openai") and data["openai"].get("api_key"):
+        data["openai"] = {**data["openai"], "api_key": MASK}
+
+    # Mask account passwords (keys stay as keyring: refs)
+    for acc in (data.get("accounts") or []):
+        if acc.get("password"):
+            acc["password"] = MASK if acc["password"].startswith("keyring:") else ""
+
+    return data
+
+
+class ImportPayload(BaseModel):
+    config: Dict[str, Any]
+
+
+@router.post("/import")
+def import_config(payload: ImportPayload,
+                  locale: str = Depends(get_locale)) -> Dict[str, Any]:
+    """Merge the uploaded config into the current one and restart services.
+
+    Only the ``accounts``, ``ntfy``, ``polling``, ``openai`` and ``llm``
+    sections are restored.  The ``server`` and ``attachments`` sections
+    are kept as-is.
+    """
+    imported = payload.config
+    current = _load_or_default()
+
+    # Snapshot the raw keyring sentinels before the merge so we can
+    # re-apply them when the imported value is the MASK sentinel.
+    existing_openai_key = (current.get("openai") or {}).get("api_key", "")
+    existing_by_email = {
+        acc.get("email", ""): acc.get("password", "")
+        for acc in (current.get("accounts") or [])
+    }
+
+    # Only restore portable sections
+    for key in ("accounts", "ntfy", "polling", "openai", "llm"):
+        if key in imported:
+            current[key] = imported[key]
+
+    # Restore masked account passwords
+    for acc in (current.get("accounts") or []):
+        email = acc.get("email", "")
+        if acc.get("password") == MASK and email in existing_by_email:
+            acc["password"] = existing_by_email[email]
+
+    # Restore masked OpenAI key
+    if current.get("openai") and current["openai"].get("api_key") == MASK:
+        current["openai"]["api_key"] = existing_openai_key
+
+    _persist(current)
+
+    # Restart email services so new accounts are picked up immediately
+    try:
+        lifecycle.stop_email_services()
+        lifecycle.start_email_services()
+    except Exception as exc:
+        logger.warning("Restart des services après import: %s", exc)
+
+    return {"ok": True, "message": tr("setup.import.done", locale)}
+
+
 # ── Section writes ───────────────────────────────────────────────────────────
 
 

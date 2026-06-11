@@ -89,6 +89,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "setup.services.start_failed_logs": "Démarrage des services email échoué — voir les logs.",
         "setup.confirm_missing":        "Confirmation manquante.",
         "setup.open_dir_failed":        "Impossible d'ouvrir le dossier : {msg}",
+        "setup.import.done":            "Configuration importée — services redémarrés.",
 
         # ── Rate limit ───────────────────────────────────────────────────────
         "rate_limited":                 "Trop de requêtes en peu de temps. Patientez quelques secondes avant de réessayer.",
@@ -233,6 +234,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "setup.services.start_failed_logs": "Could not start email services. Check the logs.",
         "setup.confirm_missing":        "Confirmation missing.",
         "setup.open_dir_failed":        "Could not open the folder: {msg}",
+        "setup.import.done":            "Configuration imported — services restarted.",
 
         # ── Rate limit ───────────────────────────────────────────────────────
         "rate_limited":                 "Too many requests. Wait a few seconds before retrying.",

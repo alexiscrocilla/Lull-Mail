@@ -250,6 +250,14 @@ export async function mountSettings(host, opts = {}) {
               <span class="set-hint">${t('set.storage.dir_hint')}</span>
             </div>
             <div class="set-actions set-actions--rail set-actions--stack">
+              <button class="mb-cta set-btn-ghost" id="btn-export-config" type="button">
+                <i data-lucide="download" class="w-4 h-4"></i>
+                <span>${t('set.storage.export_btn')}</span>
+              </button>
+              <button class="mb-cta set-btn-ghost" id="btn-import-config" type="button">
+                <i data-lucide="upload" class="w-4 h-4"></i>
+                <span>${t('set.storage.import_btn')}</span>
+              </button>
               <button class="mb-cta set-btn-ghost" id="btn-open-data" type="button">
                 <i data-lucide="folder-open" class="w-4 h-4"></i>
                 <span>${t('set.storage.open_btn')}</span>
@@ -1611,6 +1619,53 @@ export async function mountSettings(host, opts = {}) {
       setWipeStatus(`<span style="color:var(--danger)">✗ ${escapeHtml(e.message)}</span>`);
       setBusy(wipeBtn, false);
     }
+  });
+
+  // Export config — fetch the full config as JSON and download it.
+  host.querySelector('#btn-export-config')?.addEventListener('click', async () => {
+    const btn = host.querySelector('#btn-export-config');
+    setBusy(btn, true, t('set.busy.loading'));
+    try {
+      const config = await api('POST', '/api/setup/export');
+      const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'lull-mail-config.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      window.toast?.(t('set.toast.exported'), 'ok');
+    } catch (e) {
+      window.toast?.(t('set.toast.load_failed', { msg: e.message }), 'err');
+    } finally {
+      setBusy(btn, false);
+    }
+  });
+
+  // Import config — pick a JSON file, then POST it to the backend.
+  host.querySelector('#btn-import-config')?.addEventListener('click', () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.addEventListener('change', async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const btn = host.querySelector('#btn-import-config');
+      setBusy(btn, true, t('set.busy.loading'));
+      try {
+        const text = await file.text();
+        const config = JSON.parse(text);
+        const r = await api('POST', '/api/setup/import', { config });
+        window.toast?.(r.message || t('set.toast.imported'), 'ok');
+      } catch (e) {
+        window.toast?.(t('set.toast.load_failed', { msg: e.message }), 'err');
+      } finally {
+        setBusy(btn, false);
+      }
+    });
+    input.click();
   });
   // Provider tiles wire their own click handlers in render()
   els.mClose.addEventListener('click', closeModal);
