@@ -17,9 +17,9 @@ import logging
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import time
+import tempfile
 import urllib.request
 from typing import Optional
 
@@ -27,10 +27,6 @@ logger = logging.getLogger(__name__)
 
 GITHUB_REPO = "alexiscrocilla/Lull-Mail"
 _CACHE_TTL_SECONDS = 6 * 3600  # 6 hours
-
-# Named mutex the installer (Inno Setup) checks via AppMutex to detect a
-# running instance.  MUST match the ISS value exactly.
-_APP_MUTEX_NAME = "Global\\LullMail-{5933D412-CD2C-42ED-BCB4-9809CF1683F2}"
 
 _lock = threading.Lock()
 _cached_result: Optional[dict] = None
@@ -47,20 +43,6 @@ def _get_platform_extension() -> str:
     elif sys.platform == "darwin":
         return ".dmg"
     return ".AppImage"
-
-
-def _release_app_mutex() -> None:
-    """Close the AppMutex handle so the installer can proceed immediately."""
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-        h = ctypes.windll.kernel32.OpenMutexW(0x0001, False, _APP_MUTEX_NAME)
-        if h:
-            ctypes.windll.kernel32.ReleaseMutex(h)
-            ctypes.windll.kernel32.CloseHandle(h)
-    except Exception:
-        pass
 
 
 # ── Version helpers ────────────────────────────────────────────────────────────
@@ -217,22 +199,28 @@ def _download_installer(url: str, version: str) -> Optional[str]:
 # ── Platform installers ────────────────────────────────────────────────────────
 
 def _install_windows(dest: str) -> None:
-    """Launch Inno Setup installer silently, release mutex, close window, exit."""
-    logger.info("Installation silencieuse: %s /SILENT", dest)
+    """Release mutex, close webview, launch installer silently, then exit.
+
+    The order matters:
+      1. Release the AppMutex so Inno Setup does NOT see a running instance.
+      2. Destroy the webview window so the main-loop ``finally`` block runs
+         server / lifecycle cleanup.
+      3. Brief pause so the API response can reach the frontend.
+      4. Launch the installer.  By this point the mutex is gone and the
+         process is winding down, so the installer proceeds immediately.
+      5. Exit (orphaning the installer child process — it runs to completion
+         independently).
+    """
+    logger.info("Nettoyage avant installation...")
+
+    # 1. Release mutex so the installer doesn't detect a running instance.
     try:
-        subprocess.Popen([dest, "/SILENT"], close_fds=True)
+        from app_gui import release_app_mutex
+        release_app_mutex()
     except Exception as exc:
-        logger.error("Échec lancement installeur: %s", exc)
-        return
+        logger.warning("release_app_mutex: %s", exc)
 
-    # Give the installer time to initialise and the frontend time to
-    # receive the HTTP 200 response before we tear down the process.
-    time.sleep(4)
-    _release_app_mutex()
-    logger.info("Fermeture de l'app — l'installeur prend la main.")
-
-    # Close the webview window from the background thread so the
-    # main loop's `finally:` block runs cleanup (server stop, etc.)
+    # 2. Close the webview window so the main loop unwinds.
     try:
         import webview
         for w in list(webview.windows):
@@ -243,6 +231,18 @@ def _install_windows(dest: str) -> None:
     except Exception:
         pass
 
+    # 3. Give the API response a head start before the process dies.
+    time.sleep(2)
+
+    # 4. Launch the Inno Setup installer silently.
+    logger.info("Lancement installeur: %s /SILENT", dest)
+    try:
+        subprocess.Popen([dest, "/SILENT"], close_fds=True)
+    except Exception as exc:
+        logger.error("Échec lancement installeur: %s", exc)
+        return
+
+    # 5. Exit — the installer continues independently.
     os._exit(0)
 
 

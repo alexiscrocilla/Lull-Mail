@@ -244,6 +244,25 @@ def _create_app_mutex():
         pass  # non-fatal — installer fallback kills the process anyway
 
 
+def release_app_mutex():
+    """Close the AppMutex handle so the installer can overwrite files.
+
+    Called by the auto-update machinery (``updater._install_windows``)
+    before launching the installer so Inno Setup does not see a running
+    instance via ``AppMutex``.
+    """
+    global _APP_MUTEX_HANDLE
+    if sys.platform != "win32":
+        return
+    if _APP_MUTEX_HANDLE is not None:
+        try:
+            import ctypes
+            ctypes.windll.kernel32.CloseHandle(_APP_MUTEX_HANDLE)
+        except Exception:
+            pass
+        _APP_MUTEX_HANDLE = None
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 

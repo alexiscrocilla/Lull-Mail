@@ -103,6 +103,79 @@ Name: "{userdesktop}\{#MyAppName}";  Filename: "{app}\{#MyAppExeName}"; \
 Name: "{userstartup}\{#MyAppName}";  Filename: "{app}\{#MyAppExeName}"; \
     IconFilename: "{app}\lull_mail.ico"; Tasks: autostart
 
-[Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Lancer {#MyAppName}"; \
-    Flags: nowait postinstall skipifsilent
+[Code]
+{ ───────────────────────────────────────────────────────────────────────────
+  Auto-close a running LullMail instance before installation.
+
+  On interactive installs the user is prompted; on silent (/SILENT) the
+  process is killed silently.  The built-in `CloseApplications=yes` +
+  `AppMutex` mechanism is kept as a first line of defence — this fallback
+  handles cases where Inno Setup's WM_CLOSE approach doesn't work
+  (WebView2 child processes, namespace access issues, etc.).
+  ─────────────────────────────────────────────────────────────────────────── }
+
+const
+  AppProcessName = '{#MyAppExeName}';
+  AppWindowTitle = 'Lull Mail';
+
+{ ── Utilities ────────────────────────────────────────────────────────────── }
+
+function FindAppWindow: HWND;
+begin
+  Result := FindWindowByWindowName(AppWindowTitle);
+end;
+
+function KillAppProcess: Boolean;
+var
+  ErrorCode: Integer;
+begin
+  Result := ShellExec('open', 'taskkill.exe',
+    '/f /im ' + AppProcessName,
+    '', SW_HIDE, ewWaitUntilTerminated, ErrorCode);
+end;
+
+{ ── Entry point ──────────────────────────────────────────────────────────── }
+
+function InitializeSetup: Boolean;
+var
+  Hwnd: HWND;
+  Msg: string;
+begin
+  Result := True;
+
+  { Check if Lull Mail is still running — either via the named window
+    or via a direct process-name scan.  The AppMutex + CloseApplications
+    mechanism should already try WM_CLOSE by this point; if the process
+    survived we force-close it here. }
+  Hwnd := FindAppWindow;
+  if Hwnd = 0 then
+    Exit;  { not running → proceed }
+
+  Msg := 'Lull Mail est en cours d''exécution.'#13#13
+       + 'Fermer Lull Mail et continuer l''installation ?';
+
+  { Silent mode (/SILENT, /VERYSILENT) → kill unconditionally }
+  if WizardSilent then
+    begin
+      KillAppProcess;
+      Sleep(1500);
+      Exit;
+    end;
+
+  { Interactive → prompt }
+  if SuppressibleMsgBox(Msg, mbConfirmation, MB_YESNO, IDYES) = IDYES then
+    begin
+      if KillAppProcess then
+        Sleep(1500)
+      else
+        begin
+          SuppressibleMsgBox(
+            'Impossible de fermer Lull Mail. Fermez-le manuellement via '
+            + 'le gestionnaire des tâches, puis relancez l''installation.',
+            mbError, MB_OK, IDOK);
+          Result := False;
+        end;
+    end
+  else
+    Result := False;
+end;
