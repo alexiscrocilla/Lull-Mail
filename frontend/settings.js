@@ -244,37 +244,43 @@ export async function mountSettings(host, opts = {}) {
             </span>
           </h3>
           <div class="set-storage-body">
-            <div class="set-field">
-              <span class="set-label">${t('set.storage.dir_label')}</span>
-              <div id="set-data-dir" class="set-path mono">—</div>
-              <span class="set-hint">${t('set.storage.dir_hint')}</span>
+            <div class="set-storage-field-wrap">
+              <div class="set-field" style="flex:1;min-width:0">
+                <span class="set-label">${t('set.storage.dir_label')}</span>
+                <div id="set-data-dir" class="set-path mono">—</div>
+                <span class="set-hint">${t('set.storage.dir_hint')}</span>
+              </div>
+              <div class="set-actions-rail">
+                <button class="mb-cta set-btn-ghost" id="btn-storage-actions" type="button">
+                  <i data-lucide="menu" class="w-4 h-4"></i>
+                  <span>${t('set.storage.actions_btn')}</span>
+                </button>
+              </div>
             </div>
-            <div class="set-storage-row">
-              <div class="set-storage-col">
-                <button class="mb-cta set-btn-ghost set-btn--sm" id="btn-open-data" type="button">
-                  <i data-lucide="folder-open" class="w-3.5 h-3.5"></i>
-                  <span>${t('set.storage.open_btn')}</span>
-                </button>
-                <button class="mb-cta set-btn-danger set-btn--sm" id="btn-wipe-data" type="button">
-                  <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-                  <span>${t('set.storage.wipe_btn')}</span>
-                </button>
-              </div>
-              <div class="set-storage-col set-storage-col--right">
-                <button class="mb-cta set-btn-ghost set-btn--sm" id="btn-export-config" type="button">
-                  <i data-lucide="download" class="w-3.5 h-3.5"></i>
-                  <span>${t('set.storage.export_btn')}</span>
-                </button>
-                <button class="mb-cta set-btn-ghost set-btn--sm" id="btn-import-config" type="button">
-                  <i data-lucide="upload" class="w-3.5 h-3.5"></i>
-                  <span>${t('set.storage.import_btn')}</span>
-                </button>
-                <button class="mb-cta set-btn-ghost set-btn--sm" id="btn-wipe-ai" type="button"
-                        title="${t('set.storage.wipe_ai_hint')}">
-                  <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
-                  <span>${t('set.storage.wipe_ai_btn')}</span>
-                </button>
-              </div>
+            <div id="storage-overlay" class="set-storage-overlay hidden">
+              <div class="set-storage-overlay__arrow"></div>
+              <button class="mb-cta set-btn-ghost" id="btn-open-data" type="button">
+                <i data-lucide="folder-open" class="w-3.5 h-3.5"></i>
+                <span>${t('set.storage.open_btn')}</span>
+              </button>
+              <button class="mb-cta set-btn-ghost" id="btn-export-config" type="button">
+                <i data-lucide="download" class="w-3.5 h-3.5"></i>
+                <span>${t('set.storage.export_btn')}</span>
+              </button>
+              <button class="mb-cta set-btn-ghost" id="btn-import-config" type="button">
+                <i data-lucide="upload" class="w-3.5 h-3.5"></i>
+                <span>${t('set.storage.import_btn')}</span>
+              </button>
+              <button class="mb-cta set-btn-ghost" id="btn-wipe-ai" type="button"
+                      title="${t('set.storage.wipe_ai_hint')}">
+                <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                <span>${t('set.storage.wipe_ai_btn')}</span>
+              </button>
+              <div class="set-storage-overlay__sep"></div>
+              <button class="mb-cta set-btn-danger" id="btn-wipe-data" type="button">
+                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                <span>${t('set.storage.wipe_btn')}</span>
+              </button>
             </div>
           </div>
         </section>
@@ -1671,6 +1677,24 @@ export async function mountSettings(host, opts = {}) {
     });
     input.click();
   });
+
+  // ── Storage actions overlay ──────────────────────────────────────────
+  const actionsBtn = host.querySelector('#btn-storage-actions');
+  const overlay = host.querySelector('#storage-overlay');
+  function toggleOverlay(show) {
+    if (show === undefined) { overlay?.classList.toggle('hidden'); }
+    else { overlay?.classList.toggle('hidden', !show); }
+  }
+  actionsBtn?.addEventListener('click', e => {
+    e.stopPropagation();
+    toggleOverlay();
+  });
+  overlay?.addEventListener('click', () => toggleOverlay(false));
+  document.addEventListener('click', e => {
+    if (overlay && !overlay.classList.contains('hidden') && !overlay.contains(e.target) && e.target !== actionsBtn && !actionsBtn?.contains(e.target)) {
+      toggleOverlay(false);
+    }
+  });
   // Provider tiles wire their own click handlers in render()
   els.mClose.addEventListener('click', closeModal);
   els.mCancel.addEventListener('click', closeModal);
@@ -1860,37 +1884,64 @@ function injectStyles() {
     .set-storage-body {
       display: flex;
       flex-direction: column;
-      gap: 8px;
       width: 100%;
       flex: 1;
       min-width: 0;
+      position: relative;
     }
-    .set-storage-body .set-field { margin-bottom: -2px; }
     .set-storage-body .set-path { font-size: 12px; }
     .set-storage-body .set-hint { font-size: 10.5px; }
-    .set-storage-row {
+    .set-storage-field-wrap {
       display: flex;
-      gap: 0;
+      align-items: flex-start;
+      gap: 12px;
     }
-    .set-storage-col {
+    .set-actions-rail {
+      padding-top: 22px;
+      flex-shrink: 0;
+    }
+    .set-actions-rail .mb-cta {
+      white-space: nowrap;
+    }
+    /* ── Overlay ── */
+    .set-storage-overlay {
+      position: absolute;
+      top: 100%;
+      right: 2px;
+      margin-top: 6px;
+      background: var(--surface-2);
+      border: 1px solid var(--border-2);
+      border-radius: 10px;
+      padding: 6px;
       display: flex;
       flex-direction: column;
-      gap: 3px;
-      flex: 1;
-      min-width: 0;
+      gap: 2px;
+      min-width: 200px;
+      z-index: 100;
+      box-shadow: 0 8px 30px rgba(0,0,0,.35);
     }
-    .set-btn--sm {
-      padding: 4px 9px !important;
-      font-size: 11.5px !important;
-      gap: 4px !important;
-      border-radius: 6px !important;
+    .set-storage-overlay .mb-cta {
+      justify-content: flex-start;
+      padding: 8px 12px;
+      font-size: 13px;
+      border-radius: 7px;
+      width: 100%;
     }
-    .set-storage-col--right {
-      padding-left: 12px;
+    .set-storage-overlay__arrow {
+      position: absolute;
+      top: -6px;
+      right: 16px;
+      width: 10px;
+      height: 10px;
+      background: var(--surface-2);
       border-left: 1px solid var(--border-2);
+      border-top: 1px solid var(--border-2);
+      transform: rotate(45deg);
     }
-    .set-storage-col--right .mb-cta {
-      align-self: flex-end;
+    .set-storage-overlay__sep {
+      height: 1px;
+      background: var(--border-2);
+      margin: 4px 6px;
     }
 
     .set-notif-seg .set-prov-opt {
