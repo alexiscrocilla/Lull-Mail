@@ -5,6 +5,7 @@ import { mountMailbox } from '/static/mailbox.js';
 import { mountDashboard } from '/static/dashboard.js';
 import { mountCleanup } from '/static/cleanup.js';
 import { mountSettings } from '/static/settings.js';
+import { initCommandPalette } from '/static/command-palette.js';
 
 const view = document.getElementById('view');
 let cleanup = null;
@@ -286,6 +287,13 @@ document.addEventListener('keydown', (e) => {
     }
   }
 
+  // Command palette (Cmd/Ctrl-K) — works even while typing in a field.
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault();
+    window.commandPalette?.open();
+    return;
+  }
+
   if (isTypingTarget(e.target)) return;
 
   // Global shortcuts (toutes pages)
@@ -354,6 +362,7 @@ if (!location.hash) location.hash = '#/inbox';
 await refreshAiFlag();
 render();
 refreshIcons();
+initCommandPalette({ navigate });
 
 // ── Auto-update banner ─────────────────────────────────────
 async function checkForUpdate() {

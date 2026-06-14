@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Cmd-K / Ctrl-K command palette. On-demand actions + AI assistant,
 // deliberately non-persistent to stay faithful to "inbox on mute".
 //
