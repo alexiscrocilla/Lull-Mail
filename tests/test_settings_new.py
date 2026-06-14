@@ -50,14 +50,12 @@ def test_account_payload_carries_ai_profile():
     p = AccountPayload(
         name="Pro", email="pro@x.fr", imap_host="imap.x",
         username="pro@x.fr", password="secret",
-        ai_account_enabled=False, ai_importance_threshold=9,
-        ai_prompt_extra="Compte pro, priorise les clients.", auto_draft=True,
+        ai_account_enabled=False, ai_importance_threshold=9, auto_draft=True,
     )
     d = p.model_dump()
     assert d["ai_account_enabled"] is False
     assert d["ai_importance_threshold"] == 9
     assert d["auto_draft"] is True
-    assert "clients" in d["ai_prompt_extra"]
 
 
 def test_full_config_accepts_ai_profile_fields():
@@ -69,6 +67,6 @@ def test_full_config_accepts_ai_profile_fields():
             "email": "u@x.fr", "imap_host": "imap.x", "imap_port": 993,
             "username": "u@x.fr", "password": "p", "enabled": True,
             "ai_account_enabled": False, "ai_importance_threshold": 8,
-            "ai_prompt_extra": "ctx", "auto_draft": True,
+            "auto_draft": True,
         }],
     })  # no raise

@@ -87,13 +87,12 @@ def _fake_client(script):
 
 def test_run_agent_executes_tool_then_answers(fresh_app, monkeypatch):
     from src import database as db, agent
-    import src.ai_processor as ai
     _seed(db)
 
     step1 = types.SimpleNamespace(
         content="", tool_calls=[_fake_tool_call("list_emails", {"folder": "inbox"})])
     step2 = types.SimpleNamespace(content="Tu as 1 email en attente.", tool_calls=None)
-    monkeypatch.setattr(ai, "_client", _fake_client([step1, step2]))
+    monkeypatch.setattr(agent, "_openai_client", lambda: _fake_client([step1, step2]))
 
     out = agent.run_agent("Qu'est-ce qui attend ?")
     assert out["text"] == "Tu as 1 email en attente."
@@ -102,19 +101,17 @@ def test_run_agent_executes_tool_then_answers(fresh_app, monkeypatch):
 
 def test_run_agent_step_cap(fresh_app, monkeypatch):
     from src import agent
-    import src.ai_processor as ai
     # Always returns a tool call → loop must stop at max_steps.
     always = types.SimpleNamespace(
         content="", tool_calls=[_fake_tool_call("list_emails", {})])
-    monkeypatch.setattr(ai, "_client", _fake_client([always] * 10))
+    monkeypatch.setattr(agent, "_openai_client", lambda: _fake_client([always] * 10))
     out = agent.run_agent("boucle", max_steps=3)
     assert len(out["trace"]) == 3
 
 
 def test_run_agent_raises_without_client(monkeypatch):
     from src import agent
-    import src.ai_processor as ai
-    monkeypatch.setattr(ai, "_client", None)
+    monkeypatch.setattr(agent, "_openai_client", lambda: None)
     import pytest
     with pytest.raises(RuntimeError):
         agent.run_agent("hello")
