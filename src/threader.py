@@ -44,6 +44,12 @@ def resolve_thread_id(con, *, message_id, in_reply_to, references,
         ).fetchone()
         if row and row["thread_id"]:
             return row["thread_id"]
+        # Parent not local. When there's no References chain to fall back on,
+        # use the parent id itself as the thread root — symmetric with the
+        # References branch below, so two replies to the same (unfetched) root
+        # group together whether they carry In-Reply-To or References.
+        if not references:
+            return in_reply_to
 
     if references:
         first = references.split()[0]

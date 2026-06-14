@@ -119,25 +119,27 @@ def run_sync():
             state = db.get_sync_state(acc["email"])
             jobs.append((acc, state["last_uid"] if state else None))
 
-        fetched = {}  # email -> (emails, error)
+        # Keyed by job INDEX, not email: two accounts that share an email
+        # address (hand-edited config) must not collapse into one result.
+        fetched = {}  # index -> (emails, error)
         if jobs:
             with ThreadPoolExecutor(max_workers=min(fetch_workers, len(jobs))) as ex:
                 futs = {
-                    ex.submit(fetch_emails, acc, last_uid=luid, limit=limit): acc
-                    for acc, luid in jobs
+                    ex.submit(fetch_emails, acc, last_uid=luid, limit=limit): idx
+                    for idx, (acc, luid) in enumerate(jobs)
                 }
                 for fut in as_completed(futs):
-                    acc = futs[fut]
+                    idx = futs[fut]
                     try:
-                        fetched[acc["email"]] = fut.result()
+                        fetched[idx] = fut.result()
                     except Exception as e:  # noqa: BLE001 — isolate per-account
-                        fetched[acc["email"]] = ([], f"{type(e).__name__}: {e}")
+                        fetched[idx] = ([], f"{type(e).__name__}: {e}")
 
         # ── Phase DB : traitement séquentiel (toutes les écritures ici) ───
         total_new = 0
-        for acc, last_uid in jobs:
+        for idx, (acc, last_uid) in enumerate(jobs):
             logger.info(f"→ Sync {acc['email']} ...")
-            emails, fetch_error = fetched.get(acc["email"], ([], "aucun résultat"))
+            emails, fetch_error = fetched.get(idx, ([], "aucun résultat"))
 
             if fetch_error:
                 db.set_sync_error(acc["email"], fetch_error)
