@@ -38,6 +38,11 @@ pywebview==5.3.2
 pystray==0.19.5
 Pillow==10.4.0
 
+# Optional — only for the local MCP server (src/mcp_server.py), which lets
+# the user's own Claude/Cursor query their triaged inbox over stdio without
+# data leaving the machine. The core app never imports it.
+mcp>=1.2.0
+
 # --- Optional: local LLM backend ---
 # Installed separately via `pip install -r requirements-local.txt
 # --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu`.

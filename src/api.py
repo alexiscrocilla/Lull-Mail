@@ -20,6 +20,7 @@ from src import database as db
 from src import attachment_security as att_sec
 from src import paths as _paths
 from src.i18n import tr, get_locale
+from src.search_query import parse_search_query
 from src.safe_link import router as _safe_link_router
 
 logger = logging.getLogger(__name__)
@@ -244,6 +245,7 @@ def list_emails(
     folder: Optional[str] = None,
     sender: Optional[str] = None,
     label: Optional[int] = None,
+    view: str = "flat",
     limit: int = 100,
     offset: int = 0,
 ):
@@ -257,30 +259,55 @@ def list_emails(
         if parsed:
             acct_filter = parsed if len(parsed) > 1 else parsed[0]
 
-    rows = db.get_emails(
-        account=acct_filter,
-        category=category,
-        is_read=is_read,
-        needs_reply=needs_reply,
-        folder=folder,
-        sender=sender,
-        label=label,
-        limit=min(limit, 2000),
-        offset=offset,
-    )
-    # Bulk-attach an `attachments` summary so the list view can render the
-    # paperclip icon + a per-email risk badge without N+1 queries.
+    if view == "threads":
+        # Collapsed conversation view: one row per thread. get_threads takes a
+        # single account, so a multi-selection falls back to all accounts.
+        rows = db.get_threads(
+            account=acct_filter if isinstance(acct_filter, str) else None,
+            folder=folder, category=category,
+            limit=min(limit, 2000), offset=offset,
+        )
+    else:
+        rows = db.get_emails(
+            account=acct_filter,
+            category=category,
+            is_read=is_read,
+            needs_reply=needs_reply,
+            folder=folder,
+            sender=sender,
+            label=label,
+            limit=min(limit, 2000),
+            offset=offset,
+        )
+    _attach_counts_and_labels(rows)
+    return rows
+
+
+def _attach_counts_and_labels(rows: list) -> list:
+    """Bulk-attach an `attachments` summary + `labels[]` to a list of email
+    rows so the list/search views render the paperclip icon, risk badge and
+    coloured chips without N+1 queries. Mutates rows in place and returns it."""
     if rows:
         counts = db.attachment_counts_for_messages([r["message_id"] for r in rows])
         for r in rows:
             c = counts.get(r["message_id"])
             r["attachments"] = c or {"total": 0, "dangerous": 0, "suspicious": 0}
-        # Bulk-attach labels[] so the cards can render coloured chips
-        # without one extra GET per row.
         labels_by_id = db.get_labels_for_emails([int(r["int_id"]) for r in rows])
         for r in rows:
             r["labels"] = labels_by_id.get(int(r["int_id"]), [])
     return rows
+
+
+@app.get("/api/emails/search")
+def search_emails_ep(q: str, account: Optional[str] = None,
+                     limit: int = 100, offset: int = 0):
+    """Server-side search with Gmail-style operators (from:/to:/subject:/in:/
+    is:/has:/before:/after:). Returns parsed filters + results."""
+    parsed = parse_search_query(q)
+    rows = db.search_emails(parsed, account=account,
+                            limit=min(limit, 2000), offset=offset)
+    _attach_counts_and_labels(rows)
+    return {"parsed": parsed, "results": rows}
 
 
 @app.get("/api/emails/{int_id}")
@@ -321,6 +348,18 @@ def get_email(int_id: int, bg: BackgroundTasks, locale: str = Depends(get_locale
         for l in db.get_labels_for_email(int_id)
     ]
     return em
+
+
+@app.get("/api/emails/{int_id}/thread")
+def get_email_thread(int_id: int, locale: str = Depends(get_locale)):
+    """All messages in the conversation an email belongs to, oldest first."""
+    em = db.get_email_by_id(int_id)
+    if not em:
+        raise HTTPException(404, tr("email.not_found", locale))
+    thread_id = em.get("thread_id") or em.get("message_id")
+    rows = db.get_thread(thread_id)
+    _attach_counts_and_labels(rows)
+    return {"thread_id": thread_id, "messages": rows}
 
 
 def _lazy_scan_one(int_id: int, account_email: str, uid: str, message_id: str):
@@ -427,6 +466,35 @@ def generate_draft(int_id: int, locale: str = Depends(get_locale)):
         "draft_response": draft,
         "needs_reply": bool(draft),
     }
+
+
+class AssistantAsk(BaseModel):
+    message: str
+
+
+@app.post("/api/assistant/ask")
+@limiter.limit("20/minute")
+def assistant_ask(request: Request, body: AssistantAsk,
+                  locale: str = Depends(get_locale)):
+    """Bounded AI agent over the local mailbox. Returns the assistant's text
+    plus a `trace` of the tool calls (transparency). Read + draft only — no
+    send. Tool-calling is OpenAI-specific; in local-LLM mode it returns 409."""
+    if not cfg.ai_enabled():
+        raise HTTPException(409, tr("assistant.ai_disabled", locale))
+    from src.ai_processor import init_client
+    from src import agent
+    conf = cfg.get()
+    if (conf.get("llm") or {}).get("provider", "openai") == "openai":
+        init_client(conf.get("openai", {}).get("api_key", ""))
+    model = conf.get("openai", {}).get("model", "gpt-4o-mini")
+    try:
+        return agent.run_agent(body.message, model=model)
+    except RuntimeError:
+        # No OpenAI client (e.g. local-LLM provider active) → agent unavailable.
+        raise HTTPException(409, tr("assistant.ai_disabled", locale))
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger(__name__).error(f"assistant error: {e}")
+        raise HTTPException(502, tr("assistant.failed", locale))
 
 
 @app.post("/api/emails/{int_id}/draft/stream")
