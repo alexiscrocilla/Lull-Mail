@@ -139,6 +139,9 @@ class PollingConfig(BaseModel):
     initial_fetch_count: int = Field(default=500, ge=1, le=2000)
     max_age_days: int = Field(default=30, ge=0, le=3650)
     ai_batch_size: int = Field(default=200, ge=1, le=2000)
+    # IMAP accounts fetched concurrently per sync (network only; DB writes
+    # stay single-threaded).
+    fetch_workers: int = Field(default=4, ge=1, le=16)
 
 
 class ServerConfig(BaseModel):
@@ -154,6 +157,23 @@ class AttachmentsConfig(BaseModel):
     block_dangerous: bool = True
     block_suspicious: bool = False
     download_requires_confirm: bool = True
+
+
+class InjectionScanConfig(BaseModel):
+    """Prompt-injection scanner mode (src/injection_guard.py). Runs over
+    every email body before it reaches the LLM.
+
+    - hybrid : local heuristic first, escalate ambiguous cases to gpt-4o-mini.
+    - local  : regex only — 0 token, 0 network, fully on-device.
+    - llm    : one gpt-4o-mini YES/NO per email.
+    - off    : disabled.
+    """
+
+    mode: Literal["hybrid", "local", "llm", "off"] = "hybrid"
+
+
+class SecurityConfig(BaseModel):
+    injection_scan: InjectionScanConfig = Field(default_factory=InjectionScanConfig)
 
 
 class AccountConfig(BaseModel):
@@ -184,6 +204,12 @@ class AccountConfig(BaseModel):
     smtp_port: int = Field(default=0, ge=0, le=65535)
     smtp_ssl: bool = False
     smtp_starttls: bool = True
+    # Per-account AI profile. ai_importance_threshold=0 inherits the global
+    # ntfy.min_importance (avoids silently overriding it). auto_draft opts the
+    # account into pre-written reply drafts (never sent).
+    ai_account_enabled: bool = True
+    ai_importance_threshold: int = Field(default=0, ge=0, le=10)
+    auto_draft: bool = False
 
     @field_validator("email")
     @classmethod
@@ -230,6 +256,7 @@ class FullConfig(BaseModel):
     polling: PollingConfig = Field(default_factory=PollingConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     attachments: AttachmentsConfig = Field(default_factory=AttachmentsConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
     accounts: List[AccountConfig] = Field(min_length=1)
 
 
@@ -449,5 +476,6 @@ def default_skeleton() -> Dict[str, Any]:
             "block_suspicious": False,
             "download_requires_confirm": True,
         },
+        "security": {"injection_scan": {"mode": "hybrid"}},
         "accounts": [],
     }

@@ -23,7 +23,7 @@ import ssl
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src import config as cfg
 from src import lifecycle
@@ -265,6 +265,16 @@ class GeneralPayload(BaseModel):
     # ephemeral port at startup. Kept in the schema only for backwards
     # compatibility with older config.yaml files.
     server_port: Optional[int] = Field(None, ge=1024, le=65535)
+    # Prompt-injection scanner mode. Optional: when omitted (None) the stored
+    # mode is left untouched, so a partial save never resets the user's choice.
+    injection_scan_mode: Optional[str] = None
+
+    @field_validator("injection_scan_mode")
+    @classmethod
+    def _valid_scan_mode(cls, v):
+        if v is not None and v not in {"hybrid", "local", "llm", "off"}:
+            raise ValueError("mode de scan d'injection invalide")
+        return v
 
 
 class AccountPayload(BaseModel):
@@ -287,6 +297,11 @@ class AccountPayload(BaseModel):
     smtp_port: int = 0
     smtp_ssl: bool = False
     smtp_starttls: bool = True
+    # Per-account AI profile (P1.2) + opt-in auto-draft (P1.3). Optional with
+    # safe defaults; ai_importance_threshold=0 inherits the global threshold.
+    ai_account_enabled: bool = True
+    ai_importance_threshold: int = Field(0, ge=0, le=10)
+    auto_draft: bool = False
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -630,6 +645,14 @@ def save_general(payload: GeneralPayload) -> Dict[str, Any]:
     server.setdefault("host", "127.0.0.1")
     server.setdefault("port", 8000)
     data["server"] = server
+    # Security: only touch the injection mode when the client sent one, so a
+    # partial save never resets a user's off/local/llm choice.
+    if payload.injection_scan_mode is not None:
+        security = data.get("security") or {}
+        scan = security.get("injection_scan") or {}
+        scan["mode"] = payload.injection_scan_mode
+        security["injection_scan"] = scan
+        data["security"] = security
     _persist(data)
     return {"ok": True}
 

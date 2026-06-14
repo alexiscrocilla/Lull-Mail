@@ -854,6 +854,12 @@ def fetch_emails(
                 if not message_id:
                     message_id = _fallback_id(uid.decode(), account["email"], subject)
 
+                # RFC 2822 threading headers (src/threader.py). A Message-ID has
+                # no internal spaces, so collapsing whitespace unfolds a header
+                # the MTA wrapped mid-token (else it never exact-matches).
+                in_reply_to = "".join((msg.get("In-Reply-To") or "").split()) or None
+                references = (msg.get("References") or "").strip() or None
+
                 body_text, body_html, attachment_parts = _extract_body(msg)
 
                 # RFC 2369 / 8058 unsubscribe info — captured at ingest time
@@ -887,6 +893,8 @@ def fetch_emails(
                     "unsubscribe_url": parsed_lu["unsubscribe_url"],
                     "unsubscribe_mailto": parsed_lu["unsubscribe_mailto"],
                     "auth_results": auth_json,
+                    "in_reply_to": in_reply_to,
+                    "references": references,
                     "_attachment_parts": attachment_parts,  # consumed by scheduler
                 })
             except Exception as e:

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -7,6 +8,8 @@ from dateutil import parser as dateparser
 
 from src import config as cfg
 from src import database as db
+from src import injection_guard
+from src import draft_verify
 from src.ai_processor import init_client, process_email, enrich_draft
 from src.attachment_security import policy_from_config
 from src.email_fetcher import fetch_emails, persist_attachments
@@ -21,6 +24,23 @@ logger = logging.getLogger(__name__)
 # re-queue these emails for real analysis. Keep in sync with the literal
 # in the fabricated result dict.
 NO_AI_FALLBACK_REASON = "Non classé (mode sans IA)"
+
+
+def _neutral_result(category: str, score: int, reason: str, summary: str = "") -> dict:
+    """No-token classification result for the non-LLM paths (local cache hit,
+    per-account AI off, injection-flagged, no-AI mode). Single source of truth
+    for the result contract consumed by db.update_email_ai."""
+    return {
+        "category": category,
+        "importance_score": score,
+        "importance_reason": reason,
+        "summary": summary,
+        "needs_reply": False,
+        "draft_response": None,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "local_classified": True,
+    }
 
 
 def _is_too_old(date_str: str, max_age_days: int) -> bool:
@@ -88,13 +108,36 @@ def run_sync():
         ntfy_ok = bool(ntfy.get("topic") and not str(ntfy.get("topic", "")).startswith("TODO"))
         att_policy = policy_from_config(conf)
 
-        total_new = 0
+        # ── Phase réseau : fetch IMAP de tous les comptes EN PARALLÈLE ────
+        # fetch_emails() ouvre sa propre connexion IMAP et ne touche pas la DB
+        # (il renvoie une liste) → parallélisable sans risque. On ne parallélise
+        # QUE le réseau ; toutes les écritures DB restent sur le thread principal
+        # (phase suivante) pour éviter toute contention SQLite.
+        fetch_workers = int(conf.get("polling", {}).get("fetch_workers", 4))
+        jobs = []  # (acc, last_uid)
         for acc in accounts:
-            logger.info(f"→ Sync {acc['email']} ...")
             state = db.get_sync_state(acc["email"])
-            last_uid = state["last_uid"] if state else None
+            jobs.append((acc, state["last_uid"] if state else None))
 
-            emails, fetch_error = fetch_emails(acc, last_uid=last_uid, limit=limit)
+        fetched = {}  # email -> (emails, error)
+        if jobs:
+            with ThreadPoolExecutor(max_workers=min(fetch_workers, len(jobs))) as ex:
+                futs = {
+                    ex.submit(fetch_emails, acc, last_uid=luid, limit=limit): acc
+                    for acc, luid in jobs
+                }
+                for fut in as_completed(futs):
+                    acc = futs[fut]
+                    try:
+                        fetched[acc["email"]] = fut.result()
+                    except Exception as e:  # noqa: BLE001 — isolate per-account
+                        fetched[acc["email"]] = ([], f"{type(e).__name__}: {e}")
+
+        # ── Phase DB : traitement séquentiel (toutes les écritures ici) ───
+        total_new = 0
+        for acc, last_uid in jobs:
+            logger.info(f"→ Sync {acc['email']} ...")
+            emails, fetch_error = fetched.get(acc["email"], ([], "aucun résultat"))
 
             if fetch_error:
                 db.set_sync_error(acc["email"], fetch_error)
@@ -158,6 +201,9 @@ def run_sync():
         # Traitement AI des emails en attente
         max_age_days = conf.get("polling", {}).get("max_age_days", 30)
         ai_batch = int(conf.get("polling", {}).get("ai_batch_size", 200))
+        injection_mode = ((conf.get("security") or {}).get("injection_scan") or {}).get("mode", "hybrid")
+        # Per-account AI profiles (P1.2/P1.3), keyed by email address.
+        profiles = {a["email"]: a for a in accounts}
         pending = db.get_pending_emails(limit=ai_batch)
 
         to_process = []
@@ -179,6 +225,10 @@ def run_sync():
 
         for em in to_process:
             result = None
+            acc_profile = profiles.get(em.get("account_email")) or {}
+            # Injection verdict from the classification phase — reused by the
+            # auto-draft gate so the same body is never scanned twice.
+            injection_verdict = None
 
             # ── Niveau 1 : règles locales (0 token) ───────────────────────────
             result = local_classify(em)
@@ -193,35 +243,36 @@ def run_sync():
                     if cached_cat and cached_cat not in ("important", "other"):
                         # Only trust cached category for low-value types;
                         # "important" / "other" are too broad to skip AI.
-                        result = {
-                            "category": cached_cat,
-                            "importance_score": 2 if cached_cat == "newsletter" else 3,
-                            "importance_reason": f"Domaine {domain} connu ({cached_cat})",
-                            "summary": "",
-                            "needs_reply": False,
-                            "draft_response": None,
-                            "tokens_in": 0,
-                            "tokens_out": 0,
-                            "local_classified": True,
-                        }
+                        result = _neutral_result(
+                            cached_cat,
+                            2 if cached_cat == "newsletter" else 3,
+                            f"Domaine {domain} connu ({cached_cat})",
+                        )
                         cache_hits += 1
+
+            # ── Niveau 2.6 : IA désactivée pour CE compte (P1.2) ──────────────
+            # Garde les règles locales gratuites mais n'appelle jamais le LLM.
+            if result is None and acc_profile.get("ai_account_enabled") is False:
+                result = _neutral_result("other", 5, "IA désactivée pour ce compte")
+
+            # ── Niveau 2.5 : scan anti-injection avant tout appel LLM ─────────
+            # Un corps hostile ne doit jamais atteindre le modèle. Fail-OPEN :
+            # un scan non vérifiable (LLM indispo) ne signale PAS — on classe.
+            if result is None and ai_on and injection_mode != "off":
+                injection_verdict = injection_guard.scan(
+                    em.get("body_text", "") or "", injection_mode)
+                if injection_verdict["injection"]:
+                    db.flag_injection(em["message_id"], injection_verdict["reason"])
+                    result = _neutral_result(
+                        "other", 4, "Contenu suspect — analyse IA ignorée",
+                        "⚠ Email potentiellement malveillant (injection détectée).")
 
             # ── Niveau 3 : IA classification (body réduit à 800 cars.) ─────────
             # In no-AI mode we fabricate a neutral result so the email still
             # lands in the inbox with a predictable category/score. The user
-            # has explicitly opted out — no GPT call must happen here.
+            # has explicitly opted out — no LLM call must happen here.
             if result is None and not ai_on:
-                result = {
-                    "category": "other",
-                    "importance_score": 5,
-                    "importance_reason": NO_AI_FALLBACK_REASON,
-                    "summary": "",
-                    "needs_reply": False,
-                    "draft_response": None,
-                    "tokens_in": 0,
-                    "tokens_out": 0,
-                    "local_classified": True,
-                }
+                result = _neutral_result("other", 5, NO_AI_FALLBACK_REASON)
 
             if result is None:
                 result = process_email(em, model=model)
@@ -239,16 +290,42 @@ def run_sync():
                         skipped += 1
                     continue
 
-            # Niveau 4 (brouillon IA) supprimé : généré à la demande via /api/emails/{id}/draft
-
             if not result:
                 continue
 
+            # ── Auto-draft opt-in par compte (P1.3) ───────────────────────────
+            # Pré-rédige une réponse pour les mails qui attendent une réponse et
+            # dépassent le seuil du compte. JAMAIS envoyé. Enrichit `result`
+            # AVANT update_email_ai pour persister brouillon + tokens en une
+            # passe. Seuil 0/absent hérite du global.
+            acc_threshold = acc_profile.get("ai_importance_threshold") or min_score
+            auto_drafted = False
+            if (
+                acc_profile.get("auto_draft")
+                and ai_on
+                and result.get("needs_reply")
+                and result.get("importance_score", 0) >= acc_threshold
+            ):
+                # Reuse the classification-phase verdict; only scan here if the
+                # email skipped that phase. Fail-CLOSED: never draft on a flagged
+                # OR unverified body.
+                v = injection_verdict
+                if v is None:
+                    v = injection_guard.scan(em.get("body_text", "") or "", injection_mode)
+                if not v["injection"] and not v.get("unverified"):
+                    enrich_draft(em, result, model=model)  # fills result + tokens
+                    if result.get("draft_response"):
+                        result["draft_response"] = draft_verify.verify_draft(
+                            result["draft_response"], model=model)
+                        auto_drafted = True
+
             db.update_email_ai(em["message_id"], result)
+            if auto_drafted:
+                db.mark_auto_draft(em["message_id"])
 
             if (
                 ntfy_ok
-                and result.get("importance_score", 0) >= min_score
+                and result.get("importance_score", 0) >= acc_threshold
                 and not em.get("is_notified")
             ):
                 payload = {**em, **result, "account_email": em["account_email"]}
