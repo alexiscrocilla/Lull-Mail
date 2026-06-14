@@ -45,6 +45,30 @@ export const api = {
     return j(`/api/emails/${intId}`);
   },
 
+  // Server-side search with Gmail-style operators. Returns {parsed, results}.
+  searchEmails(q, params = {}) {
+    const sp = new URLSearchParams({ q });
+    for (const [k, v] of Object.entries(params)) {
+      if (v === undefined || v === null || v === '') continue;
+      sp.set(k, v);
+    }
+    return j(`/api/emails/search?${sp.toString()}`);
+  },
+
+  // All messages of the conversation an email belongs to. {thread_id, messages[]}.
+  getThread(intId) {
+    return j(`/api/emails/${intId}/thread`);
+  },
+
+  // Bounded AI agent over the local mailbox. {text, trace[]}. 409 when AI off.
+  assistantAsk(message) {
+    return j('/api/assistant/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+    });
+  },
+
   patchEmail(intId, patch) {
     return j(`/api/emails/${intId}`, {
       method: 'PATCH',

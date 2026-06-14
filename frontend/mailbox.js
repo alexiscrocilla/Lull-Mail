@@ -554,6 +554,10 @@ export async function mountMailbox(host, _opts) {
               <i data-lucide="check-square" class="w-4 h-4"></i>
               <span>${t('mb.sel.all_short')}</span>
             </button>
+            <button class="sort-select-btn" id="thread-toggle" type="button"
+                    title="${t('mb.thread.toggle')}" aria-pressed="false">
+              <i data-lucide="messages-square" class="w-4 h-4"></i>
+            </button>
             <div class="sort-select" id="sort-select-wrap"></div>
           </div>
         </div>
@@ -601,6 +605,8 @@ export async function mountMailbox(host, _opts) {
     folder: 'inbox',
     category: '',     // '' = all
     query: '',
+    searchResults: null,  // server-side search hits while a query is active
+    threadView: (() => { try { return localStorage.getItem('mb-thread-view') === '1'; } catch (_) { return false; } })(),
     onlyUnread: false,
     onlyReply: false,
     accountFilters: new Set(),  // empty = all accounts
@@ -1577,6 +1583,16 @@ export async function mountMailbox(host, _opts) {
   function applyFilter(_skipChips) {
     if (!_skipChips) renderChips();
     const q = state.query.trim().toLowerCase();
+    // Server-side search results take over while a query is active. Sorting
+    // and re-render still flow through here so the sort buttons keep working.
+    if (q && state.searchResults) {
+      const items = sortEmails(state.searchResults);
+      state.filteredIds = items.map((e) => e.int_id);
+      renderList(items);
+      refreshGlobalSelectAll();
+      updateBadge();
+      return;
+    }
     const activeEmails = new Set(state.accounts.map((a) => a.email));
     const cat = state.category || '';
     const filtered = state.emails.filter((em) => {
@@ -1632,6 +1648,9 @@ export async function mountMailbox(host, _opts) {
   let _firstRender = true;
   // Set to true when user changes a filter chip or sort mode (not background refresh).
   let _filterDidChange = false;
+  // False until the first loadEmails completes — lets a foreground navigation
+  // exit search mode without wiping a deep-linked ?q= on the very first load.
+  let _navLoadSeen = false;
   // Last card explicitly checked (avatar-click, Ctrl+click, Shift+click anchor) for range-select.
   let _lastCheckedId = null;
   // Monotonic token for in-flight loadEmails() calls. Each call captures
@@ -1942,9 +1961,11 @@ export async function mountMailbox(host, _opts) {
                 if (a.suspicious) return `<i data-lucide="paperclip" class="w-3.5 h-3.5 mb-att-warn" title="${t('mb.att.suspicious')}"></i>`;
                 return `<i data-lucide="paperclip" class="w-3.5 h-3.5 mb-att-icon" title="${t('mb.att.count', { n: a.total })}"></i>`;
               })()}
+              ${em.injection_flag ? `<i data-lucide="alert-triangle" class="w-3.5 h-3.5 mb-inject-inline" title="${t('mb.injection.flag')}"></i>` : ''}
               ${aiOn && em.needs_reply ? `<i data-lucide="reply" class="w-3.5 h-3.5 mb-reply-inline" title="${t('mb.ai.needs_reply')}"></i>` : ''}
-              ${aiOn && em.draft_response ? `<i data-lucide="pencil-line" class="w-3.5 h-3.5 mb-draft-inline" title="${t('mb.ai.draft_ready')}"></i>` : ''}
+              ${aiOn && em.draft_response ? `<i data-lucide="pencil-line" class="w-3.5 h-3.5 mb-draft-inline${em.draft_auto ? ' mb-draft-auto' : ''}" title="${em.draft_auto ? t('mb.ai.draft_auto') : t('mb.ai.draft_ready')}"></i>` : ''}
             </div>
+            ${em.thread_count > 1 ? `<span class="mb-thread-count" title="${t('mb.thread.count', { n: em.thread_count })}"><i data-lucide="messages-square" class="w-3 h-3"></i>${em.thread_count}</span>` : ''}
             ${em.category && em.category !== 'pending' ? `<i data-lucide="${CATEGORY_ICON[em.category] || 'tag'}" class="mb-cat-icon" style="color:${CATEGORY_COLOR[em.category] || 'var(--muted-2)'}" title="${escapeHtml(CATEGORY_LABEL[em.category] || em.category)}"></i>` : ''}
             <span class="mb-date">${escapeHtml(shortDate(em.date_received))}</span>
           </div>
@@ -4227,6 +4248,16 @@ export async function mountMailbox(host, _opts) {
     // must never overwrite the state set by a more recent call.
     const myToken = ++_loadEmailsToken;
     _lastLoadAt = Date.now();
+    // Exit search mode on a real navigation (folder/category/account/thread
+    // toggle). Background refreshes keep the active search; the first load
+    // preserves a deep-linked ?q=.
+    if (!isBackground && _navLoadSeen && state.query) {
+      state.query = '';
+      state.searchResults = null;
+      const sinp = $('#search');
+      if (sinp) sinp.value = '';
+    }
+    _navLoadSeen = true;
     try {
       // 1 selected → single-account filter. 2+ selected → server-side
       // IN() filter via `accounts=` so the 2000-row cap applies to the
@@ -4287,6 +4318,8 @@ export async function mountMailbox(host, _opts) {
         // the chip back down and waste the cached state.emails.
         folder: state.folder || 'inbox',
         label: state.labelFilter ?? undefined,
+        // Conversation view collapses the list to one row per thread.
+        view: state.threadView ? 'threads' : undefined,
       };
       const fresh = await api.getEmails(params);
       if (myToken !== _loadEmailsToken) return;  // stale → drop
@@ -4390,12 +4423,48 @@ export async function mountMailbox(host, _opts) {
   }
 
   // ── Search ────────────────────────────────────────────────
+  // Server-side search (Gmail-style operators) when a query is active;
+  // debounced + token-guarded so out-of-order responses can't overwrite a
+  // newer search. Empty query restores the local view over the loaded set.
   let _searchTimer;
+  let _searchToken = 0;
   $('#search').addEventListener('input', (e) => {
     state.query = e.target.value;
     if (_searchTimer) clearTimeout(_searchTimer);
-    _searchTimer = setTimeout(() => applyFilter(), 150);
+    const q = state.query.trim();
+    if (!q) { _searchToken++; state.searchResults = null; applyFilter(); return; }
+    _searchTimer = setTimeout(async () => {
+      const myToken = ++_searchToken;
+      try {
+        const acct = state.accountFilters.size === 1
+          ? [...state.accountFilters][0] : undefined;
+        const res = await api.searchEmails(q, acct ? { account: acct } : {});
+        if (myToken !== _searchToken) return;   // superseded by a newer search
+        state.searchResults = res.results || [];
+      } catch (_) {
+        if (myToken !== _searchToken) return;
+        state.searchResults = null;             // fall back to local filtering
+      }
+      applyFilter();
+    }, 250);
   });
+
+  // Conversation-view toggle: collapse the list by thread (server-side).
+  (function wireThreadToggle() {
+    const btn = $('#thread-toggle');
+    if (!btn) return;
+    const sync = () => {
+      btn.classList.toggle('is-active', state.threadView);
+      btn.setAttribute('aria-pressed', state.threadView ? 'true' : 'false');
+    };
+    sync();
+    btn.addEventListener('click', () => {
+      state.threadView = !state.threadView;
+      try { localStorage.setItem('mb-thread-view', state.threadView ? '1' : '0'); } catch (_) {}
+      sync();
+      loadEmails();
+    });
+  })();
 
   // Honour `#/inbox?q=...` so other pages (notably the cleanup workspace)
   // can deep-link to a sender-filtered view of the inbox.
@@ -4424,6 +4493,11 @@ export async function mountMailbox(host, _opts) {
     const unreadM = hash.match(/[?&]unread=1/);
     if (unreadM) {
       state.onlyUnread = true;
+      renderChips();
+    }
+    // `#/inbox?reply=1` — deep-link from the command palette ("what needs a reply").
+    if (hash.match(/[?&]reply=1/)) {
+      state.onlyReply = true;
       renderChips();
     }
   })();

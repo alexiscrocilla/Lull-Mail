@@ -225,6 +225,16 @@ export async function mountSettings(host, opts = {}) {
                 </div>
                 <span class="set-hint">${t('set.polling.interval_hint')}</span>
               </label>
+              <label class="set-field">
+                <span class="set-label">${t('set.injection.label')}</span>
+                <select id="general-injection" class="set-input" style="max-width:220px">
+                  <option value="hybrid">${t('set.injection.hybrid')}</option>
+                  <option value="local">${t('set.injection.local')}</option>
+                  <option value="llm">${t('set.injection.llm')}</option>
+                  <option value="off">${t('set.injection.off')}</option>
+                </select>
+                <span class="set-hint">${t('set.injection.hint')}</span>
+              </label>
               <div class="set-field">
                 <span class="set-label">${t('set.polling.status_label')}</span>
                 <div id="set-services" class="set-status">…</div>
@@ -422,6 +432,21 @@ export async function mountSettings(host, opts = {}) {
           </div>
         </details>
 
+        <div class="set-subhead">${t('set.account.ai_section')}</div>
+        <div class="set-checks">
+          <label><input id="m-ai-enabled" type="checkbox" checked /> ${t('set.account.ai_enabled')}</label>
+        </div>
+        <div class="set-grid set-grid-3">
+          <label class="set-field">
+            <span class="set-label">${t('set.account.ai_threshold')}</span>
+            <input id="m-ai-threshold" type="number" min="0" max="10" class="set-input" placeholder="${t('set.account.ai_threshold_ph')}" style="max-width:120px" />
+            <span class="set-hint">${t('set.account.ai_threshold_hint')}</span>
+          </label>
+        </div>
+        <div class="set-checks">
+          <label><input id="m-auto-draft" type="checkbox" /> ${t('set.account.auto_draft')}</label>
+        </div>
+
         <div id="m-test-result" class="set-test-result"></div>
 
         <div class="set-modal-actions">
@@ -458,6 +483,7 @@ export async function mountSettings(host, opts = {}) {
     ntfyTopic:   host.querySelector('#ntfy-topic'),
     ntfyMin:     host.querySelector('#ntfy-min'),
     genInterval: host.querySelector('#general-interval'),
+    genInjection: host.querySelector('#general-injection'),
     btnAdd:    host.querySelector('#btn-add-acc'),
     btnSaveOA: host.querySelector('#btn-save-openai'),
     btnSaveNt: host.querySelector('#btn-save-ntfy'),
@@ -474,6 +500,9 @@ export async function mountSettings(host, opts = {}) {
     mStartTls:host.querySelector('#m-starttls'),
     mVerify:  host.querySelector('#m-verify'),
     mSmtpHost:    host.querySelector('#m-smtp-host'),
+    mAiEnabled:   host.querySelector('#m-ai-enabled'),
+    mAiThreshold: host.querySelector('#m-ai-threshold'),
+    mAutoDraft:   host.querySelector('#m-auto-draft'),
     mSmtpPort:    host.querySelector('#m-smtp-port'),
     mSmtpSsl:     host.querySelector('#m-smtp-ssl'),
     mSmtpStartTls:host.querySelector('#m-smtp-starttls'),
@@ -1129,6 +1158,10 @@ export async function mountSettings(host, opts = {}) {
 
     // General
     els.genInterval.value = (state.config.polling || {}).interval_minutes || 10;
+    if (els.genInjection) {
+      els.genInjection.value =
+        ((state.config.security || {}).injection_scan || {}).mode || 'hybrid';
+    }
 
     // Modal provider tiles — visual grid with logos. Click to select.
     // Falls back to a generic envelope icon when the provider has no
@@ -1191,9 +1224,13 @@ export async function mountSettings(host, opts = {}) {
 
   async function saveGeneral() {
     const polling = parseInt(els.genInterval.value, 10) || 10;
+    const injectionMode = els.genInjection?.value || 'hybrid';
     setBusy(els.btnSaveGn, true, t('set.busy.saving'));
     try {
-      await api('POST', '/api/setup/general', { polling_interval_minutes: polling });
+      await api('POST', '/api/setup/general', {
+        polling_interval_minutes: polling,
+        injection_scan_mode: injectionMode,
+      });
       window.toast?.(t('set.toast.saved'));
       await loadAll();
     } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
@@ -1235,6 +1272,10 @@ export async function mountSettings(host, opts = {}) {
     els.mPwd.value = '';
     els.mPwd.placeholder = t('set.modal.pwd_ph');
     els.mTestRes.innerHTML = '';
+    // AI profile defaults (blank threshold = inherit global)
+    if (els.mAiEnabled)   els.mAiEnabled.checked = true;
+    if (els.mAiThreshold) els.mAiThreshold.value = '';
+    if (els.mAutoDraft)   els.mAutoDraft.checked = false;
     state.selectedProviderId = null;
     if (state.providers.length) {
       selectProvider(state.providers[0].id);
@@ -1275,6 +1316,10 @@ export async function mountSettings(host, opts = {}) {
     els.mSmtpPort.value = acc.smtp_port ? acc.smtp_port : '';
     els.mSmtpSsl.checked = !!acc.smtp_ssl;
     els.mSmtpStartTls.checked = acc.smtp_starttls !== false;
+    // AI profile (defaults preserve old behaviour when absent)
+    if (els.mAiEnabled)   els.mAiEnabled.checked = acc.ai_account_enabled !== false;
+    if (els.mAiThreshold) els.mAiThreshold.value = acc.ai_importance_threshold || '';
+    if (els.mAutoDraft)   els.mAutoDraft.checked = !!acc.auto_draft;
 
     els.mName.focus();
     els.mName.select();
@@ -1364,6 +1409,10 @@ export async function mountSettings(host, opts = {}) {
       smtp_port: parseInt(els.mSmtpPort.value, 10) || 0,
       smtp_ssl: els.mSmtpSsl.checked,
       smtp_starttls: els.mSmtpStartTls.checked,
+      // Per-account AI profile. Blank threshold → 0 = inherit global.
+      ai_account_enabled: els.mAiEnabled ? els.mAiEnabled.checked : true,
+      ai_importance_threshold: parseInt(els.mAiThreshold?.value, 10) || 0,
+      auto_draft: els.mAutoDraft ? els.mAutoDraft.checked : false,
     };
   }
 

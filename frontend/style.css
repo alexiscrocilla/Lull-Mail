@@ -6174,3 +6174,61 @@ kbd {
 }
 #update-banner-dismiss:hover { opacity: 1; }
 
+/* ── Command palette (Cmd-K) ─────────────────────────────────────── */
+.cmdk-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.45);
+  display: grid; place-items: start center;
+  padding-top: 14vh;
+  z-index: 90;
+  backdrop-filter: blur(4px);
+}
+.cmdk-overlay.hidden { display: none; }
+.cmdk-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  width: min(560px, 92vw);
+  box-shadow: 0 24px 64px -12px rgba(0,0,0,0.35);
+  overflow: hidden;
+}
+.cmdk-search {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+.cmdk-search input {
+  flex: 1; border: none; outline: none; background: transparent;
+  font-size: 15px; color: var(--text);
+}
+.cmdk-list { list-style: none; margin: 0; padding: 6px; max-height: 46vh; overflow-y: auto; }
+.cmdk-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: 9px; cursor: pointer;
+  color: var(--text); font-size: 14px;
+}
+.cmdk-item .cmdk-tag {
+  margin-left: auto; font-size: 10px; font-weight: 700;
+  padding: 1px 6px; border-radius: 6px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.cmdk-item.active, .cmdk-item:hover { background: var(--surface-2); }
+.cmdk-result {
+  border-top: 1px solid var(--border);
+  padding: 14px 16px; font-size: 14px; line-height: 1.5;
+  color: var(--text); white-space: pre-wrap; max-height: 30vh; overflow-y: auto;
+}
+.cmdk-result.hidden { display: none; }
+
+/* Inline card indicators (injection ⚠ + auto-draft) + conversation chip */
+.mb-inject-inline { color: var(--warning); }
+.mb-draft-auto { color: var(--accent); }
+.mb-thread-count {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  padding: 1px 6px; border-radius: 8px; background: var(--surface-2);
+  margin-right: 4px;
+}
+.sort-select-btn.is-active { color: var(--accent); border-color: var(--accent); }
+
