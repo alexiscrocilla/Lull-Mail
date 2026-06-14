@@ -768,10 +768,13 @@ def get_thread(thread_id: str) -> List[Dict]:
 
 
 def get_threads(account: Optional[str] = None, folder: Optional[str] = None,
-                category: Optional[str] = None, limit: int = 100,
-                offset: int = 0) -> List[Dict]:
+                category: Optional[str] = None, is_read: Optional[bool] = None,
+                needs_reply: Optional[bool] = None, label: Optional[int] = None,
+                limit: int = 100, offset: int = 0) -> List[Dict]:
     """Collapsed conversation view: the latest email per thread_id, plus
-    `thread_count` and `thread_unread`. SQLite window functions (3.25+)."""
+    `thread_count` and `thread_unread`. SQLite window functions (3.25+).
+    is_read / needs_reply / label are applied at the thread (aggregate) level
+    so the conversation view honours the same sidebar/chip filters as flat."""
     where = "WHERE folder != 'deleted'"
     params: list = []
     if account:
@@ -785,16 +788,39 @@ def get_threads(account: Optional[str] = None, folder: Optional[str] = None,
     if category and category != "all":
         where += " AND category = ?"
         params.append(category)
+    if label is not None:
+        # Keep whole threads that contain at least one message bearing the
+        # label (so counts stay correct), not just the labelled messages.
+        where += (
+            " AND COALESCE(thread_id, message_id) IN ("
+            "SELECT COALESCE(e2.thread_id, e2.message_id) FROM emails e2 "
+            "JOIN email_labels el ON el.email_int_id = e2.int_id "
+            "WHERE el.label_id = ?)"
+        )
+        params.append(int(label))
+
+    # Thread-level filters apply to the AGGREGATE: a thread is "unread" if any
+    # message is unread, "needs reply" if any message does.
+    outer = ["_rn = 1"]
+    if is_read is True:
+        outer.append("thread_unread = 0")
+    elif is_read is False:
+        outer.append("thread_unread > 0")
+    if needs_reply:
+        outer.append("thread_needs_reply > 0")
+    outer_where = " AND ".join(outer)
+
     q = f"""
         SELECT * FROM (
             SELECT *,
                 ROW_NUMBER() OVER (PARTITION BY COALESCE(thread_id, message_id)
                     ORDER BY COALESCE(date_received_iso, '0000') DESC) AS _rn,
                 COUNT(*)         OVER (PARTITION BY COALESCE(thread_id, message_id)) AS thread_count,
-                SUM(1 - is_read) OVER (PARTITION BY COALESCE(thread_id, message_id)) AS thread_unread
+                SUM(1 - is_read) OVER (PARTITION BY COALESCE(thread_id, message_id)) AS thread_unread,
+                MAX(needs_reply) OVER (PARTITION BY COALESCE(thread_id, message_id)) AS thread_needs_reply
             FROM emails
             {where}
-        ) WHERE _rn = 1
+        ) WHERE {outer_where}
         ORDER BY COALESCE(date_received_iso, '0000') DESC, importance_score DESC
         LIMIT ? OFFSET ?
     """

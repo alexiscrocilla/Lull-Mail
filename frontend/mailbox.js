@@ -1585,8 +1585,17 @@ export async function mountMailbox(host, _opts) {
     const q = state.query.trim().toLowerCase();
     // Server-side search results take over while a query is active. Sorting
     // and re-render still flow through here so the sort buttons keep working.
+    // Still honour the account scope client-side: the server only scopes when
+    // exactly one account is selected, so a 2+ multi-selection is narrowed
+    // here (and emails from removed accounts are excluded either way).
     if (q && state.searchResults) {
-      const items = sortEmails(state.searchResults);
+      const activeAccts = new Set(state.accounts.map((a) => a.email));
+      const scoped = state.searchResults.filter((em) => {
+        if (activeAccts.size > 0 && !activeAccts.has(em.account_email)) return false;
+        if (state.accountFilters.size > 1 && !state.accountFilters.has(em.account_email)) return false;
+        return true;
+      });
+      const items = sortEmails(scoped);
       state.filteredIds = items.map((e) => e.int_id);
       renderList(items);
       refreshGlobalSelectAll();
@@ -4334,6 +4343,13 @@ export async function mountMailbox(host, _opts) {
       }
       applyFilter(isBackground);
 
+      // A background refresh that lands while a search is active would
+      // otherwise re-render the stale searchResults (new mail invisible).
+      // Re-issue the search so the result set reflects the fresh data.
+      if (isBackground && state.query.trim() && state.searchResults) {
+        runServerSearch();
+      }
+
       // Auto-focus from URL ?focus=. Always open — even if the email is
       // outside the visible list (older than the 300 row cap, in another
       // folder, hidden by current filters…). openEmail() fetches the row
@@ -4410,7 +4426,9 @@ export async function mountMailbox(host, _opts) {
           setSyncSpinner(false);
           if (_syncWasRunning) {
             _syncWasRunning = false;
-            loadEmails();
+            // Background refresh: a completed sync is NOT a navigation, so it
+            // must not clear an active search or flash the skeleton.
+            loadEmails({ background: true });
             loadAccounts();
           }
         }
@@ -4428,25 +4446,34 @@ export async function mountMailbox(host, _opts) {
   // newer search. Empty query restores the local view over the loaded set.
   let _searchTimer;
   let _searchToken = 0;
+
+  // Run one server-side search for the current query, scoped to the active
+  // folder + account. The Drafts folder lives in a separate table, so there
+  // we skip the server and let applyFilter() filter the loaded drafts locally.
+  async function runServerSearch() {
+    const q = state.query.trim();
+    if (!q) { _searchToken++; state.searchResults = null; applyFilter(); return; }
+    const folder = state.folder || 'inbox';
+    if (folder === 'draft') { state.searchResults = null; applyFilter(); return; }
+    const myToken = ++_searchToken;
+    const params = { folder };
+    if (state.accountFilters.size === 1) params.account = [...state.accountFilters][0];
+    try {
+      const res = await api.searchEmails(q, params);
+      if (myToken !== _searchToken) return;   // superseded by a newer search
+      state.searchResults = res.results || [];
+    } catch (_) {
+      if (myToken !== _searchToken) return;
+      state.searchResults = null;             // fall back to local filtering
+    }
+    applyFilter();
+  }
+
   $('#search').addEventListener('input', (e) => {
     state.query = e.target.value;
     if (_searchTimer) clearTimeout(_searchTimer);
-    const q = state.query.trim();
-    if (!q) { _searchToken++; state.searchResults = null; applyFilter(); return; }
-    _searchTimer = setTimeout(async () => {
-      const myToken = ++_searchToken;
-      try {
-        const acct = state.accountFilters.size === 1
-          ? [...state.accountFilters][0] : undefined;
-        const res = await api.searchEmails(q, acct ? { account: acct } : {});
-        if (myToken !== _searchToken) return;   // superseded by a newer search
-        state.searchResults = res.results || [];
-      } catch (_) {
-        if (myToken !== _searchToken) return;
-        state.searchResults = null;             // fall back to local filtering
-      }
-      applyFilter();
-    }, 250);
+    if (!state.query.trim()) { _searchToken++; state.searchResults = null; applyFilter(); return; }
+    _searchTimer = setTimeout(runServerSearch, 250);
   });
 
   // Conversation-view toggle: collapse the list by thread (server-side).

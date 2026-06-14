@@ -83,6 +83,28 @@ def test_date_end_includes_end_of_day_across_offset(fresh_app):
     assert "<eod@t>" in {r["message_id"] for r in res}
 
 
+def test_search_endpoint_scopes_to_folder(client):
+    """A `folder` param scopes results to that folder unless the query already
+    carries an explicit in: operator."""
+    from src import database as db
+    db.insert_email({
+        "message_id": "<inb@t>", "account": "u@x.fr", "uid": "1",
+        "subject": "rapport", "sender": "a@b.c", "recipient": "u@x.fr",
+        "body_text": "x", "date_str": "Mon, 05 May 2025 10:00:00 +0000",
+    })
+    db.insert_email({
+        "message_id": "<snt@t>", "account": "u@x.fr", "uid": "2",
+        "subject": "rapport", "sender": "u@x.fr", "recipient": "c@d.e",
+        "body_text": "x", "date_str": "Tue, 06 May 2025 10:00:00 +0000",
+    })
+    db.update_email_folder("<snt@t>", "sent")
+    r = client.get("/api/emails/search", params={"q": "rapport", "folder": "inbox"})
+    assert {row["message_id"] for row in r.json()["results"]} == {"<inb@t>"}
+    # An explicit in: operator wins over the folder scope.
+    r2 = client.get("/api/emails/search", params={"q": "rapport in:sent", "folder": "inbox"})
+    assert {row["message_id"] for row in r2.json()["results"]} == {"<snt@t>"}
+
+
 def test_search_endpoint(client):
     """The /api/emails/search endpoint returns {parsed, results}."""
     from src import database as db

@@ -607,6 +607,16 @@ def save_llm(payload: LLMProviderPayload,
         "drafter_idle_timeout_min": 5,
     })
     _persist(data)
+    # Drop the cached provider singleton so the next get_provider() re-picks
+    # the backend from the new config. Without this, the in-memory singleton
+    # stays the OLD provider until a full restart — which would make AI
+    # features (injection scan, draft verify, agent) keep talking to the
+    # previous backend, e.g. leaking bodies to OpenAI after a switch to local.
+    try:
+        from src.llm.registry import reset as _reset_llm
+        _reset_llm()
+    except Exception:
+        logger.exception("registry.reset après bascule provider a échoué")
     return {"ok": True}
 
 

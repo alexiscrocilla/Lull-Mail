@@ -262,9 +262,12 @@ def list_emails(
     if view == "threads":
         # Collapsed conversation view: one row per thread. get_threads takes a
         # single account, so a multi-selection falls back to all accounts.
+        # is_read/needs_reply/label are honoured at the thread level so the
+        # sidebar/chip filters work the same as in flat view.
         rows = db.get_threads(
             account=acct_filter if isinstance(acct_filter, str) else None,
             folder=folder, category=category,
+            is_read=is_read, needs_reply=needs_reply, label=label,
             limit=min(limit, 2000), offset=offset,
         )
     else:
@@ -300,10 +303,15 @@ def _attach_counts_and_labels(rows: list) -> list:
 
 @app.get("/api/emails/search")
 def search_emails_ep(q: str, account: Optional[str] = None,
+                     folder: Optional[str] = None,
                      limit: int = 100, offset: int = 0):
     """Server-side search with Gmail-style operators (from:/to:/subject:/in:/
-    is:/has:/before:/after:). Returns parsed filters + results."""
+    is:/has:/before:/after:). `folder` scopes results to the current view's
+    folder unless the query already carries an explicit `in:` operator.
+    Returns parsed filters + results."""
     parsed = parse_search_query(q)
+    if folder and not parsed.get("folder"):
+        parsed["folder"] = folder
     rows = db.search_emails(parsed, account=account,
                             limit=min(limit, 2000), offset=offset)
     _attach_counts_and_labels(rows)

@@ -109,6 +109,37 @@ def test_subject_fallback_excludes_outside_window(fresh_app):
     assert _thread_id(db, "<new@t>") != _thread_id(db, "<old@t>")
 
 
+def test_get_threads_honors_unread_and_needs_reply_filters(fresh_app):
+    """Conversation view must apply is_read/needs_reply at the thread level."""
+    from src import database as db
+    # Thread A: all read.
+    _ins(db, "<a1@t>", "Sujet A", date="Mon, 05 May 2025 10:00:00 +0000")
+    db.mark_read("<a1@t>")
+    # Thread B: has an unread message.
+    _ins(db, "<b1@t>", "Sujet B", date="Tue, 06 May 2025 10:00:00 +0000")
+    unread = db.get_threads(folder="inbox", is_read=False)
+    assert {t["message_id"] for t in unread} == {"<b1@t>"}
+    read = db.get_threads(folder="inbox", is_read=True)
+    assert {t["message_id"] for t in read} == {"<a1@t>"}
+
+
+def test_get_threads_honors_label_filter(fresh_app):
+    """A label filter must keep whole threads containing a labelled message."""
+    from src import database as db
+    _ins(db, "<lr@t>", "Projet", date="Mon, 05 May 2025 10:00:00 +0000")
+    _ins(db, "<la@t>", "Re: Projet", in_reply_to="<lr@t>",
+         date="Tue, 06 May 2025 10:00:00 +0000")
+    _ins(db, "<other@t>", "Autre", date="Wed, 07 May 2025 10:00:00 +0000")
+    lab = db.create_label("Travail", "#0D9488")  # returns the new label id
+    rows = db.get_emails(limit=10)
+    root_int = next(r["int_id"] for r in rows if r["message_id"] == "<lr@t>")
+    db.set_email_labels(root_int, [lab])
+    threads = db.get_threads(folder="inbox", label=lab)
+    # The whole Projet thread qualifies (latest message represents it); the
+    # unrelated thread is excluded.
+    assert {t["message_id"] for t in threads} == {"<la@t>"}
+
+
 def test_thread_endpoint(client):
     from src import database as db
     _ins(db, "<r2@t>", "Sujet")
