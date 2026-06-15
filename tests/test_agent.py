@@ -92,7 +92,7 @@ def test_run_agent_executes_tool_then_answers(fresh_app, monkeypatch):
     step1 = types.SimpleNamespace(
         content="", tool_calls=[_fake_tool_call("list_emails", {"folder": "inbox"})])
     step2 = types.SimpleNamespace(content="Tu as 1 email en attente.", tool_calls=None)
-    monkeypatch.setattr(agent, "_openai_client", lambda: _fake_client([step1, step2]))
+    monkeypatch.setattr(agent, "_chat", lambda: (_fake_client([step1, step2]), "gpt-4o-mini"))
 
     out = agent.run_agent("Qu'est-ce qui attend ?")
     assert out["text"] == "Tu as 1 email en attente."
@@ -104,14 +104,14 @@ def test_run_agent_step_cap(fresh_app, monkeypatch):
     # Always returns a tool call → loop must stop at max_steps.
     always = types.SimpleNamespace(
         content="", tool_calls=[_fake_tool_call("list_emails", {})])
-    monkeypatch.setattr(agent, "_openai_client", lambda: _fake_client([always] * 10))
+    monkeypatch.setattr(agent, "_chat", lambda: (_fake_client([always] * 10), "gpt-4o-mini"))
     out = agent.run_agent("boucle", max_steps=3)
     assert len(out["trace"]) == 3
 
 
 def test_run_agent_raises_without_client(monkeypatch):
     from src import agent
-    monkeypatch.setattr(agent, "_openai_client", lambda: None)
+    monkeypatch.setattr(agent, "_chat", lambda: (None, None))
     import pytest
     with pytest.raises(RuntimeError):
         agent.run_agent("hello")

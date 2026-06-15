@@ -22,9 +22,43 @@ ces noms depuis ici.
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from src.llm.registry import get_provider, reset  # re-export
+
+
+def chat_client() -> Tuple[Optional[Any], Optional[str]]:
+    """Return ``(client, model)`` for the active provider, or ``(None, None)``.
+
+    ``client`` is an OpenAI-compatible client — the cloud OpenAI client when
+    ``provider == openai``, or the LOCAL ``llama_cpp.server`` client (also
+    OpenAI-compatible) when ``provider == local``. ``model`` is the name to
+    pass on the request.
+
+    This is what lets the OpenAI-flavoured extras (prompt-injection LLM check,
+    draft verification, the Cmd-K assistant/agent) run with NO OpenAI account
+    when the user has gone fully local — the same chat-completions API, pointed
+    at the embedded local server.
+    """
+    try:
+        p = get_provider()
+    except Exception:  # noqa: BLE001
+        return None, None
+    # Cloud OpenAI provider.
+    client = getattr(p, "_client", None)
+    if client is not None:
+        try:
+            from src import config as cfg
+            model = (cfg.get().get("openai") or {}).get("model", "gpt-4o-mini")
+        except Exception:  # noqa: BLE001
+            model = "gpt-4o-mini"
+        return client, model
+    # Local provider — reuse its always-on analyzer server (OpenAI-compatible).
+    client = getattr(p, "_analyzer_client", None)
+    if client is not None:
+        model = getattr(p, "analyzer_model_id", None) or "local"
+        return client, model
+    return None, None
 
 
 def init_client(api_key: str) -> None:
@@ -60,4 +94,5 @@ __all__ = [
     "enrich_draft",
     "get_provider",
     "reset",
+    "chat_client",
 ]

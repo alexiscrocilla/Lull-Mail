@@ -18,14 +18,15 @@ from src import agent_tools
 logger = logging.getLogger(__name__)
 
 
-def _openai_client():
-    """Raw OpenAI client from the active provider, or None (local mode / no
-    key). The tool-calling agent is OpenAI-specific."""
+def _chat():
+    """(client, model) for the active LLM backend — cloud OpenAI OR the local
+    llama_cpp.server — or (None, None). Tool-calling on small local models is
+    best-effort, but the same chat-completions API drives both."""
     try:
-        from src.llm.registry import get_provider
-        return getattr(get_provider(), "_client", None)
+        from src.llm import chat_client
+        return chat_client()
     except Exception:  # noqa: BLE001
-        return None
+        return None, None
 
 
 _AGENT_SYSTEM = """Tu es l'assistant de la boîte mail locale de l'utilisateur (Lull Mail).
@@ -40,16 +41,16 @@ Règles :
   tout le corps dans la discussion."""
 
 
-def run_agent(message: str, model: str = "gpt-4o-mini", max_steps: int = 5) -> dict:
-    """Run the agent loop for one user message.
+def run_agent(message: str, model: Optional[str] = None, max_steps: int = 5) -> dict:
+    """Run the agent loop for one user message, on whichever LLM backend is
+    active (cloud OpenAI or the local server — tool-calling best-effort there).
 
     Returns ``{"text": str, "trace": [{"tool", "args"}...]}``. Raises
-    RuntimeError if no OpenAI client is initialised (caller maps to 409).
-    The tool-calling agent is OpenAI-specific; in local-LLM mode the active
-    provider has no OpenAI client and this raises (endpoint → 409)."""
-    client = _openai_client()
+    RuntimeError when no LLM backend is available (caller maps to 409)."""
+    client, active_model = _chat()
     if client is None:
         raise RuntimeError("IA désactivée")
+    model = model or active_model
 
     messages = [
         {"role": "system", "content": _AGENT_SYSTEM},

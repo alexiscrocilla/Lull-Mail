@@ -21,7 +21,7 @@ def _fake_client(content=None, raises=False):
 
 
 def _use_client(monkeypatch, client):
-    monkeypatch.setattr(draft_verify, "_openai_client", lambda: client)
+    monkeypatch.setattr(draft_verify, "_chat", lambda: (client, "gpt-4o-mini"))
 
 
 def test_short_text_returned_asis(monkeypatch):

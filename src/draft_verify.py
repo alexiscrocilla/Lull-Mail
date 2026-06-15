@@ -35,28 +35,29 @@ RÈGLES :
 4. Renvoie UNIQUEMENT le texte de l'email. Aucune explication, aucun préambule."""
 
 
-def _openai_client():
-    """Raw OpenAI client from the active provider, or None (local mode /
-    no key). When None, verify_draft returns the original unchanged."""
+def _chat():
+    """(client, model) for the active LLM backend (cloud OpenAI or local
+    server), or (None, None). When None, verify_draft returns the original."""
     try:
-        from src.llm.registry import get_provider
-        return getattr(get_provider(), "_client", None)
+        from src.llm import chat_client
+        return chat_client()
     except Exception:  # noqa: BLE001
-        return None
+        return None, None
 
 
-def verify_draft(text: str, model: str = "gpt-4o-mini") -> str:
+def verify_draft(text: str, model: Optional[str] = None) -> str:
     """Return a cleaned draft body, or the original on any uncertainty.
 
-    Guards: skips very short drafts, falls back to the original if the AI
-    removes more than 50% of the content (over-aggressive), and never
-    returns an empty string."""
+    Runs on whichever LLM backend is active (cloud or local). Guards: skips
+    very short drafts, falls back to the original if the AI removes more than
+    50% of the content (over-aggressive), and never returns an empty string."""
     if not text or len(text.strip()) < 20:
         return text
 
-    client = _openai_client()
+    client, active_model = _chat()
     if client is None:
         return text
+    model = model or active_model
 
     try:
         r = client.chat.completions.create(
