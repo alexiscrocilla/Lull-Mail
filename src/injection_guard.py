@@ -57,22 +57,22 @@ def _local(text: str) -> str:
     return "clean"
 
 
-def _openai_client():
-    """Raw OpenAI client from the active LLM provider, or None when the
-    active provider isn't OpenAI / isn't initialised (e.g. local-LLM mode).
-    The LLM-backed injection check is OpenAI-specific; when unavailable,
-    scan() degrades to 'unverified' (fail-open classify / fail-closed draft)."""
+def _chat():
+    """(client, model) for the active LLM backend — cloud OpenAI OR the local
+    llama_cpp.server — or (None, None). The LLM-backed injection check works
+    with either; when neither is available scan() degrades to 'unverified'
+    (fail-open classify / fail-closed draft)."""
     try:
-        from src.llm.registry import get_provider
-        return getattr(get_provider(), "_client", None)
+        from src.llm import chat_client
+        return chat_client()
     except Exception:  # noqa: BLE001
-        return None
+        return None, None
 
 
 def _llm(text: str) -> Optional[bool]:
-    """YES/NO via gpt-4o-mini. Returns None when the call is impossible
-    (no client) or fails — callers decide how to treat the uncertainty."""
-    client = _openai_client()
+    """YES/NO via the active LLM. Returns None when no backend is available
+    or the call fails — callers decide how to treat the uncertainty."""
+    client, model = _chat()
     if client is None:
         return None
     prompt = (
@@ -83,7 +83,7 @@ def _llm(text: str) -> Optional[bool]:
     )
     try:
         r = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             messages=[
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": (text or "")[:2000]},

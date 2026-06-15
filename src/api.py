@@ -486,19 +486,22 @@ def assistant_ask(request: Request, body: AssistantAsk,
                   locale: str = Depends(get_locale)):
     """Bounded AI agent over the local mailbox. Returns the assistant's text
     plus a `trace` of the tool calls (transparency). Read + draft only — no
-    send. Tool-calling is OpenAI-specific; in local-LLM mode it returns 409."""
+    send. Runs on the active LLM backend: cloud OpenAI, or the local model
+    (tool-calling best-effort on small local models)."""
     if not cfg.ai_enabled():
         raise HTTPException(409, tr("assistant.ai_disabled", locale))
     from src.ai_processor import init_client
     from src import agent
     conf = cfg.get()
+    # OpenAI needs a lazy client init (the local analyzer is already started by
+    # lifecycle at boot). run_agent(model=None) then picks the active backend's
+    # model via chat_client().
     if (conf.get("llm") or {}).get("provider", "openai") == "openai":
         init_client(conf.get("openai", {}).get("api_key", ""))
-    model = conf.get("openai", {}).get("model", "gpt-4o-mini")
     try:
-        return agent.run_agent(body.message, model=model)
+        return agent.run_agent(body.message)
     except RuntimeError:
-        # No OpenAI client (e.g. local-LLM provider active) → agent unavailable.
+        # No LLM backend ready (e.g. local analyzer not started) → unavailable.
         raise HTTPException(409, tr("assistant.ai_disabled", locale))
     except Exception as e:  # noqa: BLE001
         logging.getLogger(__name__).error(f"assistant error: {e}")

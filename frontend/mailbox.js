@@ -561,6 +561,21 @@ export async function mountMailbox(host, _opts) {
             <div class="sort-select" id="sort-select-wrap"></div>
           </div>
         </div>
+        <div class="mb-filter-bar" id="search-filters">
+          <span class="mb-filter-lead"><i data-lucide="sliders-horizontal" class="w-3.5 h-3.5"></i></span>
+          <button class="mb-fbtn" type="button" data-op="has:attachment" aria-pressed="false">
+            <i data-lucide="paperclip" class="w-3.5 h-3.5"></i><span>${t('mb.filter.attachment')}</span>
+          </button>
+          <button class="mb-fbtn" type="button" data-op="is:starred" aria-pressed="false">
+            <i data-lucide="star" class="w-3.5 h-3.5"></i><span>${t('mb.filter.starred')}</span>
+          </button>
+          <select class="mb-fdate" id="search-date" aria-label="${t('mb.filter.date')}">
+            <option value="">${t('mb.filter.date_any')}</option>
+            <option value="7">${t('mb.filter.date_7')}</option>
+            <option value="30">${t('mb.filter.date_30')}</option>
+            <option value="365">${t('mb.filter.date_year')}</option>
+          </select>
+        </div>
         <div class="mb-sel-bar" id="sel-bar" hidden>
           <div class="sel-left">
             <button class="sel-btn" data-act="clear" title="${t('mb.sel.clear')}" aria-label="${t('mb.sel.clear')}">
@@ -1590,9 +1605,16 @@ export async function mountMailbox(host, _opts) {
     // here (and emails from removed accounts are excluded either way).
     if (q && state.searchResults) {
       const activeAccts = new Set(state.accounts.map((a) => a.email));
+      const cat0 = state.category || '';
+      // Compose the quick chips (Unread / Reply) + category + account scope
+      // ON TOP of the server search hits, so every filter intersects rather
+      // than one silently overriding the others.
       const scoped = state.searchResults.filter((em) => {
         if (activeAccts.size > 0 && !activeAccts.has(em.account_email)) return false;
         if (state.accountFilters.size > 1 && !state.accountFilters.has(em.account_email)) return false;
+        if (state.onlyUnread && em.is_read) return false;
+        if (state.onlyReply && !em.needs_reply) return false;
+        if (cat0 && em.category !== cat0) return false;
         return true;
       });
       const items = sortEmails(scoped);
@@ -4471,10 +4493,61 @@ export async function mountMailbox(host, _opts) {
 
   $('#search').addEventListener('input', (e) => {
     state.query = e.target.value;
+    renderSearchFilters();  // reflect operators typed by hand on the buttons
     if (_searchTimer) clearTimeout(_searchTimer);
     if (!state.query.trim()) { _searchToken++; state.searchResults = null; applyFilter(); return; }
     _searchTimer = setTimeout(runServerSearch, 250);
   });
+
+  // ── Filter bar: buttons that BUILD the search query ───────────────
+  // No need to know the operator syntax — click a chip and it adds/removes
+  // the matching operator in the search box, then runs the search.
+  function _hasOp(op) {
+    return state.query.split(/\s+/).some((tk) => tk.toLowerCase() === op.toLowerCase());
+  }
+  function _toggleOp(op) {
+    const tokens = state.query.split(/\s+/).filter(Boolean);
+    const i = tokens.findIndex((tk) => tk.toLowerCase() === op.toLowerCase());
+    if (i >= 0) tokens.splice(i, 1); else tokens.push(op);
+    state.query = tokens.join(' ');
+  }
+  function _setAfterDays(days) {
+    state.query = state.query.replace(/(^|\s)after:\S+/ig, ' ').replace(/\s+/g, ' ').trim();
+    if (days > 0) {
+      const d = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+      state.query = (state.query + ' after:' + d).trim();
+    }
+  }
+  function _afterPreset() {
+    const m = state.query.match(/after:(\d{4}-\d{2}-\d{2})/i);
+    if (!m) return '';
+    const diff = Math.round((Date.now() - new Date(m[1]).getTime()) / 86400000);
+    for (const v of [7, 30, 365]) if (Math.abs(diff - v) <= 2) return String(v);
+    return '';  // a hand-typed custom date → leave the dropdown on "Any date"
+  }
+  function renderSearchFilters() {
+    host.querySelectorAll('#search-filters .mb-fbtn').forEach((b) => {
+      const on = _hasOp(b.dataset.op);
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    const dsel = $('#search-date');
+    if (dsel) dsel.value = _afterPreset();
+  }
+  function _applyQueryChange() {
+    const inp = $('#search');
+    if (inp) inp.value = state.query;
+    renderSearchFilters();
+    runServerSearch();
+  }
+  host.querySelectorAll('#search-filters .mb-fbtn').forEach((b) => {
+    b.addEventListener('click', () => { _toggleOp(b.dataset.op); _applyQueryChange(); });
+  });
+  $('#search-date')?.addEventListener('change', (e) => {
+    _setAfterDays(parseInt(e.target.value, 10) || 0);
+    _applyQueryChange();
+  });
+  renderSearchFilters();
 
   // Conversation-view toggle: collapse the list by thread (server-side).
   (function wireThreadToggle() {

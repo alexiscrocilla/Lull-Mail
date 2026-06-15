@@ -209,6 +209,48 @@ revoke if something goes sideways.
 
 ---
 
+## Local MCP server
+
+Lull Mail can expose your **already-triaged inbox** to MCP-aware AI tools
+(Claude Desktop, Cursor, and others) over a local
+[Model Context Protocol](https://modelcontextprotocol.io) server. Your
+assistant can then list, read, search and **draft** replies across your
+accounts — entirely on your machine. Nothing is uploaded, and it can never
+send mail: there is no send tool, drafts only.
+
+It runs from a source checkout (it isn't wired into the packaged app yet):
+
+```bash
+pip install -r requirements.txt   # includes the optional `mcp` package
+python -m src.mcp_server           # stdio server
+```
+
+`src.mcp_server` reads the **same local SQLite database** the app uses (it
+resolves the same per-user data directory), so it sees exactly what Lull
+Mail has synced and classified — no second copy, no extra credentials.
+
+Point your client at it. For Claude Desktop, add to
+`claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "lull-mail": {
+      "command": "python",
+      "args": ["-m", "src.mcp_server"],
+      "cwd": "/path/to/lull-mail"
+    }
+  }
+}
+```
+
+Tools exposed: `list_emails`, `get_email`, `get_thread`, `search_emails`
+(Gmail-style operators), `draft_reply`, `mark_email_read`, `move_email`.
+Replies are saved to your Drafts folder for you to review and send from the
+app yourself.
+
+---
+
 ## For developers
 
 See [`docs/DEVELOPING.md`](docs/DEVELOPING.md) for local setup,

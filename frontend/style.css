@@ -6232,3 +6232,31 @@ kbd {
 }
 .sort-select-btn.is-active { color: var(--accent); border-color: var(--accent); }
 
+/* ── Search filter bar (buttons that build the query) ────────────── */
+.mb-filter-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 16px 0;
+  flex-wrap: wrap;
+}
+.mb-filter-lead { color: var(--muted-2, var(--muted)); display: inline-flex; }
+.mb-fbtn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 11px;
+  font-size: 12.5px; font-weight: 500;
+  color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 999px;
+  cursor: pointer; transition: background .12s, border-color .12s, color .12s;
+}
+.mb-fbtn:hover { background: var(--surface-2); }
+.mb-fbtn.active {
+  background: var(--accent-soft); border-color: var(--accent); color: var(--accent);
+}
+.mb-fbtn.active i { color: var(--accent); }
+.mb-fdate {
+  height: 28px; padding: 0 8px;
+  font-size: 12.5px; color: var(--text);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 999px; cursor: pointer;
+}
+.mb-fdate:focus { outline: none; border-color: var(--accent); }
+
