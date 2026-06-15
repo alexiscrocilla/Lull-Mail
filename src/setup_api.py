@@ -241,6 +241,17 @@ class OpenAIPayload(BaseModel):
     model: str = "gpt-4o-mini"
 
 
+class OllamaPayload(BaseModel):
+    base_url: str = "http://localhost:11434"
+    model: str = ""
+
+
+class AnthropicPayload(BaseModel):
+    # Same MASK / "" / fresh-value semantics as OpenAIPayload.api_key.
+    api_key: str
+    model: str = "claude-3-5-haiku-latest"
+
+
 class LLMProviderPayload(BaseModel):
     """Choix du provider IA (OpenAI cloud vs LLM local embarqué).
 
@@ -390,6 +401,27 @@ def _store_openai_secret(plain_key: str) -> str:
         return plain_key
 
 
+def _store_anthropic_secret(plain_key: str) -> str:
+    """Same as `_store_openai_secret` but for the Anthropic (Claude) key."""
+    from src import secrets_store
+    try:
+        return secrets_store.store_anthropic(plain_key)
+    except secrets_store.SecretsBackendError as e:
+        logger.warning(
+            "keyring write for Anthropic key failed (%s) — clear-text fallback", e,
+        )
+        return plain_key
+
+
+def _reset_llm_provider() -> None:
+    """Drop the cached provider singleton so the next use re-reads config."""
+    try:
+        from src.llm.registry import reset as _reset
+        _reset()
+    except Exception:
+        logger.exception("registry.reset failed")
+
+
 def _resolve_imap_secret(stored_value: str) -> str:
     """Return the real password behind a sentinel, or the value itself
     when it's already plain. Used to recover the actual password when
@@ -439,6 +471,10 @@ def get_config() -> Dict[str, Any]:
     # frontend believe a key exists and render the form accordingly.
     if data.get("openai") and data["openai"].get("api_key"):
         data["openai"] = {**data["openai"], "api_key": MASK}
+    # Mask the Anthropic key the same way.
+    _an = (data.get("llm") or {}).get("anthropic")
+    if _an and _an.get("api_key"):
+        data["llm"] = {**data["llm"], "anthropic": {**_an, "api_key": MASK}}
 
     # Enrich each account with its latest auto-test outcome so the
     # Settings list can render the status icon directly. Keeping the
@@ -481,6 +517,11 @@ def export_config() -> Dict[str, Any]:
     if data.get("openai") and data["openai"].get("api_key"):
         data["openai"] = {**data["openai"], "api_key": MASK}
 
+    # Mask Anthropic key
+    _an = (data.get("llm") or {}).get("anthropic")
+    if _an and _an.get("api_key"):
+        data["llm"] = {**data["llm"], "anthropic": {**_an, "api_key": MASK}}
+
     # Mask account passwords (keys stay as keyring: refs)
     for acc in (data.get("accounts") or []):
         if acc.get("password"):
@@ -508,6 +549,7 @@ def import_config(payload: ImportPayload,
     # Snapshot the raw keyring sentinels before the merge so we can
     # re-apply them when the imported value is the MASK sentinel.
     existing_openai_key = (current.get("openai") or {}).get("api_key", "")
+    existing_anthropic_key = ((current.get("llm") or {}).get("anthropic") or {}).get("api_key", "")
     existing_by_email = {
         acc.get("email", ""): acc.get("password", "")
         for acc in (current.get("accounts") or [])
@@ -527,6 +569,10 @@ def import_config(payload: ImportPayload,
     # Restore masked OpenAI key
     if current.get("openai") and current["openai"].get("api_key") == MASK:
         current["openai"]["api_key"] = existing_openai_key
+    # Restore masked Anthropic key
+    _cur_an = (current.get("llm") or {}).get("anthropic")
+    if _cur_an and _cur_an.get("api_key") == MASK:
+        _cur_an["api_key"] = existing_anthropic_key
 
     _persist(current)
 
@@ -575,6 +621,54 @@ def save_openai(payload: OpenAIPayload, locale: str = Depends(get_locale)) -> Di
     return {"ok": True}
 
 
+@router.post("/llm/ollama")
+def save_ollama(payload: OllamaPayload) -> Dict[str, Any]:
+    """Persist the Ollama base URL + chosen model. The provider switch itself
+    goes through POST /llm; this just stores the sub-config."""
+    data = _load_or_default()
+    llm_sect = data.setdefault("llm", {})
+    llm_sect["ollama"] = {
+        "base_url": (payload.base_url or "http://localhost:11434").rstrip("/"),
+        "model": payload.model or "",
+    }
+    _persist(data)
+    _reset_llm_provider()
+    return {"ok": True}
+
+
+@router.post("/llm/anthropic")
+def save_anthropic(payload: AnthropicPayload, locale: str = Depends(get_locale)) -> Dict[str, Any]:
+    """Persist the Claude API key (keyring) + model. MASK keeps the existing
+    key, "" disables/clears it, a fresh value is stored in the keyring."""
+    data = _load_or_default()
+    llm_sect = data.setdefault("llm", {})
+    existing = (llm_sect.get("anthropic") or {}).get("api_key", "")
+    from src import secrets_store
+
+    if payload.api_key == MASK:
+        new_key = existing
+    elif payload.api_key == "":
+        if existing:
+            try:
+                secrets_store.delete_anthropic()
+            except Exception:
+                logger.exception("delete_anthropic (toggle off) failed")
+        new_key = ""
+    else:
+        if not payload.api_key.startswith("sk-ant-"):
+            raise HTTPException(400, tr("setup.anthropic.bad_format", locale,
+                                        default="Clé Anthropic invalide (attendu sk-ant-…)."))
+        new_key = _store_anthropic_secret(payload.api_key)
+
+    llm_sect["anthropic"] = {
+        "api_key": new_key,
+        "model": payload.model or "claude-3-5-haiku-latest",
+    }
+    _persist(data)
+    _reset_llm_provider()
+    return {"ok": True}
+
+
 @router.post("/llm")
 def save_llm(payload: LLMProviderPayload,
              locale: str = Depends(get_locale)) -> Dict[str, Any]:
@@ -587,12 +681,14 @@ def save_llm(payload: LLMProviderPayload,
     no-AI au prochain start (`ai_enabled()` retourne False), donc
     aucun crash — l'UI doit guider l'user vers le téléchargement.
     """
-    if payload.provider not in ("openai", "local"):
+    if payload.provider not in ("openai", "local", "ollama", "anthropic"):
         raise HTTPException(400, tr("setup.llm.bad_provider", locale,
                                     default="Provider invalide."))
     data = _load_or_default()
     llm_sect = data.setdefault("llm", {})
     llm_sect["provider"] = payload.provider
+    llm_sect.setdefault("ollama", {"base_url": "http://localhost:11434", "model": ""})
+    llm_sect.setdefault("anthropic", {"api_key": "", "model": "claude-3-5-haiku-latest"})
     # Préserve la sous-section `local` si elle existe (modèles + tier
     # choisis précédemment via /api/llm/activate). On ne l'écrase pas
     # pour ne pas perdre la sélection de l'utilisateur quand il

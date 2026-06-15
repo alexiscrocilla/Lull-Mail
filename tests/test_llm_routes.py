@@ -95,8 +95,15 @@ def test_setup_llm_accepts_openai_and_local(client):
 
 
 def test_setup_llm_rejects_invalid_provider(client):
-    r = client.post("/api/setup/llm", json={"provider": "ollama"})
+    # ollama + anthropic are now valid providers; only an unknown one is rejected.
+    r = client.post("/api/setup/llm", json={"provider": "bogus"})
     assert r.status_code == 400
+
+
+def test_setup_llm_accepts_ollama_and_anthropic(client):
+    for prov in ("ollama", "anthropic"):
+        r = client.post("/api/setup/llm", json={"provider": prov})
+        assert r.status_code == 200, r.text
 
 
 def test_download_endpoint_streams_sse_for_already_present(client, tmp_path):

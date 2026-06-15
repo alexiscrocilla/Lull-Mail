@@ -107,25 +107,49 @@ class LocalLLMConfig(BaseModel):
     drafter_idle_timeout_min: int = Field(default=5, ge=0, le=1440)
 
 
+class OllamaConfig(BaseModel):
+    """Sous-config du provider `ollama` (serveur Ollama installé par
+    l'utilisateur sur sa machine ou son réseau). Ollama expose une API
+    compatible OpenAI sur `<base_url>/v1`, donc on parle au serveur via le
+    SDK OpenAI. `model` est l'un des modèles `ollama pull`-és (ex. `llama3.1`,
+    `qwen2.5`). Vide tant que l'utilisateur n'a pas choisi un modèle."""
+
+    base_url: str = "http://localhost:11434"
+    model: str = ""
+
+
+class AnthropicConfig(BaseModel):
+    """Sous-config du provider `anthropic` (Claude). La clé vit dans le
+    keyring (sentinel `keyring:default` résolu avec SERVICE_ANTHROPIC) ;
+    `config.yaml` ne porte que le sentinel."""
+
+    api_key: str = ""
+    model: str = "claude-3-5-haiku-latest"
+
+    @field_validator("api_key")
+    @classmethod
+    def _no_todo(cls, v: str) -> str:
+        if v.startswith(_TODO_PLACEHOLDER):
+            raise ValueError("clé API Anthropic non configurée (placeholder TODO)")
+        return v
+
+
 class LLMConfig(BaseModel):
     """Sélecteur de provider LLM.
 
-    `provider == "openai"` : backend par défaut (cf. Phase 1). Le champ
-    `local` est ignoré mais reste présent pour ne pas casser un yaml qui
-    aurait les deux sections.
+    - `openai`    : API OpenAI cloud (clé dans `openai.api_key`).
+    - `local`     : `LocalLLMProvider` (llama.cpp embarqué + GGUF téléchargé).
+    - `ollama`    : serveur Ollama local de l'utilisateur (API OpenAI-compat).
+    - `anthropic` : API Claude (clé dans `llm.anthropic.api_key`).
 
-    `provider == "local"` : active `LocalLLMProvider` (Phase 2). Le mode
-    "100 % gratuit" — aucun appel à OpenAI tant que ce flag est posé.
-    L'analyzer démarre au boot via `lifecycle.start_email_services` ; le
-    drafter est chargé à la demande.
-
-    Le champ est tolérant : un YAML qui ne contient pas la section
-    `llm:` retombe sur les défauts ci-dessous, donc les installations
-    pré-Phase-2 ne cassent pas.
+    Le champ est tolérant : un YAML sans section `llm:` retombe sur les
+    défauts, donc les installations antérieures ne cassent pas.
     """
 
-    provider: Literal["openai", "local"] = "openai"
+    provider: Literal["openai", "local", "ollama", "anthropic"] = "openai"
     local: LocalLLMConfig = Field(default_factory=LocalLLMConfig)
+    ollama: OllamaConfig = Field(default_factory=OllamaConfig)
+    anthropic: AnthropicConfig = Field(default_factory=AnthropicConfig)
 
 
 class NtfyConfig(BaseModel):
@@ -331,6 +355,15 @@ def _resolve_secrets(conf: Dict[str, Any]) -> None:
         except _ss.SecretsBackendError as e:
             raise ConfigError(f"clé OpenAI : {e}") from e
 
+    # Anthropic (Claude) key lives in the keyring too, under its own service.
+    anthropic = (conf.get("llm") or {}).get("anthropic") or {}
+    a_key = anthropic.get("api_key", "")
+    if _ss.is_sentinel(a_key):
+        try:
+            anthropic["api_key"] = _ss.resolve(a_key, _ss.SERVICE_ANTHROPIC)
+        except _ss.SecretsBackendError as e:
+            raise ConfigError(f"clé Anthropic : {e}") from e
+
     for acc in conf.get("accounts") or []:
         pwd = acc.get("password", "")
         if _ss.is_sentinel(pwd):
@@ -389,7 +422,15 @@ def ai_enabled() -> bool:
     each check — it's already kept in sync by `load()` / `reload()`.
     """
     conf = _config or {}
-    provider = (conf.get("llm") or {}).get("provider", "openai")
+    llm = conf.get("llm") or {}
+    provider = llm.get("provider", "openai")
+    if provider == "ollama":
+        # Reachability isn't checked here (no network call on a hot path);
+        # a configured model is the "ready" signal. An unreachable server
+        # surfaces as a sync error, not a silent no-AI.
+        return bool((llm.get("ollama") or {}).get("model"))
+    if provider == "anthropic":
+        return bool((llm.get("anthropic") or {}).get("api_key"))
     if provider == "local":
         # Lazy imports — `paths` est toujours présent, `catalog` peut être
         # absent pendant la transition Phase 1 → Phase 2 si quelqu'un fait
@@ -462,6 +503,8 @@ def default_skeleton() -> Dict[str, Any]:
                 "context_size": 4096,
                 "drafter_idle_timeout_min": 5,
             },
+            "ollama": {"base_url": "http://localhost:11434", "model": ""},
+            "anthropic": {"api_key": "", "model": "claude-3-5-haiku-latest"},
         },
         "ntfy": {"server": "https://ntfy.sh", "topic": "", "min_importance": 7},
         "polling": {"interval_minutes": 10, "initial_fetch_count": 500,

@@ -109,20 +109,34 @@ export async function mountSettings(host, opts = {}) {
             <span style="display:flex;align-items:center;gap:8px">
               <i data-lucide="sparkles" class="w-4 h-4"></i>${t('set.ai.title')}
             </span>
-            <div class="set-provider-radio" role="radiogroup" aria-label="${t('set.llm.provider_label')}">
-              <label class="set-prov-opt">
-                <input type="radio" name="llm-provider" id="llm-prov-openai" value="openai" />
-                <span>${t('set.llm.openai_option')}</span>
-              </label>
-              <label class="set-prov-opt">
-                <input type="radio" name="llm-provider" id="llm-prov-local" value="local" />
-                <span>${t('set.llm.local_option')}</span>
-              </label>
-            </div>
           </h3>
 
-          <!-- Sous-panneau OpenAI (mode cloud, défaut) -->
-          <div id="ai-panel-openai">
+          <!-- Provider tiles — click to pick the AI backend -->
+          <div class="ai-tiles" id="ai-tiles" role="radiogroup" aria-label="${t('set.llm.provider_label')}">
+            <button class="ai-tile" type="button" data-provider="local" role="radio" aria-checked="false">
+              <i data-lucide="cpu" class="w-5 h-5"></i>
+              <span class="ai-tile-name">${t('set.llm.tile_local')}</span>
+              <span class="ai-tile-sub">${t('set.llm.tile_local_sub')}</span>
+            </button>
+            <button class="ai-tile" type="button" data-provider="ollama" role="radio" aria-checked="false">
+              <i data-lucide="server" class="w-5 h-5"></i>
+              <span class="ai-tile-name">Ollama</span>
+              <span class="ai-tile-sub">${t('set.llm.tile_ollama_sub')}</span>
+            </button>
+            <button class="ai-tile" type="button" data-provider="openai" role="radio" aria-checked="false">
+              <i data-lucide="sparkles" class="w-5 h-5"></i>
+              <span class="ai-tile-name">OpenAI</span>
+              <span class="ai-tile-sub">${t('set.llm.tile_cloud_sub')}</span>
+            </button>
+            <button class="ai-tile" type="button" data-provider="anthropic" role="radio" aria-checked="false">
+              <i data-lucide="bot" class="w-5 h-5"></i>
+              <span class="ai-tile-name">Claude</span>
+              <span class="ai-tile-sub">${t('set.llm.tile_cloud_sub')}</span>
+            </button>
+          </div>
+
+          <!-- Sous-panneau OpenAI (mode cloud) -->
+          <div id="ai-panel-openai" class="hidden" style="margin-top:8px">
             <div id="ai-disabled-msg" class="sub hidden" style="margin-top:8px">
               ${t('set.ai.disabled_msg')}
             </div>
@@ -168,6 +182,50 @@ export async function mountSettings(host, opts = {}) {
               <button class="mb-cta set-btn" id="btn-activate-local" disabled>
                 ${t('set.llm.apply_btn')}
               </button>
+            </div>
+          </div>
+
+          <!-- Sous-panneau Ollama -->
+          <div id="ai-panel-ollama" class="hidden" style="margin-top:8px">
+            <p class="set-hint" style="margin-bottom:10px">${t('set.ollama.intro')}</p>
+            <div class="set-grid">
+              <label class="set-field">
+                <span class="set-label">${t('set.ollama.url_label')}</span>
+                <input id="ollama-url" type="text" class="set-input mono" placeholder="http://localhost:11434" />
+              </label>
+              <label class="set-field">
+                <span class="set-label">${t('set.ollama.model_label')}</span>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <select id="ollama-model" class="set-input" style="flex:1"></select>
+                  <button class="mb-cta set-btn-ghost" id="ollama-refresh" type="button" title="${t('set.ollama.refresh')}">
+                    <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                  </button>
+                </div>
+                <span class="set-hint" id="ollama-status"></span>
+              </label>
+            </div>
+            <div class="set-actions">
+              <button class="mb-cta set-btn" id="btn-save-ollama">${t('set.save')}</button>
+            </div>
+          </div>
+
+          <!-- Sous-panneau Claude (Anthropic) -->
+          <div id="ai-panel-anthropic" class="hidden" style="margin-top:8px">
+            <div class="set-grid">
+              <label class="set-field">
+                <span class="set-label">${t('set.anthropic.key_label')}</span>
+                <input id="anthropic-key" type="password" class="set-input mono" placeholder="${t('set.anthropic.key_ph')}" autocomplete="new-password" />
+                <span class="set-hint">${t('set.anthropic.key_hint')}</span>
+              </label>
+              <label class="set-field">
+                <span class="set-label">${t('set.ai.model_label')}</span>
+                <select id="anthropic-model" class="set-input">
+                  ${['claude-3-5-haiku-latest','claude-3-5-sonnet-latest','claude-3-7-sonnet-latest'].map(v => `<option value="${v}">${v}</option>`).join('')}
+                </select>
+              </label>
+            </div>
+            <div class="set-actions">
+              <button class="mb-cta set-btn" id="btn-save-anthropic">${t('set.save')}</button>
             </div>
           </div>
         </section>
@@ -471,10 +529,16 @@ export async function mountSettings(host, opts = {}) {
     aiFields:    host.querySelector('#ai-fields'),
     aiDisabledMsg: host.querySelector('#ai-disabled-msg'),
     // Provider radio (OpenAI / Local) — section IA
-    provRadioOpenAI: host.querySelector('#llm-prov-openai'),
-    provRadioLocal:  host.querySelector('#llm-prov-local'),
+    aiTiles:         host.querySelector('#ai-tiles'),
     panelOpenAI:     host.querySelector('#ai-panel-openai'),
     panelLocal:      host.querySelector('#ai-panel-local'),
+    panelOllama:     host.querySelector('#ai-panel-ollama'),
+    panelAnthropic:  host.querySelector('#ai-panel-anthropic'),
+    ollamaUrl:       host.querySelector('#ollama-url'),
+    ollamaModel:     host.querySelector('#ollama-model'),
+    ollamaStatus:    host.querySelector('#ollama-status'),
+    anthropicKey:    host.querySelector('#anthropic-key'),
+    anthropicModel:  host.querySelector('#anthropic-model'),
     llmModelsList:   host.querySelector('#llm-models-list'),
     llmDiskUsage:    host.querySelector('#llm-disk-usage'),
     btnActivateLocal:host.querySelector('#btn-activate-local'),
@@ -1028,29 +1092,83 @@ export async function mountSettings(host, opts = {}) {
   }
 
   function setActiveProvider(provider, { skipPersist = false } = {}) {
-    // Visual state
-    els.provRadioOpenAI.checked = (provider === 'openai');
-    els.provRadioLocal.checked  = (provider === 'local');
-    // Fallback :has → classes manuelles
-    host.querySelectorAll('.set-provider-radio .set-prov-opt').forEach(opt => {
-      const inp = opt.querySelector('input');
-      opt.classList.toggle('is-active', inp && inp.checked);
+    // Tile + panel visual state
+    host.querySelectorAll('#ai-tiles .ai-tile').forEach((tile) => {
+      const on = tile.dataset.provider === provider;
+      tile.classList.toggle('is-active', on);
+      tile.setAttribute('aria-checked', on ? 'true' : 'false');
     });
     els.panelOpenAI.classList.toggle('hidden', provider !== 'openai');
     els.panelLocal.classList.toggle('hidden', provider !== 'local');
+    els.panelOllama.classList.toggle('hidden', provider !== 'ollama');
+    els.panelAnthropic.classList.toggle('hidden', provider !== 'anthropic');
 
     if (skipPersist) return;
-    // Persiste côté backend, déclenche reload pour rafraîchir le banner
+    // Persist the switch, then refresh (local lazy-loads its model list;
+    // ollama refreshes its model dropdown).
     api('POST', '/api/setup/llm', { provider })
       .then(() => {
-        if (provider === 'local' && !state.localLoaded) {
-          loadLocalLLM();
-        }
+        if (provider === 'local' && !state.localLoaded) loadLocalLLM();
+        if (provider === 'ollama') refreshOllamaModels();
         return loadAll();  // refresh services_running banner
       })
       .catch((e) => {
         alert(t('set.llm.switch_failed') + ' — ' + (e.message || e));
       });
+  }
+
+  // ── Ollama panel ──────────────────────────────────────────────
+  async function refreshOllamaModels() {
+    const base = (els.ollamaUrl.value || 'http://localhost:11434').trim();
+    els.ollamaStatus.textContent = t('set.ollama.checking');
+    els.ollamaStatus.style.color = 'var(--muted)';
+    try {
+      const r = await api('GET', '/api/llm/ollama/models?base_url=' + encodeURIComponent(base));
+      const models = r.models || [];
+      const wanted = state._ollamaModelWanted || els.ollamaModel.value || '';
+      els.ollamaModel.innerHTML = models
+        .map((m) => `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join('');
+      if (wanted && models.includes(wanted)) els.ollamaModel.value = wanted;
+      if (!r.ok) {
+        els.ollamaStatus.textContent = t('set.ollama.unreachable');
+        els.ollamaStatus.style.color = 'var(--danger)';
+      } else {
+        els.ollamaStatus.textContent = models.length
+          ? t('set.ollama.found', { n: models.length }) : t('set.ollama.none');
+        els.ollamaStatus.style.color = models.length ? 'var(--success)' : 'var(--warning)';
+      }
+    } catch (e) {
+      els.ollamaStatus.textContent = t('set.ollama.unreachable');
+      els.ollamaStatus.style.color = 'var(--danger)';
+    }
+  }
+
+  async function saveOllama() {
+    try {
+      await api('POST', '/api/setup/llm/ollama', {
+        base_url: (els.ollamaUrl.value || 'http://localhost:11434').trim(),
+        model: els.ollamaModel.value || '',
+      });
+      window.toast?.(t('set.toast.saved'));
+      await loadAll();
+    } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
+  }
+
+  // ── Claude (Anthropic) panel ──────────────────────────────────
+  async function saveAnthropic() {
+    // Empty field: keep the existing key (MASK) when one is set, else stay
+    // cleared. A typed value replaces it.
+    const hasKey = els.anthropicKey.placeholder === t('set.ai.key_ph_set');
+    const raw = els.anthropicKey.value.trim();
+    const api_key = raw !== '' ? raw : (hasKey ? '***' : '');
+    try {
+      await api('POST', '/api/setup/llm/anthropic', {
+        api_key,
+        model: els.anthropicModel.value || 'claude-3-5-haiku-latest',
+      });
+      window.toast?.(t('set.toast.saved'));
+      await loadAll();
+    } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
   }
 
   function render() {
@@ -1126,10 +1244,24 @@ export async function mountSettings(host, opts = {}) {
       });
     }
 
-    // ── IA — Provider radio + sous-panneaux ───────────────────────
+    // ── IA — Provider tiles + sous-panneaux ───────────────────────
     const llmCfg = state.config.llm || { provider: 'openai' };
-    const providerActive = llmCfg.provider === 'local' ? 'local' : 'openai';
+    const _validProv = ['openai', 'local', 'ollama', 'anthropic'];
+    const providerActive = _validProv.includes(llmCfg.provider) ? llmCfg.provider : 'openai';
     setActiveProvider(providerActive, { skipPersist: true });
+
+    // Sous-panneau Ollama
+    const ol = llmCfg.ollama || {};
+    els.ollamaUrl.value = ol.base_url || 'http://localhost:11434';
+    state._ollamaModelWanted = ol.model || '';
+    if (providerActive === 'ollama') refreshOllamaModels();
+
+    // Sous-panneau Claude (Anthropic) — la clé n'est jamais ré-affichée.
+    const an = llmCfg.anthropic || {};
+    els.anthropicModel.value = an.model || 'claude-3-5-haiku-latest';
+    els.anthropicKey.value = '';
+    els.anthropicKey.placeholder = an.api_key === '***'
+      ? t('set.ai.key_ph_set') : t('set.anthropic.key_ph');
 
     // Sous-panneau OpenAI (toujours peuplé pour ne pas perdre l'état
     // quand l'user bascule local → openai → local sans recharger).
@@ -1607,14 +1739,13 @@ export async function mountSettings(host, opts = {}) {
   els.ntfySegOn?.addEventListener('change', _syncNtfySegActive);
   els.btnAdd.addEventListener('click', openModal);
   els.btnSaveOA.addEventListener('click', saveOpenAI);
-  // Provider radio (OpenAI / Local) — bascule le sous-panneau visible
-  // ET persiste côté backend via /api/setup/llm.
-  els.provRadioOpenAI.addEventListener('change', () => {
-    if (els.provRadioOpenAI.checked) setActiveProvider('openai');
+  // Provider tiles — pick a backend: show its panel + persist via /api/setup/llm.
+  els.aiTiles?.querySelectorAll('.ai-tile').forEach((tile) => {
+    tile.addEventListener('click', () => setActiveProvider(tile.dataset.provider));
   });
-  els.provRadioLocal.addEventListener('change', () => {
-    if (els.provRadioLocal.checked) setActiveProvider('local');
-  });
+  host.querySelector('#ollama-refresh')?.addEventListener('click', refreshOllamaModels);
+  host.querySelector('#btn-save-ollama')?.addEventListener('click', saveOllama);
+  host.querySelector('#btn-save-anthropic')?.addEventListener('click', saveAnthropic);
   els.btnActivateLocal.addEventListener('click', activateLocal);
   els.btnSaveNt.addEventListener('click', saveNtfy);
   els.btnSaveGn.addEventListener('click', saveGeneral);
@@ -2136,6 +2267,30 @@ function injectStyles() {
     /* ── Provider radio (OpenAI / Local) ──────────────────────────
        Pattern visuel : segmented control. Le label sélectionné est
        souligné par un fond accent ; les autres restent surface-2. */
+    /* ── AI provider tiles ── */
+    .ai-tiles {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+      margin: 4px 0 6px;
+    }
+    .ai-tile {
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      padding: 12px 8px; cursor: pointer; text-align: center;
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border); border-radius: 12px;
+      transition: border-color .14s, background .14s, box-shadow .14s;
+    }
+    .ai-tile:hover { border-color: var(--accent); background: var(--surface-2); }
+    .ai-tile.is-active {
+      border-color: var(--accent); background: var(--accent-soft);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .ai-tile i { color: var(--muted); }
+    .ai-tile.is-active i { color: var(--accent); }
+    .ai-tile-name { font-size: 13px; font-weight: 600; }
+    .ai-tile-sub { font-size: 11px; color: var(--muted); line-height: 1.2; }
+    .ai-tile.is-active .ai-tile-sub { color: var(--accent); }
+    @media (max-width: 560px) { .ai-tiles { grid-template-columns: repeat(2, 1fr); } }
+
     .set-provider-radio {
       display: inline-flex; padding: 3px;
       background: var(--surface-2); border-radius: 10px;

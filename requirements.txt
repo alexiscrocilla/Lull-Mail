@@ -5,6 +5,9 @@ certifi>=2024.2.2
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
 openai==1.57.0
+# Claude (Anthropic) provider. Ollama needs no extra dep — it reuses the
+# OpenAI SDK against its OpenAI-compatible endpoint.
+anthropic>=0.40.0
 pyyaml==6.0.2
 requests==2.32.3
 aiofiles==24.1.0
