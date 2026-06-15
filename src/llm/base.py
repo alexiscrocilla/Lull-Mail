@@ -132,6 +132,27 @@ def build_draft_prompt(data: Dict[str, Any], body_limit: int = 4000) -> str:
     )
 
 
+def extract_json(text: str) -> Dict[str, Any]:
+    """Best-effort JSON parse from a model reply: strips ``` fences and falls
+    back to the first {...} block. Small local models and Claude don't always
+    return bare JSON, so we never trust the raw string blindly."""
+    import json
+    s = (text or "").strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
+        s = re.sub(r"\s*```$", "", s).strip()
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        m = re.search(r"\{.*\}", s, re.S)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except json.JSONDecodeError:
+                pass
+    return {}
+
+
 def validate_classification_result(result: Dict[str, Any]) -> Dict[str, Any]:
     """Normalise le dict retourné par n'importe quel provider :
       - catégorie inconnue → "other"
@@ -196,3 +217,12 @@ class LLMProvider(ABC):
         sur place pour rester compatible avec l'ancien comportement, et
         renvoie la même référence pour la pratique."""
         raise NotImplementedError
+
+    def chat_endpoint(self) -> tuple:
+        """``(client, model)`` — an **OpenAI-compatible** chat client for the
+        OpenAI-flavoured extras (prompt-injection LLM check, draft verify, the
+        Cmd-K agent), plus the model name to use. Returns ``(None, None)`` when
+        the backend can't serve one. Each concrete provider overrides this so
+        those features work on whatever backend is active (cloud, local,
+        Ollama, or Claude via its OpenAI-compatible endpoint)."""
+        return None, None

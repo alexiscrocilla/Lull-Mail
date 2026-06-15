@@ -54,6 +54,12 @@ def get_provider() -> LLMProvider:
     if provider_name == "local":
         from src.llm.local_provider import LocalLLMProvider
         _provider = LocalLLMProvider()
+    elif provider_name == "ollama":
+        from src.llm.ollama_provider import OllamaProvider
+        _provider = OllamaProvider()
+    elif provider_name == "anthropic":
+        from src.llm.anthropic_provider import AnthropicProvider
+        _provider = AnthropicProvider()
     else:
         _provider = OpenAIProvider()
     return _provider

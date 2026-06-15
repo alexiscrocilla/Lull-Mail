@@ -44,7 +44,16 @@ def chat_client() -> Tuple[Optional[Any], Optional[str]]:
         p = get_provider()
     except Exception:  # noqa: BLE001
         return None, None
-    # Cloud OpenAI provider.
+    # Preferred path: every concrete provider implements chat_endpoint().
+    ce = getattr(p, "chat_endpoint", None)
+    if callable(ce):
+        try:
+            res = ce()
+            if res and res[0] is not None:
+                return res
+        except Exception:  # noqa: BLE001
+            pass
+    # Fallback for lightweight doubles without chat_endpoint (e.g. tests).
     client = getattr(p, "_client", None)
     if client is not None:
         try:
@@ -53,7 +62,6 @@ def chat_client() -> Tuple[Optional[Any], Optional[str]]:
         except Exception:  # noqa: BLE001
             model = "gpt-4o-mini"
         return client, model
-    # Local provider — reuse its always-on analyzer server (OpenAI-compatible).
     client = getattr(p, "_analyzer_client", None)
     if client is not None:
         model = getattr(p, "analyzer_model_id", None) or "local"

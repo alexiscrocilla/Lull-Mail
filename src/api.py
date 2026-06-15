@@ -2042,6 +2042,22 @@ def llm_models():
     return out
 
 
+@app.get("/api/llm/ollama/models")
+def llm_ollama_models(base_url: str = "http://localhost:11434"):
+    """List the models installed on the user's Ollama server (GET /api/tags).
+    Powers the model dropdown and doubles as a connection test: a non-empty
+    `models` list means Ollama is reachable. `ok=false` + `error` otherwise."""
+    import requests as _rq
+    url = (base_url or "http://localhost:11434").rstrip("/") + "/api/tags"
+    try:
+        r = _rq.get(url, timeout=4)
+        r.raise_for_status()
+        models = sorted({m.get("name", "") for m in (r.json().get("models") or []) if m.get("name")})
+        return {"ok": True, "models": models}
+    except Exception as e:  # noqa: BLE001 — surface as a friendly UI message
+        return {"ok": False, "models": [], "error": str(e)}
+
+
 @app.get("/api/llm/status")
 def llm_status():
     """État runtime des serveurs locaux. Utilisé par le bandeau

@@ -56,6 +56,9 @@ hiddenimports += collect_submodules("webview")
 # the frozen build would fall back to `keyring.backends.fail` on every
 # machine — and our credential migration would silently no-op.
 hiddenimports += collect_submodules("keyring")
+# `anthropic` (Claude provider) is imported lazily inside the provider, so be
+# explicit to guarantee its submodules land in the frozen build.
+hiddenimports += collect_submodules("anthropic")
 # `pystray` discovers its OS backend at runtime too. Include the right one
 # per platform so it isn't missed by static analysis.
 _pystray_backends: dict = {

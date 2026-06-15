@@ -50,6 +50,16 @@ class OpenAIProvider(LLMProvider):
             return
         self._client = OpenAI(api_key=api_key)
 
+    def chat_endpoint(self) -> tuple:
+        if self._client is None:
+            return None, None
+        try:
+            from src import config as cfg
+            model = (cfg.get().get("openai") or {}).get("model", "gpt-4o-mini")
+        except Exception:  # noqa: BLE001
+            model = "gpt-4o-mini"
+        return self._client, model
+
     def process_email(
         self, data: Dict[str, Any], model: str = "gpt-4o-mini"
     ) -> Optional[Dict[str, Any]]:

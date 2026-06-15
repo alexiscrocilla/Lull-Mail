@@ -77,6 +77,16 @@ def start_email_services(*, restart: bool = False) -> bool:
                 logger.warning("Local LLM indisponible (%s) — mode sans IA", e)
             except Exception:
                 logger.exception("init du provider local a échoué")
+        elif provider_name in ("ollama", "anthropic"):
+            # Lightweight remote/HTTP backends: no embedded server to spawn,
+            # just (re)build the client. Reset covers a provider switch.
+            from src.llm.registry import get_provider, reset as _reset_provider
+            _reset_provider()
+            try:
+                get_provider().init()
+                logger.info("Provider %s actif", provider_name)
+            except Exception:
+                logger.exception("init du provider %s a échoué", provider_name)
         else:
             api_key = (conf.get("openai") or {}).get("api_key", "")
             if api_key:

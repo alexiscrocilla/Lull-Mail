@@ -133,6 +133,13 @@ class LocalLLMProvider(LLMProvider):
         # ── Drafter : on mémorise juste le modèle voulu, pas démarré ──
         self.drafter_model_id = drafter_id
 
+    def chat_endpoint(self) -> tuple:
+        """The always-on analyzer server is OpenAI-compatible — reuse it for
+        the extras (injection scan, draft verify, agent) so they run locally."""
+        if self._analyzer_client is None:
+            return None, None
+        return self._analyzer_client, (self.analyzer_model_id or "local")
+
     def stop(self) -> None:
         """Arrête les deux serveurs proprement. Appelé par
         `lifecycle.stop_email_services` au shutdown app."""

@@ -42,6 +42,8 @@ logger = logging.getLogger(__name__)
 SERVICE_IMAP = "lull-mail-imap"
 SERVICE_OPENAI = "lull-mail-openai"
 OPENAI_USERNAME = "default"
+SERVICE_ANTHROPIC = "lull-mail-anthropic"
+ANTHROPIC_USERNAME = "default"
 
 # Sentinel marker stored in config.yaml. The colon-delimited form is
 # easy to grep, easy to spot, and unambiguous (a real IMAP password is
@@ -142,6 +144,30 @@ def delete_openai() -> None:
         kr.delete_password(SERVICE_OPENAI, OPENAI_USERNAME)
     except Exception as e:
         logger.debug("delete_openai ignored: %s", e)
+
+
+def store_anthropic(api_key: str) -> str:
+    """Persist the Anthropic (Claude) API key in the keyring. Returns the
+    sentinel (resolved later with SERVICE_ANTHROPIC)."""
+    if not api_key:
+        raise ValueError("clé API vide — rien à stocker")
+    kr = _keyring()
+    try:
+        kr.set_password(SERVICE_ANTHROPIC, ANTHROPIC_USERNAME, api_key)
+    except Exception as e:
+        raise SecretsBackendError(
+            f"Impossible d'écrire la clé Anthropic dans le keyring : {e}"
+        ) from e
+    return f"{SENTINEL_PREFIX}{ANTHROPIC_USERNAME}"
+
+
+def delete_anthropic() -> None:
+    """Remove the Anthropic key entry. Idempotent."""
+    kr = _keyring()
+    try:
+        kr.delete_password(SERVICE_ANTHROPIC, ANTHROPIC_USERNAME)
+    except Exception as e:
+        logger.debug("delete_anthropic ignored: %s", e)
 
 
 def resolve(value: Optional[str], service: str) -> str:
