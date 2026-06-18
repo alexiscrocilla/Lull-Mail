@@ -135,10 +135,30 @@ class LocalLLMProvider(LLMProvider):
 
     def chat_endpoint(self) -> tuple:
         """The always-on analyzer server is OpenAI-compatible — reuse it for
-        the extras (injection scan, draft verify, agent) so they run locally."""
+        the light extras (injection scan, draft verify) so they run locally
+        without booting the heavy drafter on every email during sync."""
         if self._analyzer_client is None:
             return None, None
         return self._analyzer_client, (self.analyzer_model_id or "local")
+
+    def agent_chat_endpoint(self) -> tuple:
+        """The Cmd-K agent needs reliable tool-calling, which the small
+        analyzer (Phi 3.5 Mini class) can't deliver — it hallucinates the
+        tool-call narrative instead of emitting a real function call, and
+        ships templated placeholders like '[adresse]' back to the user.
+
+        Route the agent at the drafter (Qwen 2.5 7B class, trained on
+        tool-call traces) when it's available. Lazy-start it via the same
+        path as draft generation — first Cmd-K query costs the 10-20 s
+        boot, subsequent queries land warm. Touch the activity stamp so
+        the idle unloader doesn't reap it mid-conversation. Fall back to
+        the analyzer if the drafter GGUF isn't downloaded — degraded but
+        non-broken; the user sees the same output as before the fix."""
+        client = self._ensure_drafter_running()
+        if client is not None and self.drafter_server is not None:
+            self.drafter_server.touch()
+            return client, (self.drafter_model_id or "local")
+        return self.chat_endpoint()
 
     def stop(self) -> None:
         """Arrête les deux serveurs proprement. Appelé par

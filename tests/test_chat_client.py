@@ -34,3 +34,44 @@ def test_none_when_no_backend(monkeypatch):
     prov = types.SimpleNamespace(_client=None)  # no analyzer client either
     monkeypatch.setattr(llm, "get_provider", lambda: prov)
     assert llm.chat_client() == (None, None)
+
+
+def test_agent_routes_to_drafter_when_local(monkeypatch):
+    """Local provider: agent_chat_client must hit the drafter (Qwen 7B class)
+    via agent_chat_endpoint, NOT the analyzer — the small analyzer can't
+    follow tool-call specs and hallucinates narrative replies instead."""
+    import src.llm as llm
+    fake_drafter = object()
+    prov = types.SimpleNamespace(
+        agent_chat_endpoint=lambda: (fake_drafter, "qwen-2.5-7b-q4"),
+        chat_endpoint=lambda: (object(), "phi-3.5-mini-q4"),
+    )
+    monkeypatch.setattr(llm, "get_provider", lambda: prov)
+    client, model = llm.agent_chat_client()
+    assert client is fake_drafter and model == "qwen-2.5-7b-q4"
+
+
+def test_agent_falls_back_to_chat_endpoint_for_cloud_providers(monkeypatch):
+    """OpenAI / Claude / Ollama don't override agent_chat_endpoint — the base
+    class delegates to chat_endpoint, so the agent runs on the same client
+    as the extras (one model handles both there)."""
+    from src.llm.base import LLMProvider
+    import src.llm as llm
+
+    fake_cloud = object()
+
+    class StubCloud(LLMProvider):
+        name = "stub"
+        def init(self, **kw):  # noqa: D401
+            pass
+        def process_email(self, data, model):  # noqa: D401
+            return None
+        def enrich_draft(self, data, existing_result, model):  # noqa: D401
+            return existing_result
+        def chat_endpoint(self):
+            return fake_cloud, "gpt-4o-mini"
+
+    prov = StubCloud()
+    monkeypatch.setattr(llm, "get_provider", lambda: prov)
+    client, model = llm.agent_chat_client()
+    assert client is fake_cloud and model == "gpt-4o-mini"

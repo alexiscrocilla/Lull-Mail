@@ -19,12 +19,14 @@ logger = logging.getLogger(__name__)
 
 
 def _chat():
-    """(client, model) for the active LLM backend — cloud OpenAI OR the local
-    llama_cpp.server — or (None, None). Tool-calling on small local models is
-    best-effort, but the same chat-completions API drives both."""
+    """(client, model) for the active LLM backend — cloud OpenAI/Claude/Ollama
+    OR the local llama_cpp.server — or (None, None). Routes the local provider
+    at its drafter (Qwen 2.5 7B class) instead of the always-on analyzer
+    (Phi-3.5-mini class): the analyzer hallucinates tool-call narratives
+    instead of emitting real function calls."""
     try:
-        from src.llm import chat_client
-        return chat_client()
+        from src.llm import agent_chat_client
+        return agent_chat_client()
     except Exception:  # noqa: BLE001
         return None, None
 

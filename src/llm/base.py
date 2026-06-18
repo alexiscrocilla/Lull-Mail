@@ -226,3 +226,13 @@ class LLMProvider(ABC):
         those features work on whatever backend is active (cloud, local,
         Ollama, or Claude via its OpenAI-compatible endpoint)."""
         return None, None
+
+    def agent_chat_endpoint(self) -> tuple:
+        """``(client, model)`` for the tool-calling Cmd-K agent specifically.
+
+        Defaults to :meth:`chat_endpoint` — cloud providers (OpenAI, Claude,
+        Ollama) have a single model that handles both the light extras and the
+        agent. The local provider overrides this to route the agent at the
+        heavier drafter (trained on tool-call traces) instead of the small
+        always-on analyzer, which can't follow tool specs reliably."""
+        return self.chat_endpoint()
