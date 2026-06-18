@@ -27,33 +27,24 @@ from typing import Any, Dict, Optional, Tuple
 from src.llm.registry import get_provider, reset  # re-export
 
 
-def chat_client() -> Tuple[Optional[Any], Optional[str]]:
-    """Return ``(client, model)`` for the active provider, or ``(None, None)``.
-
-    ``client`` is an OpenAI-compatible client — the cloud OpenAI client when
-    ``provider == openai``, or the LOCAL ``llama_cpp.server`` client (also
-    OpenAI-compatible) when ``provider == local``. ``model`` is the name to
-    pass on the request.
-
-    This is what lets the OpenAI-flavoured extras (prompt-injection LLM check,
-    draft verification, the Cmd-K assistant/agent) run with NO OpenAI account
-    when the user has gone fully local — the same chat-completions API, pointed
-    at the embedded local server.
-    """
+def _resolve_chat(method_name: str) -> Tuple[Optional[Any], Optional[str]]:
+    """Shared resolver for chat_client() and agent_chat_client(): asks the
+    active provider for an OpenAI-compatible (client, model) via the named
+    method, and falls back to the same tests-only doubles either helper
+    used to special-case inline."""
     try:
         p = get_provider()
     except Exception:  # noqa: BLE001
         return None, None
-    # Preferred path: every concrete provider implements chat_endpoint().
-    ce = getattr(p, "chat_endpoint", None)
-    if callable(ce):
+    fn = getattr(p, method_name, None)
+    if callable(fn):
         try:
-            res = ce()
+            res = fn()
             if res and res[0] is not None:
                 return res
         except Exception:  # noqa: BLE001
             pass
-    # Fallback for lightweight doubles without chat_endpoint (e.g. tests).
+    # Fallback for lightweight doubles without these methods (e.g. tests).
     client = getattr(p, "_client", None)
     if client is not None:
         try:
@@ -67,6 +58,35 @@ def chat_client() -> Tuple[Optional[Any], Optional[str]]:
         model = getattr(p, "analyzer_model_id", None) or "local"
         return client, model
     return None, None
+
+
+def chat_client() -> Tuple[Optional[Any], Optional[str]]:
+    """Return ``(client, model)`` for the active provider, or ``(None, None)``.
+
+    ``client`` is an OpenAI-compatible client — the cloud OpenAI client when
+    ``provider == openai``, or the LOCAL ``llama_cpp.server`` client (also
+    OpenAI-compatible) when ``provider == local``. ``model`` is the name to
+    pass on the request.
+
+    This is what lets the OpenAI-flavoured extras (prompt-injection LLM check,
+    draft verification) run with NO OpenAI account when the user has gone fully
+    local — the same chat-completions API, pointed at the embedded local server.
+
+    The Cmd-K agent uses :func:`agent_chat_client` instead, which routes at the
+    drafter in local mode (better tool-calling) rather than the analyzer.
+    """
+    return _resolve_chat("chat_endpoint")
+
+
+def agent_chat_client() -> Tuple[Optional[Any], Optional[str]]:
+    """Same as :func:`chat_client` but for the Cmd-K tool-calling agent.
+
+    Cloud providers (OpenAI, Claude, Ollama) return the same client as
+    :func:`chat_client`. The local provider lazy-starts the drafter and
+    returns it: Qwen 2.5 7B class models follow tool specs reliably,
+    Phi-3.5-mini class don't.
+    """
+    return _resolve_chat("agent_chat_endpoint")
 
 
 def init_client(api_key: str) -> None:
@@ -103,4 +123,5 @@ __all__ = [
     "get_provider",
     "reset",
     "chat_client",
+    "agent_chat_client",
 ]
