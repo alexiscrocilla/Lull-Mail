@@ -1679,9 +1679,6 @@ export async function mountMailbox(host, _opts) {
   let _firstRender = true;
   // Set to true when user changes a filter chip or sort mode (not background refresh).
   let _filterDidChange = false;
-  // False until the first loadEmails completes — lets a foreground navigation
-  // exit search mode without wiping a deep-linked ?q= on the very first load.
-  let _navLoadSeen = false;
   // Last card explicitly checked (avatar-click, Ctrl+click, Shift+click anchor) for range-select.
   let _lastCheckedId = null;
   // Monotonic token for in-flight loadEmails() calls. Each call captures
@@ -4279,16 +4276,6 @@ export async function mountMailbox(host, _opts) {
     // must never overwrite the state set by a more recent call.
     const myToken = ++_loadEmailsToken;
     _lastLoadAt = Date.now();
-    // Exit search mode on a real navigation (folder/category/account/thread
-    // toggle). Background refreshes keep the active search; the first load
-    // preserves a deep-linked ?q=.
-    if (!isBackground && _navLoadSeen && state.query) {
-      state.query = '';
-      state.searchResults = null;
-      const sinp = $('#search');
-      if (sinp) sinp.value = '';
-    }
-    _navLoadSeen = true;
     try {
       // 1 selected → single-account filter. 2+ selected → server-side
       // IN() filter via `accounts=` so the 2000-row cap applies to the
