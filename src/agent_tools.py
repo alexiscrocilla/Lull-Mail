@@ -241,3 +241,20 @@ def dispatch(name: str, args: dict) -> dict:
         return {"error": f"Arguments invalides pour {name}: {e}"}
     except Exception as e:  # noqa: BLE001 — tool errors are data, not crashes
         return {"error": f"{type(e).__name__}: {e}"}
+
+
+def tools_for_prompt() -> str:
+    """Compact JSON description of every tool, ready to inline in a system
+    prompt. Used by the local-model loop where ``tools=`` isn't reliable
+    through llama_cpp.server — we have to tell the model directly what's
+    available and how to call it."""
+    import json as _json
+    descs = []
+    for spec in TOOL_SPECS:
+        fn = spec["function"]
+        descs.append({
+            "name": fn["name"],
+            "description": fn["description"],
+            "parameters": fn["parameters"],
+        })
+    return _json.dumps(descs, ensure_ascii=False, indent=2)
