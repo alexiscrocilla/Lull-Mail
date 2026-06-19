@@ -3070,7 +3070,15 @@ export async function mountMailbox(host, _opts) {
       btn.title = target ? t('mb.action.unstar') : t('mb.action.star');
       btn.setAttribute('aria-pressed', target ? 'true' : 'false');
       try { await api.patchEmail(em.int_id, { is_favourite: target }); } catch (_) {}
-      await loadEmails();
+      // The email stays in the current folder set — no need to re-fetch.
+      // applyFilter() repaints the list from state.emails (already updated
+      // optimistically above) so the star icon on the visible card appears
+      // / disappears instantly. A full loadEmails() here used to paint a
+      // skeleton flash; if a background poll happened to bump
+      // _loadEmailsToken mid-fetch, the foreground response got dropped
+      // and the skeletons never went away until the next navigation.
+      applyFilter();
+      loadAccounts().catch(() => {});       // async badge-count refresh
       window.toast(target ? t('mb.toast.starred') : t('mb.toast.unstarred'));
     });
 
