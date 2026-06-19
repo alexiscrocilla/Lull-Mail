@@ -121,17 +121,26 @@ def test_run_agent_raises_without_client(monkeypatch):
 
 
 def _fake_text_client(script):
-    """Local-loop fake: each create() call pops the next text content.
+    """Local-loop fake: each create() call pops the next item.
+
+    An item may be:
+      - str: returned as the response content
+      - Exception class / instance: raised on that call
 
     Mirrors what llama_cpp.server returns when the model emits its native
     tool-call format (Qwen <tool_call>, Mistral [TOOL_CALLS], …) in the
-    response body rather than in tool_calls[]."""
+    response body rather than in tool_calls[], and lets us simulate the
+    overflow/HTTP-500 failure mode by injecting an Exception mid-script."""
     state = {"i": 0}
 
     def create(**kwargs):
-        text = script[state["i"]]
+        item = script[state["i"]]
         state["i"] += 1
-        msg = types.SimpleNamespace(content=text, tool_calls=None)
+        if isinstance(item, Exception):
+            raise item
+        if isinstance(item, type) and issubclass(item, BaseException):
+            raise item("boom")
+        msg = types.SimpleNamespace(content=item, tool_calls=None)
         return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
 
     return types.SimpleNamespace(
@@ -191,6 +200,115 @@ def test_local_loop_handles_mistral_format(fresh_app, monkeypatch):
     out = agent.run_agent("liste")
     assert out["trace"] and out["trace"][0]["tool"] == "list_emails"
     assert out["text"] == "OK fait."
+
+
+def test_local_loop_compacts_search_results_before_re_injection(fresh_app, monkeypatch):
+    """The model gets a stripped-down view of the tool result so the next
+    turn doesn't blow the 4 k local context. Verified by capturing the
+    second create() call's messages list."""
+    from src import agent, database as db
+    # Seed enough emails to force truncation downstream.
+    for i in range(15):
+        db.insert_email({
+            "message_id": f"<{i}@t>", "account": "u@x.fr", "uid": str(i),
+            "subject": f"booking {i}", "sender": f"s{i}@h.com",
+            "recipient": "u@x.fr",
+            "body_text": "x" * 5000,                  # long body — must NOT reach model
+            "date_str": "Mon, 05 May 2025 10:00:00 +0000",
+        })
+
+    captured = {}
+
+    def capture_then_answer(**kwargs):
+        # Skip step 1 — emit a tool call.
+        if "_step" not in captured:
+            captured["_step"] = 1
+            content = '<tool_call>{"name":"search_emails","arguments":{"query":"booking"}}</tool_call>'
+        else:
+            captured["messages"] = kwargs.get("messages")
+            content = "Tu as 15 emails booking."
+        msg = types.SimpleNamespace(content=content, tool_calls=None)
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
+
+    client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=capture_then_answer)))
+    monkeypatch.setattr(agent, "_chat", lambda: (client, "local"))
+    monkeypatch.setattr(agent, "_is_local_backend", lambda: True)
+
+    out = agent.run_agent("booking ?")
+    assert out["text"] == "Tu as 15 emails booking."
+    # The tool_response injected into the second create() call must be
+    # truncated to <= 10 hits and must NOT echo the 5000-char body.
+    tool_resp = next(m for m in captured["messages"]
+                     if m.get("role") == "user"
+                     and "<tool_response>" in (m.get("content") or ""))
+    payload = tool_resp["content"]
+    assert "xxxxxxxxxxxx" not in payload                 # body NOT leaked
+    assert '"truncated": true' in payload                # cap signalled
+    assert '"count": 15' in payload                      # full count surfaced
+
+
+def test_local_loop_finalize_fallback_on_completion_error(fresh_app, monkeypatch):
+    """When the second create() raises (context overflow / 5xx), the agent
+    must do a final short-prompt pass with the trace it already has, instead
+    of returning a bare "interrompu par une erreur" message."""
+    from src import agent
+
+    def fake_finalize(client, model, user_msg, trace_results):
+        # Sanity: finalize is called with the gathered trace results.
+        assert trace_results and trace_results[0]["name"] == "search_emails"
+        return "Tu as 3 réservations booking en attente."
+
+    monkeypatch.setattr(agent, "_finalize_locally", fake_finalize)
+
+    step1 = '<tool_call>{"name":"search_emails","arguments":{"query":"booking"}}</tool_call>'
+    boom = RuntimeError("context length exceeded")
+    monkeypatch.setattr(agent, "_chat",
+                        lambda: (_fake_text_client([step1, boom]), "local"))
+    monkeypatch.setattr(agent, "_is_local_backend", lambda: True)
+
+    out = agent.run_agent("quelles sont mes réservations booking ?")
+    assert out["text"] == "Tu as 3 réservations booking en attente."
+    assert out["trace"][0]["tool"] == "search_emails"
+    assert out["error"] == "context length exceeded"
+
+
+def test_local_loop_human_dump_when_finalize_also_fails(fresh_app, monkeypatch):
+    """Even if the fallback model call ALSO fails, the user still sees the
+    raw trace formatted as a bulleted list — never an empty / bare-error UX."""
+    from src import database as db, agent
+    _seed(db)
+
+    step1 = '<tool_call>{"name":"list_emails","arguments":{"folder":"inbox"}}</tool_call>'
+    boom = RuntimeError("server down")
+    monkeypatch.setattr(agent, "_finalize_locally",
+                        lambda *a, **k: "")  # finalize gives up
+    monkeypatch.setattr(agent, "_chat",
+                        lambda: (_fake_text_client([step1, boom]), "local"))
+    monkeypatch.setattr(agent, "_is_local_backend", lambda: True)
+
+    out = agent.run_agent("liste")
+    assert "Devis" in out["text"]                    # subject from seed
+    assert "client@corp.com" in out["text"]          # sender
+
+
+def test_local_loop_step_cap_triggers_finalize_fallback(fresh_app, monkeypatch):
+    """If the model keeps calling tools until max_steps, the agent must
+    summarise from the gathered results rather than return the bare
+    "(limite d'étapes atteinte)" string."""
+    from src import agent
+
+    monkeypatch.setattr(agent, "_finalize_locally",
+                        lambda c, m, u, tr: "Voici ce que j'ai trouvé.")
+
+    looping = '<tool_call>{"name":"list_emails","arguments":{}}</tool_call>'
+    monkeypatch.setattr(agent, "_chat",
+                        lambda: (_fake_text_client([looping] * 5), "local"))
+    monkeypatch.setattr(agent, "_is_local_backend", lambda: True)
+
+    out = agent.run_agent("boucle", max_steps=3)
+    assert out["text"] == "Voici ce que j'ai trouvé."
+    assert len(out["trace"]) == 3
 
 
 def test_cloud_loop_strips_leaked_tool_call_in_final_message(fresh_app, monkeypatch):

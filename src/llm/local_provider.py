@@ -364,7 +364,14 @@ class LocalLLMProvider(LLMProvider):
         try:
             from src import config as cfg
             local_cfg = (cfg.get().get("llm") or {}).get("local") or {}
-            ctx = local_cfg.get("context_size", 4096)
+            cfg_ctx = int(local_cfg.get("context_size", 4096))
+            # The catalog tells us what the model was trained for — use it as
+            # a floor for the drafter, which also drives the Cmd-K agent (tool
+            # specs in system prompt + tool results re-injected = easily 5-7 k
+            # tokens). At 4096 the second turn overflowed silently and the
+            # agent returned "interrompu par une erreur du modèle local".
+            cat_ctx = int(meta.get("context_length") or 0)
+            ctx = max(cfg_ctx, cat_ctx, 4096)
             n_threads = local_cfg.get("n_threads", 6)
             # Le drafter prend la même config gpu_layers que l'analyzer
             # — il n'y a qu'un seul GPU à partager (ou pas de GPU).

@@ -244,17 +244,30 @@ def dispatch(name: str, args: dict) -> dict:
 
 
 def tools_for_prompt() -> str:
-    """Compact JSON description of every tool, ready to inline in a system
-    prompt. Used by the local-model loop where ``tools=`` isn't reliable
-    through llama_cpp.server — we have to tell the model directly what's
-    available and how to call it."""
-    import json as _json
-    descs = []
+    """One-line-per-tool description for the local-model system prompt.
+
+    The previous version dumped the full JSON Schema of every tool — ~2500
+    tokens out of the 4096 context budget, which left almost no room for the
+    actual conversation + tool results. This version emits compact textual
+    signatures (~250 tokens for the same 7 tools) that tool-trained 7B models
+    parse just as well, leaving real context budget for real work."""
+    lines = []
     for spec in TOOL_SPECS:
         fn = spec["function"]
-        descs.append({
-            "name": fn["name"],
-            "description": fn["description"],
-            "parameters": fn["parameters"],
-        })
-    return _json.dumps(descs, ensure_ascii=False, indent=2)
+        name = fn["name"]
+        params = fn.get("parameters", {}) or {}
+        required = set(params.get("required") or [])
+        props = params.get("properties") or {}
+        sig_parts = []
+        for pname, pmeta in props.items():
+            ptype = pmeta.get("type", "string")
+            default = pmeta.get("default")
+            if pname in required:
+                sig_parts.append(f"{pname}: {ptype}")
+            elif default is not None:
+                sig_parts.append(f"{pname}?: {ptype} = {default!r}")
+            else:
+                sig_parts.append(f"{pname}?: {ptype}")
+        sig = ", ".join(sig_parts)
+        lines.append(f"- {name}({sig}) — {fn.get('description', '').strip()}")
+    return "\n".join(lines)

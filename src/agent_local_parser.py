@@ -57,7 +57,7 @@ _FUNC_RE = re.compile(r"<function_call>(.*?)</function_call>", re.DOTALL)
 _QWEN_STRIP_RE = re.compile(r"<tool_call\b[^>]*>.*?</tool_call>", re.DOTALL)
 _FUNC_STRIP_RE = re.compile(r"<function_call\b[^>]*>.*?</function_call>", re.DOTALL)
 _TOOL_RESP_STRIP_RE = re.compile(r"<tool_response\b[^>]*>.*?</tool_response>", re.DOTALL)
-_MISTRAL_STRIP_RE = re.compile(r"\[TOOL_CALLS\][\s\S]*?(?=\n\n|\Z|\n[A-ZÀ-Ÿ])")
+_MISTRAL_SENTINEL_RE = re.compile(r"\[TOOL_CALLS\]")
 
 
 def _extract_balanced(text: str, opener: str) -> Optional[str]:
@@ -208,6 +208,38 @@ def strip_tool_artifacts(text: str) -> str:
     cleaned = _QWEN_STRIP_RE.sub("", text)
     cleaned = _FUNC_STRIP_RE.sub("", cleaned)
     cleaned = _TOOL_RESP_STRIP_RE.sub("", cleaned)
-    cleaned = _MISTRAL_STRIP_RE.sub("", cleaned)
+    cleaned = _strip_mistral_blocks(cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
+
+def _strip_mistral_blocks(text: str) -> str:
+    """Remove every ``[TOOL_CALLS] …balanced-JSON…`` block from the text.
+
+    A previous version used a regex with a lookahead on the next paragraph or
+    capitalised line — fragile, it leaked into trailing prose when the model
+    didn't insert a blank line. We now hunt for the literal sentinel, then
+    rely on the same balanced-brace extractor that powers ``parse_tool_calls``
+    so we never over- or under-cut."""
+    parts: List[str] = []
+    cursor = 0
+    while True:
+        m = _MISTRAL_SENTINEL_RE.search(text, cursor)
+        if m is None:
+            parts.append(text[cursor:])
+            return "".join(parts)
+        parts.append(text[cursor:m.start()])
+        # Skip whitespace after the sentinel, find an opener, extract balanced.
+        i = m.end()
+        while i < len(text) and text[i] in " \t\r\n":
+            i += 1
+        if i >= len(text) or text[i] not in "[{":
+            # Sentinel with no JSON body — drop the sentinel only.
+            cursor = m.end()
+            continue
+        blob = _extract_balanced(text[i:], text[i])
+        if blob is None:
+            # Unbalanced — drop the rest of the text after the sentinel; better
+            # than leaving raw JSON in the user-facing reply.
+            return "".join(parts)
+        cursor = i + len(blob)
