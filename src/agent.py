@@ -194,19 +194,137 @@ def _run_cloud_loop(client: Any, model: str, message: str, max_steps: int) -> di
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _local_completion(client: Any, model: str, messages: List[dict]) -> str:
-    """One round-trip to the local server. Returns the assistant text content.
-
-    Local models don't reliably honour ``stop`` either, so we leave it off and
-    let :mod:`agent_local_parser` find the tool-call block(s) wherever they
-    land."""
+def _local_completion(client: Any, model: str, messages: List[dict],
+                      max_tokens: int = 600) -> str:
+    """One round-trip to the local server. Returns the assistant text content."""
     resp = client.chat.completions.create(
         model=model,
         messages=messages,
         temperature=0.2,
-        max_tokens=600,
+        max_tokens=max_tokens,
     )
     return resp.choices[0].message.content or ""
+
+
+# Fields we keep when feeding email metadata back into the model. ``int_id``
+# lets the model follow up with get_email; sender/subject/date are what the
+# user actually wants to know about. Dropping the rest keeps the round-trip
+# under the 4-8 k context budget of local models.
+_KEEP_META = ("int_id", "subject", "sender", "date", "category",
+              "importance_score", "needs_reply", "folder")
+_MAX_RESULTS_FOR_MODEL = 10
+_MAX_BODY_FOR_MODEL = 800
+
+
+def _compact_for_model(name: str, result: Any) -> Any:
+    """Shrink a tool result to what the model needs for its NEXT turn.
+
+    Search/list responses balloon the conversation: each ``search_emails`` can
+    return up to 30 hits × ~10 fields. Re-injected verbatim, two rounds already
+    blow past 4 k tokens. We keep the top-N hits with their identifying fields
+    only, and add a ``truncated`` marker so the model knows there's more if it
+    wants to refine. ``get_email`` / ``get_thread`` lose their long body in the
+    same way — 800 chars is more than enough to summarise."""
+    if not isinstance(result, dict):
+        return result
+    if "error" in result:
+        return result
+    if "results" in result and isinstance(result["results"], list):
+        items = result["results"]
+        compact_items = [{k: v for k, v in row.items() if k in _KEEP_META}
+                         for row in items[:_MAX_RESULTS_FOR_MODEL]]
+        out = {"results": compact_items, "count": len(items)}
+        if len(items) > _MAX_RESULTS_FOR_MODEL:
+            out["truncated"] = True
+        if "parsed" in result:
+            out["parsed"] = result["parsed"]
+        return out
+    if "emails" in result and isinstance(result["emails"], list):
+        items = result["emails"]
+        compact_items = [{k: v for k, v in row.items() if k in _KEEP_META}
+                         for row in items[:_MAX_RESULTS_FOR_MODEL]]
+        out = {"emails": compact_items, "count": len(items)}
+        if len(items) > _MAX_RESULTS_FOR_MODEL:
+            out["truncated"] = True
+        return out
+    if "messages" in result and isinstance(result["messages"], list):
+        compact_msgs = []
+        for m in result["messages"][:_MAX_RESULTS_FOR_MODEL]:
+            row = {k: v for k, v in m.items() if k in _KEEP_META}
+            body = m.get("body_text") or ""
+            if body:
+                row["body_text"] = body[:_MAX_BODY_FOR_MODEL]
+            compact_msgs.append(row)
+        return {"messages": compact_msgs,
+                "thread_id": result.get("thread_id")}
+    if "body_text" in result and isinstance(result["body_text"], str):
+        out = {k: v for k, v in result.items() if k != "body_text"}
+        out["body_text"] = result["body_text"][:_MAX_BODY_FOR_MODEL]
+        return out
+    return result
+
+
+def _finalize_locally(client: Any, model: str, user_msg: str,
+                      trace_results: List[dict]) -> str:
+    """Last-chance summarisation when the main loop can't continue.
+
+    Called both when ``_local_completion`` raised mid-loop AND when ``max_steps``
+    was hit — in either case we already have tool data in hand and the only
+    thing missing is a short natural-language wrap-up.
+
+    The trick: build a FRESH short prompt (system + one user turn) instead of
+    re-using the bloated conversation that just failed. The previous failure
+    was almost certainly a context overflow; this prompt fits easily."""
+    if not trace_results:
+        return ""
+    blocks = []
+    for tr in trace_results:
+        compact = _compact_for_model(tr["name"], tr["result"])
+        blocks.append(
+            f"### Outil : {tr['name']}\n"
+            f"```json\n{json.dumps(compact, ensure_ascii=False)}\n```"
+        )
+    summary = "\n\n".join(blocks)
+    messages = [
+        {"role": "system",
+         "content": "Tu es l'assistant de la boîte mail Lull Mail. Réponds en français, "
+                    "concis et factuel. N'invente rien : utilise uniquement les données "
+                    "fournies ci-dessous. Si elles ne suffisent pas, dis-le simplement."},
+        {"role": "user",
+         "content": f"Question : {user_msg}\n\n"
+                    f"Données collectées dans la boîte mail :\n\n{summary}\n\n"
+                    f"Réponds maintenant à la question."},
+    ]
+    try:
+        text = _local_completion(client, model, messages, max_tokens=400)
+        return agent_local_parser.strip_tool_artifacts(text)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"local finalize fallback failed: {e}")
+        return ""
+
+
+def _human_dump(trace_results: List[dict]) -> str:
+    """Plain-text dump of what the agent collected — shown to the user when
+    the model can't even summarise (rare, but the user shouldn't be left with
+    nothing). Format prioritises readability over machine-parseability."""
+    lines = ["J'ai cherché dans vos emails et voici ce que j'ai trouvé :"]
+    for tr in trace_results:
+        result = tr["result"]
+        if not isinstance(result, dict):
+            continue
+        items = (result.get("results") or result.get("emails")
+                 or result.get("messages") or [])
+        if not items:
+            continue
+        lines.append("")
+        for row in items[:5]:
+            subj = row.get("subject") or "(sans objet)"
+            sender = row.get("sender") or "?"
+            date = row.get("date") or ""
+            lines.append(f"  • {subj} — {sender} ({date})")
+        if len(items) > 5:
+            lines.append(f"  … et {len(items) - 5} de plus.")
+    return "\n".join(lines).strip()
 
 
 def _run_local_loop(client: Any, model: str, message: str, max_steps: int) -> dict:
@@ -215,16 +333,18 @@ def _run_local_loop(client: Any, model: str, message: str, max_steps: int) -> di
         {"role": "user", "content": message},
     ]
     trace: List[dict] = []
+    trace_results: List[dict] = []
 
     for _ in range(max_steps):
         try:
             content = _local_completion(client, model, messages)
         except Exception as e:  # noqa: BLE001
             logger.error(f"local agent step failed: {e}")
-            note = "L'assistant a été interrompu par une erreur du modèle local."
-            if trace:
-                note += " Actions déjà effectuées : " + ", ".join(t["tool"] for t in trace) + "."
-            return {"text": note, "trace": trace, "error": str(e)}
+            text = _finalize_locally(client, model, message, trace_results)
+            if not text:
+                text = _human_dump(trace_results) or \
+                    "L'assistant a été interrompu par une erreur du modèle local."
+            return {"text": text, "trace": trace, "error": str(e)}
 
         calls = agent_local_parser.parse_tool_calls(content)
         if not calls:
@@ -234,21 +354,29 @@ def _run_local_loop(client: Any, model: str, message: str, max_steps: int) -> di
             }
 
         # Echo the assistant turn so the model sees its own tool calls in
-        # context on the next pass. We re-emit the raw content; if the model
-        # already wrapped each call in <tool_call> tags, fine — but if it
-        # didn't, prepend a canonical block so multi-step traces stay parseable
-        # if a future step reads back the conversation.
+        # context on the next pass. We re-emit the raw content so multi-step
+        # traces stay parseable if a future step reads back the conversation.
         messages.append({"role": "assistant", "content": content})
 
         for call in calls:
             out = agent_tools.dispatch(call.name, call.args)
             trace.append({"tool": call.name, "args": call.args})
+            trace_results.append({"name": call.name, "result": out})
+            compact = _compact_for_model(call.name, out)
             messages.append({
                 "role": "user",
-                "content": f"<tool_response>\n{json.dumps({'name': call.name, 'content': out}, ensure_ascii=False)}\n</tool_response>",
+                "content": "<tool_response>\n"
+                           + json.dumps({"name": call.name, "content": compact},
+                                        ensure_ascii=False)
+                           + "\n</tool_response>",
             })
 
-    return {"text": "(limite d'étapes atteinte)", "trace": trace}
+    # Step cap — try one final summarisation pass before surrendering.
+    text = _finalize_locally(client, model, message, trace_results)
+    if not text:
+        text = _human_dump(trace_results) or \
+            "Je n'ai pas pu finaliser une réponse à votre question."
+    return {"text": text, "trace": trace}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

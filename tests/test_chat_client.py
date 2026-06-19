@@ -51,6 +51,22 @@ def test_agent_routes_to_drafter_when_local(monkeypatch):
     assert client is fake_drafter and model == "qwen-2.5-7b-q4"
 
 
+def test_tools_for_prompt_is_compact_textual_not_json_schema():
+    """The local model gets one line per tool, not the full JSON Schema —
+    the schema dump was eating ~2500 tokens out of the 4096 ctx and the
+    second turn overflowed silently. Verify the format is compact text."""
+    from src import agent_tools
+    text = agent_tools.tools_for_prompt()
+    # Compact text format: one line per tool, signature-like.
+    assert "- list_emails(" in text
+    assert "- search_emails(" in text
+    # The verbose JSON Schema shape MUST be gone.
+    assert '"parameters"' not in text
+    assert '"properties"' not in text
+    # And the whole thing is short enough to fit comfortably.
+    assert len(text) < 1500       # was ~3500 chars before the lean refactor
+
+
 def test_agent_falls_back_to_chat_endpoint_for_cloud_providers(monkeypatch):
     """OpenAI / Claude / Ollama don't override agent_chat_endpoint — the base
     class delegates to chat_endpoint, so the agent runs on the same client

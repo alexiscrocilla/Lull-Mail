@@ -166,3 +166,44 @@ def test_strip_on_clean_text_is_identity():
 def test_strip_empty_input():
     assert p.strip_tool_artifacts("") == ""
     assert p.strip_tool_artifacts(None) is None  # type: ignore[arg-type]
+
+
+def test_strip_mistral_block_with_continuous_prose():
+    """The previous strip used a (?=\\n\\n|...) lookahead — it leaked into
+    prose when the model didn't add a paragraph break. The balanced-brace
+    strip handles this correctly."""
+    text = 'Avant. [TOOL_CALLS][{"name":"x","arguments":{"q":"y"}}] suite directe.'
+    cleaned = p.strip_tool_artifacts(text)
+    assert "[TOOL_CALLS]" not in cleaned
+    assert "Avant." in cleaned
+    assert "suite directe." in cleaned
+
+
+def test_strip_mistral_block_with_nested_braces():
+    """Arguments often contain nested objects. The balanced extractor must
+    follow them all the way to the outer closing brace."""
+    text = '[TOOL_CALLS][{"name":"x","arguments":{"filters":{"a":1,"b":{"c":2}}}}] trailing'
+    cleaned = p.strip_tool_artifacts(text)
+    assert "TOOL_CALLS" not in cleaned
+    assert "trailing" in cleaned
+    assert "filters" not in cleaned
+
+
+def test_strip_multiple_mistral_blocks():
+    text = (
+        'A [TOOL_CALLS][{"name":"x"}] '
+        'B [TOOL_CALLS]{"name":"y"} '
+        'C'
+    )
+    cleaned = p.strip_tool_artifacts(text)
+    assert "TOOL_CALLS" not in cleaned
+    assert "A" in cleaned and "B" in cleaned and "C" in cleaned
+
+
+def test_strip_mistral_sentinel_with_no_payload():
+    """Some quantisations emit the sentinel as filler with no JSON. The strip
+    must drop the sentinel itself rather than swallow trailing prose."""
+    text = "Avant [TOOL_CALLS] après"
+    cleaned = p.strip_tool_artifacts(text)
+    assert "[TOOL_CALLS]" not in cleaned
+    assert "Avant" in cleaned and "après" in cleaned
