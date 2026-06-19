@@ -86,14 +86,86 @@ export function initCommandPalette({ navigate }) {
     window.lucide?.createIcons?.();
   }
 
+  // Defence in depth: even if the backend forgets to strip a leaked
+  // <tool_call> XML block, we never display it to the user. Matches the
+  // same families src/agent_local_parser.py recognises (Qwen/Hermes XML,
+  // Mistral [TOOL_CALLS], <tool_response>).
+  function _stripToolArtifacts(s) {
+    if (!s) return '';
+    return String(s)
+      .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+      .replace(/<function_call>[\s\S]*?<\/function_call>/g, '')
+      .replace(/<tool_response>[\s\S]*?<\/tool_response>/g, '')
+      .replace(/\[TOOL_CALLS\]\s*(?:\[[\s\S]*?\]|\{[\s\S]*?\})/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  function _toolLabel(name) {
+    const key = `cmdk.tool.${name}`;
+    const label = t(key);
+    return label === key ? name : label;
+  }
+
+  function _formatToolArgs(args) {
+    if (!args || typeof args !== 'object') return '';
+    const parts = [];
+    for (const [k, v] of Object.entries(args)) {
+      if (v === undefined || v === null || v === '') continue;
+      const val = typeof v === 'string' ? v : JSON.stringify(v);
+      parts.push(`${k}=${val.length > 40 ? val.slice(0, 37) + '…' : val}`);
+    }
+    return parts.join(' · ');
+  }
+
+  function _esc(s) {
+    return String(s ?? '').replace(/[&<>"]/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
+    ));
+  }
+
+  function _renderResult({ text, trace, error }) {
+    const cleanText = _stripToolArtifacts(text);
+    const traceHtml = (trace && trace.length) ? `
+      <div class="cmdk-trace" aria-label="${t('cmdk.trace_label')}">
+        ${trace.map((step) => `
+          <span class="cmdk-trace-step">
+            <i data-lucide="${_traceIcon(step.tool)}" class="w-3 h-3"></i>
+            <span class="cmdk-trace-name">${_esc(_toolLabel(step.tool))}</span>
+            ${step.args && Object.keys(step.args).length ? `<span class="cmdk-trace-args">${_esc(_formatToolArgs(step.args))}</span>` : ''}
+          </span>`).join('')}
+      </div>` : '';
+    const bodyHtml = error
+      ? `<div class="cmdk-result-error">${_esc(cleanText || error)}</div>`
+      : (cleanText
+          ? `<div class="cmdk-result-text">${_esc(cleanText)}</div>`
+          : `<div class="cmdk-result-empty">${t('cmdk.empty_answer')}</div>`);
+    result.innerHTML = traceHtml + bodyHtml;
+    window.lucide?.createIcons?.();
+  }
+
+  function _traceIcon(tool) {
+    switch (tool) {
+      case 'search_emails': return 'search';
+      case 'list_emails':   return 'list';
+      case 'get_email':     return 'mail-open';
+      case 'get_thread':    return 'messages-square';
+      case 'draft_reply':   return 'pen-line';
+      case 'mark_email_read': return 'check';
+      case 'move_email':    return 'move';
+      default:              return 'sparkles';
+    }
+  }
+
   async function runAssistant(message) {
     result.classList.remove('hidden');
-    result.textContent = t('cmdk.thinking');
+    result.innerHTML = `<div class="cmdk-result-thinking"><span class="cmdk-spinner"></span>${t('cmdk.thinking')}</div>`;
     try {
       const r = await api.assistantAsk(message);
-      result.textContent = r.text || '—';
+      _renderResult({ text: r?.text || '', trace: r?.trace || [], error: r?.error || '' });
     } catch (e) {
-      result.textContent = e.status === 409 ? t('cmdk.ai_off') : (e.message || String(e));
+      const msg = e.status === 409 ? t('cmdk.ai_off') : (e.message || String(e));
+      _renderResult({ text: '', trace: [], error: msg });
     }
   }
 

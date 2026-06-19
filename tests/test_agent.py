@@ -117,6 +117,98 @@ def test_run_agent_raises_without_client(monkeypatch):
         agent.run_agent("hello")
 
 
+# ── local-backend loop ─────────────────────────────────────────────
+
+
+def _fake_text_client(script):
+    """Local-loop fake: each create() call pops the next text content.
+
+    Mirrors what llama_cpp.server returns when the model emits its native
+    tool-call format (Qwen <tool_call>, Mistral [TOOL_CALLS], …) in the
+    response body rather than in tool_calls[]."""
+    state = {"i": 0}
+
+    def create(**kwargs):
+        text = script[state["i"]]
+        state["i"] += 1
+        msg = types.SimpleNamespace(content=text, tool_calls=None)
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
+
+    return types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
+
+
+def test_local_loop_parses_qwen_tool_call_then_answers(fresh_app, monkeypatch):
+    from src import database as db, agent
+    _seed(db)
+
+    step1 = (
+        'Je vais chercher.\n'
+        '<tool_call>{"name":"list_emails","arguments":{"folder":"inbox"}}</tool_call>'
+    )
+    step2 = "Tu as un email de client@corp.com sur un devis."
+    monkeypatch.setattr(agent, "_chat", lambda: (_fake_text_client([step1, step2]), "local"))
+    monkeypatch.setattr(agent, "_is_local_backend", lambda: True)
+
+    out = agent.run_agent("Qu'attend une réponse ?")
+    assert out["text"] == "Tu as un email de client@corp.com sur un devis."
+    assert out["trace"] == [{"tool": "list_emails", "args": {"folder": "inbox"}}]
+
+
+def test_local_loop_strips_leaked_tool_call_from_final_text(fresh_app, monkeypatch):
+    """If the model emits a malformed (unparseable) tool_call as its final
+    answer, the user must never see the XML — even though the loop terminates
+    early because parse_tool_calls() found nothing dispatchable."""
+    from src import agent
+
+    leaked = 'Voici la réponse.\n<tool_call>{garbage</tool_call>'
+    monkeypatch.setattr(agent, "_chat", lambda: (_fake_text_client([leaked]), "local"))
+    monkeypatch.setattr(agent, "_is_local_backend", lambda: True)
+
+    out = agent.run_agent("test")
+    assert "<tool_call>" not in out["text"]
+    assert "Voici la réponse." in out["text"]
+
+
+def test_local_loop_step_cap(fresh_app, monkeypatch):
+    from src import agent
+    looping = '<tool_call>{"name":"list_emails","arguments":{}}</tool_call>'
+    monkeypatch.setattr(agent, "_chat", lambda: (_fake_text_client([looping] * 10), "local"))
+    monkeypatch.setattr(agent, "_is_local_backend", lambda: True)
+    out = agent.run_agent("boucle", max_steps=2)
+    assert len(out["trace"]) == 2
+
+
+def test_local_loop_handles_mistral_format(fresh_app, monkeypatch):
+    from src import database as db, agent
+    _seed(db)
+
+    step1 = '[TOOL_CALLS][{"name":"list_emails","arguments":{"folder":"inbox"}}]'
+    step2 = "OK fait."
+    monkeypatch.setattr(agent, "_chat", lambda: (_fake_text_client([step1, step2]), "local"))
+    monkeypatch.setattr(agent, "_is_local_backend", lambda: True)
+
+    out = agent.run_agent("liste")
+    assert out["trace"] and out["trace"][0]["tool"] == "list_emails"
+    assert out["text"] == "OK fait."
+
+
+def test_cloud_loop_strips_leaked_tool_call_in_final_message(fresh_app, monkeypatch):
+    """A cloud model that ignores tools= and instead emits <tool_call> in
+    content (rare but observed on Claude-via-OpenAI shims) must still produce
+    clean text — the cloud path also runs strip_tool_artifacts now."""
+    from src import agent
+
+    leaked = types.SimpleNamespace(
+        content='Texte.\n<tool_call>{"name":"x"}</tool_call>', tool_calls=None)
+    monkeypatch.setattr(agent, "_chat",
+                        lambda: (_fake_client([leaked]), "gpt-4o-mini"))
+    monkeypatch.setattr(agent, "_is_local_backend", lambda: False)
+
+    out = agent.run_agent("test")
+    assert "<tool_call>" not in out["text"]
+
+
 def test_assistant_endpoint_409_when_ai_off(client, monkeypatch):
     from src import config as cfg
     monkeypatch.setattr(cfg, "_config", {

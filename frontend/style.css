@@ -6217,9 +6217,48 @@ kbd {
 .cmdk-result {
   border-top: 1px solid var(--border);
   padding: 14px 16px; font-size: 14px; line-height: 1.5;
-  color: var(--text); white-space: pre-wrap; max-height: 30vh; overflow-y: auto;
+  color: var(--text); max-height: 40vh; overflow-y: auto;
 }
 .cmdk-result.hidden { display: none; }
+.cmdk-result-text { white-space: pre-wrap; }
+.cmdk-result-empty {
+  color: var(--muted); font-style: italic;
+}
+.cmdk-result-error {
+  color: var(--danger, #c5443f);
+  background: color-mix(in srgb, var(--danger, #c5443f) 8%, transparent);
+  padding: 8px 10px; border-radius: 8px;
+  font-size: 13px;
+}
+.cmdk-result-thinking {
+  display: flex; align-items: center; gap: 8px;
+  color: var(--muted); font-size: 13px;
+}
+.cmdk-spinner {
+  width: 10px; height: 10px; border-radius: 50%;
+  border: 2px solid var(--accent); border-right-color: transparent;
+  animation: cmdk-spin 0.7s linear infinite;
+  display: inline-block;
+}
+@keyframes cmdk-spin { to { transform: rotate(360deg); } }
+.cmdk-trace {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-bottom: 10px;
+}
+.cmdk-trace-step {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 8px; border-radius: 999px;
+  background: var(--surface-2); color: var(--muted);
+  font-size: 11.5px; font-weight: 500;
+  border: 1px solid var(--border);
+  max-width: 100%;
+}
+.cmdk-trace-step .cmdk-trace-name { color: var(--text); }
+.cmdk-trace-step .cmdk-trace-args {
+  color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 240px;
+}
 
 /* Inline card indicators (injection ⚠ + auto-draft) + conversation chip */
 .mb-inject-inline { color: var(--warning); }
