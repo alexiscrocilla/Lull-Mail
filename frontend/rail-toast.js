@@ -158,10 +158,18 @@ function createRailToast() {
       message = '',
       progress = null,
       duration = 1800,
-      collapseAfter = 1500,
       detached = false,
       icon = null,
+      // { label, onClick } — renders a button inside the toast, e.g. Undo.
+      // Nothing could offer an undo before this existed: show() accepted no
+      // callback, so every destructive action was final the moment it fired.
+      action = null,
     } = opts;
+
+    // A toast carrying an action must never collapse to its 36px icon —
+    // that would hide the button while the dismiss timer is still running.
+    // Hover already pauses both timers, so once expanded it stays reachable.
+    const collapseAfter = action ? 0 : (opts.collapseAfter ?? 1500);
 
     if (current) destroy(current.node, true);
 
@@ -187,8 +195,21 @@ function createRailToast() {
       <span class="rt-ring" aria-hidden="true"></span>
       <span class="rt-icon">${buildIconHtml(variant, icon)}${innerLoader}</span>
       <span class="rt-text"></span>
+      ${action ? '<button type="button" class="rt-action"></button>' : ''}
     `;
     node.querySelector('.rt-text').textContent = message;
+    if (action) {
+      const btn = node.querySelector('.rt-action');
+      // textContent, not innerHTML — the label may be user-facing copy.
+      btn.textContent = action.label || '';
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Dismiss first so a slow onClick can't leave the toast hanging,
+        // and so a double-click can't fire the action twice.
+        handle.dismiss();
+        try { action.onClick?.(); } catch (err) { console.error(err); }
+      });
+    }
     host.appendChild(node);
     refreshIcons(node);
 
