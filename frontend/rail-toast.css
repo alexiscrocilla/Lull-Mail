@@ -222,6 +222,38 @@
   opacity: 1;
   transition: opacity 180ms ease;
 }
+/* Action button (Undo, …). Only rendered when show() is passed an
+   `action`; such toasts never collapse, so the button stays hittable for
+   the whole dismiss window — and hovering the toast pauses that window. */
+/* An action button competes with .rt-text for the pill's 280px. Without
+   more room the message truncates mid-word ("3 message(s) suppri…"), which
+   is exactly the message the user needs to read before deciding to undo. */
+.rt:has(.rt-action) { max-width: 420px; }
+.rt:has(.rt-action) .rt-text { max-width: 260px; }
+
+.rt-action {
+  flex-shrink: 0;
+  margin-left: 10px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in oklab, currentColor 14%, transparent);
+  color: inherit;
+  font: inherit;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+.rt-action:hover  { background: color-mix(in oklab, currentColor 24%, transparent); }
+.rt-action:active { background: color-mix(in oklab, currentColor 32%, transparent); }
+.rt-action:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+.rt.rt-emerging .rt-action { opacity: 0; }
+
 /* Conic ring rendered as a pseudo-element on the icon slot */
 .rt-ring {
   position: absolute;
