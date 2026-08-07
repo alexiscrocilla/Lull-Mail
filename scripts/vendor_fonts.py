@@ -12,7 +12,9 @@ def fetch(url, dest):
         check=True,
     )
 
-FONTS_DIR = Path("/Users/alexis/Documents/GitHub/Lull-Mail-dev/frontend/assets/fonts")
+# Resolve relative to this script (repo_root/scripts/vendor_fonts.py) so it
+# works on any checkout, not just one developer's machine.
+FONTS_DIR = Path(__file__).resolve().parent.parent / "frontend" / "assets" / "fonts"
 CSS_IN = FONTS_DIR / "gfonts.css"
 CSS_OUT = FONTS_DIR / "fonts.css"
 
