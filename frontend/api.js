@@ -1,8 +1,45 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Thin fetch wrappers around the FastAPI backend.
 
-async function j(url, opts) {
-  const r = await fetch(url, opts);
+// Default per-request timeout. Callers hitting the LLM (reanalyze / draft /
+// assistant) pass a larger `timeoutMs` since local generation can take
+// 10-30s. Without any bound a hung backend would spin the UI forever.
+const DEFAULT_TIMEOUT_MS = 30000;
+
+async function j(url, opts = {}) {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, signal: extSignal, ...rest } = opts;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  // Honour a caller-provided AbortSignal alongside the timeout.
+  if (extSignal) {
+    if (extSignal.aborted) ctrl.abort();
+    else extSignal.addEventListener('abort', () => ctrl.abort(), { once: true });
+  }
+  let r;
+  try {
+    r = await fetch(url, { ...rest, signal: ctrl.signal });
+  } catch (e) {
+    // Normalise abort/network failures so callers always get `.status`.
+    // Three distinct outcomes: the caller aborted on purpose (extSignal
+    // fired), our own timeout fired, or the fetch genuinely failed. Only
+    // the last is a network error — a deliberate cancellation must not
+    // masquerade as "server unreachable".
+    const isAbort = !!(e && e.name === 'AbortError');
+    const cancelled = isAbort && !!extSignal?.aborted;
+    const timedOut = isAbort && !cancelled;
+    const err = new Error(
+      cancelled ? 'Requête annulée.'
+      : timedOut ? 'La requête a expiré. Vérifiez votre connexion et réessayez.'
+                 : 'Impossible de joindre le serveur.'
+    );
+    err.status = 0;
+    err.timeout = !!timedOut;
+    err.cancelled = !!cancelled;
+    err.network = !isAbort;
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!r.ok) {
     // The backend speaks French in its `detail` field for FastAPI
     // HTTPException, in `body.detail` for the rate-limit handler, and
@@ -27,6 +64,9 @@ async function j(url, opts) {
     err.retryAfter = parseInt(r.headers.get('Retry-After') || '0', 10) || 0;
     throw err;
   }
+  // 204/empty bodies (some DELETEs) would make r.json() throw a misleading
+  // SyntaxError — return null instead.
+  if (r.status === 204) return null;
   return r.json();
 }
 
@@ -66,6 +106,7 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message }),
+      timeoutMs: 120000,  // agent loop can chain several LLM calls
     });
   },
 
@@ -82,7 +123,7 @@ export const api = {
     // for the duration of the request. setAiBusy is a no-op if rail-toast
     // hasn't loaded yet (rare — it's bundled early in index.html).
     window.railToast?.setAiBusy?.(true);
-    return j(`/api/emails/${intId}/reanalyze`, { method: 'POST' })
+    return j(`/api/emails/${intId}/reanalyze`, { method: 'POST', timeoutMs: 90000 })
       .finally(() => window.railToast?.setAiBusy?.(false));
   },
 
@@ -91,7 +132,7 @@ export const api = {
     // rail spinner is the only feedback for users not watching the
     // composer pane.
     window.railToast?.setAiBusy?.(true);
-    return j(`/api/emails/${intId}/draft`, { method: 'POST' })
+    return j(`/api/emails/${intId}/draft`, { method: 'POST', timeoutMs: 90000 })
       .finally(() => window.railToast?.setAiBusy?.(false));
   },
 
@@ -161,7 +202,20 @@ export const api = {
   async uploadAttachment(file) {
     const fd = new FormData();
     fd.append('file', file, file.name);
-    const r = await fetch('/api/uploads', { method: 'POST', body: fd });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 60000);  // up to 25 MB
+    let r;
+    try {
+      r = await fetch('/api/uploads', { method: 'POST', body: fd, signal: ctrl.signal });
+    } catch (e) {
+      const err = new Error(e?.name === 'AbortError'
+        ? "L'envoi de la pièce jointe a expiré."
+        : 'Impossible de joindre le serveur.');
+      err.status = 0;
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
     let body = null;
     try { body = await r.json(); } catch (_) {}
     if (!r.ok) {
@@ -215,18 +269,39 @@ export const api = {
   // `message` carries the French sentence built server-side, suitable
   // for direct display via window.toast.
   async sendEmail(payload) {
-    const r = await fetch('/api/emails/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 60000);  // synchronous SMTP roundtrip
+    let r;
+    try {
+      r = await fetch('/api/emails/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: ctrl.signal,
+      });
+    } catch (e) {
+      const err = new Error(e?.name === 'AbortError'
+        ? "L'envoi a expiré. Le message n'a peut-être pas été envoyé."
+        : 'Impossible de joindre le serveur.');
+      err.status = 0;
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
     let body = null;
     try { body = await r.json(); } catch (_) { /* non-JSON body */ }
     if (!r.ok) {
-      const detail = (body && body.detail) || body || {};
-      const msg = detail.message || detail.error || `${r.status} ${r.statusText}`;
+      const detail = (body && body.detail !== undefined) ? body.detail : (body || {});
+      // FastAPI's standard `HTTPException(detail="…")` ships a STRING here;
+      // the structured send errors ship `{message,error,stage}`. Handle both
+      // (the old `detail.message` path returned undefined on a string detail,
+      // so the user saw "500 Internal Server Error" instead of the message).
+      const msg = (typeof detail === 'string'
+                    ? detail
+                    : (detail && (detail.message || detail.error)))
+                  || `${r.status} ${r.statusText}`;
       const err = new Error(msg);
-      err.stage = detail.stage || '';
+      err.stage = (detail && typeof detail === 'object' && detail.stage) || '';
       err.status = r.status;
       throw err;
     }
@@ -374,9 +449,18 @@ export const api = {
 
 // ── Shared utilities ────────────────────────────────────────
 
+// Avatar backgrounds. Always paired with white initials (style.css sets
+// `color:#fff` on .mb-avatar and eight sibling selectors), so every entry has
+// to clear 4.5:1 against white on its own — the value is injected inline, so
+// it is identical in both themes and no dark-mode rule can rescue it.
+//
+// The previous set was the Tailwind -500 ramp and failed all ten, from 2.15:1
+// (amber) to 4.23:1 (violet). These are the -700/-800 equivalents of the same
+// hue families: same character, 5.02:1 at worst. The teal slot moved to cyan
+// so it stays distinguishable from the first entry once both are darkened.
 const PALETTE = [
-  '#0D9488', '#3B82F6', '#A855F7', '#F59E0B', '#EF4444',
-  '#10B981', '#8B5CF6', '#EC4899', '#14B8A6', '#F97316',
+  '#0F766E', '#1D4ED8', '#7E22CE', '#B45309', '#B91C1C',
+  '#047857', '#6D28D9', '#BE185D', '#155E75', '#C2410C',
 ];
 
 export function avatarColor(seed) {
@@ -427,16 +511,13 @@ function rootDomain(domain) {
   return parts.slice(-2).join('.');
 }
 
-export function avatarImgHtml(email, size = 40) {
-  const domain = senderDomain(email);
-  if (!domain) return '';
-  // Use root domain so subdomains (notify.proton.me → proton.me) resolve correctly.
-  const root = rootDomain(domain);
-  const src = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(root)}&sz=64`;
-  // Hide if Google returns the generic globe icon (naturalWidth <= 16px).
-  const onload  = `if(this.naturalWidth<=16)this.style.display='none'`;
-  const onerror = `this.style.display='none'`;
-  return `<img class="av-img" src="${src}" alt="" loading="lazy" onload="${onload}" onerror="${onerror}">`;
+export function avatarImgHtml(_email, _size = 40) {
+  // Privacy: this used to fetch each sender's domain favicon from
+  // google.com/s2/favicons, leaking the identity of every correspondent to
+  // Google (and relying on CSP-hostile inline onload/onerror handlers) — at
+  // odds with an app that blocks remote images by default. Avatars now fall
+  // back to the initials + colour bubble already rendered underneath.
+  return '';
 }
 
 export function relativeTime(iso) {

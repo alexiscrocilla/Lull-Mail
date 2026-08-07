@@ -755,15 +755,24 @@ def search_emails(parsed: Dict, account: Optional[str] = None,
         return [dict(r) for r in con.execute(q, p).fetchall()]
 
 
-def get_thread(thread_id: str) -> List[Dict]:
-    """All emails of a conversation, oldest first."""
-    if not thread_id:
+def get_thread(thread_key: str) -> List[Dict]:
+    """All emails of a conversation, oldest first.
+
+    `thread_key` is the conversation identity used by the collapsed list
+    view: COALESCE(thread_id, message_id). Matching on the SAME expression
+    (rather than a bare `thread_id = ?`) keeps a message whose thread_id is
+    NULL grouped with its own message_id — and pulls in the thread root
+    whose thread_id was never backfilled — exactly like get_threads(). The
+    old `WHERE thread_id = ?` returned an empty/self-missing set whenever
+    the pivot email had a NULL thread_id.
+    """
+    if not thread_key:
         return []
     with _conn() as con:
         return [dict(r) for r in con.execute(
-            "SELECT * FROM emails WHERE thread_id = ? "
+            "SELECT * FROM emails WHERE COALESCE(thread_id, message_id) = ? "
             "ORDER BY COALESCE(date_received_iso, '0000') ASC",
-            (thread_id,),
+            (thread_key,),
         ).fetchall()]
 
 

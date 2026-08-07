@@ -9,7 +9,13 @@
   --surface:     #FFFFFF;
   --surface-2:   #F0F2F5;
   --text:        #0F172A;
-  --muted:       #64748B;
+  /* Was #64748B — 4.47:1 on --bg and 4.24:1 on --surface-2, i.e. under AA on
+     the two surfaces it is most often read against. #5D6B82 clears 4.5 on all
+     three (5.07 / 5.40 / 4.81) and is still clearly secondary to --text. */
+  --muted:       #5D6B82;
+  /* Decorative only: separators, inactive icons, skeleton fills. It measures
+     2.4:1 on --bg, so it must never carry text — the date and AI-summary lines
+     used to and have been moved to --muted. */
   --muted-2:     #94A3B8;
   --border:      #E2E8F0;
   --border-2:    #EDF1F5;
@@ -19,10 +25,18 @@
   --accent-on:   #FFFFFF;
   --danger:      #EF4444;
   --danger-on:   #FFFFFF;
+  --danger-soft: #FEE2E2;
   --warning:     #F59E0B;
   --success:     #10B981;
   --success-on:  #FFFFFF;
   --info:        #3B82F6;
+
+  /* Aliases kept because ~18 rules across the attachment / cleanup /
+     onboarding sections were written against these names. Without them
+     the declarations are invalid at computed-value time — `var(--card)`
+     resolves to transparent and `var(--fg)` silently inherits. */
+  --fg:   var(--text);
+  --card: var(--surface);
 
   --label-important:     #FCA5A5;
   --label-newsletter:    #93C5FD;
@@ -34,6 +48,21 @@
   --shadow-sm: rgba(0,0,0,.06);
   --shadow-md: rgba(0,0,0,.13);
   --shadow-lg: rgba(0,0,0,.22);
+
+  /*
+   * Stacking scale. There were 19 z-index declarations across 15 unrecognised
+   * values, which produced two visible bugs: a sort dropdown (300) painted
+   * over the command palette (90) and the shortcuts sheet (80), and the update
+   * banner (9999) covered the confirm backdrop (2000).
+   * Anything layered belongs on one of these five rungs.
+   */
+  --z-raised:   5;    /* hover lifts, drag affordances */
+  --z-sticky:   10;   /* sticky headers inside a scroller */
+  --z-rail:     30;   /* the app rail */
+  --z-dropdown: 100;  /* menus anchored to a control */
+  --z-overlay:  200;  /* full-view overlays: read pane, cheat sheet, palette */
+  --z-modal:    300;  /* dialogs that block the app */
+  --z-toast:    400;  /* must stay above everything, including modals */
 
   color-scheme: light;
 }
@@ -57,10 +86,14 @@
 
   --danger:      #FB7185;
   --danger-on:   #4C0519;
+  --danger-soft: rgba(251, 113, 133, 0.14);
   --warning:     #FBBF24;
   --success:     #4ADE80;
   --success-on:  #052E1A;
   --info:        #7DD3FC;
+
+  --fg:   var(--text);
+  --card: var(--surface);
 
   /* Labels: keep the SAME pastels as light mode so dots stay visible on dark */
   --label-important:     #FCA5A5;
@@ -135,7 +168,7 @@ button { font: inherit; }
   position: sticky;
   top: 0;
   height: 100vh;
-  z-index: 30;
+  z-index: var(--z-rail);  /* app rail */
 }
 .rail-top, .rail-bottom {
   display: flex;
@@ -210,22 +243,47 @@ button { font: inherit; }
   min-height: 0;
   overflow: hidden;
   background: var(--surface);
+  /* Single source of truth for the sidebar width: .mb-read's width formula
+     has to subtract it, and the two drifted apart the moment the narrow
+     breakpoint changed one without the other. */
+  --mb-side-w: 268px;
 }
-.mailbox > * { min-height: 0; min-width: 0; flex-shrink: 0; }
+/* flex-shrink:0 on every child meant nothing could give: below ~925px the
+   columns summed past the container and .mailbox's overflow:hidden simply
+   clipped the read pane off the right edge, with no scrollbar to reveal it.
+   The window's own minimum is 900x600 (app_gui.py), so that was reachable at
+   the smallest allowed size. Let the two fixed columns shrink instead. */
+.mailbox > * { min-height: 0; min-width: 0; }
 
-.mb-side     { flex: 0 0 268px; }
-.mb-list-wrap { flex: 1; min-width: 0; }   /* expands to fill remaining space */
+.mb-side     { flex: 0 1 var(--mb-side-w); min-width: 200px; }
+.mb-list-wrap { flex: 1 1 0; min-width: 0; }   /* expands to fill remaining space */
 
 /*
- * Reading pane width animation.
- * 100% = .mailbox width (viewport − 64px rail).
- * Subtract sidebar (268px) + desired list width (500px) → same result as
- * the old 1fr column. The inner wrapper is width-locked by JS during a
- * close so text in the body does not reflow as the pane collapses.
+ * Reading pane width.
+ * Wide windows keep the original intent: the list sits at 500px and the pane
+ * takes everything else. That formula alone only held above ~1192px though —
+ * below it the pane hit its floor and the LIST absorbed the entire shortfall,
+ * down to 333px at a 1025px window.
+ * So take whichever is larger: the wide formula, or an even split of the space
+ * left after the sidebar. max() makes the wide case win on big screens and the
+ * even split take over exactly when the wide formula would starve the list.
+ * (A flat percentage does NOT work here — measured against the full mailbox
+ * width it includes the sidebar, and at 1100px it gave the list 302px, worse
+ * than the 408px it was replacing.)
+ * The inner wrapper is width-locked by JS during a close so text in the body
+ * does not reflow as the pane collapses.
  */
 .mb-read {
-  flex: 0 0 auto;
-  width: clamp(360px, calc(100% - 268px - 500px), 1600px);
+  flex: 0 1 auto;
+  width: clamp(
+    340px,
+    max(
+      calc(100% - var(--mb-side-w) - 500px),
+      calc((100% - var(--mb-side-w)) * 0.5)
+    ),
+    1600px
+  );
+  min-width: 0;
   overflow: hidden;
   background: var(--surface);
   display: flex;
@@ -330,6 +388,17 @@ button { font: inherit; }
   display: flex;
   align-items: center;
   gap: 6px;
+  /* These five were stranded below the .mb-side-drag-handle rules by an
+     earlier edit that closed this block early — they sat at stylesheet top
+     level and the parser dropped them. The sidebar headers therefore had no
+     space-between (so the "+" and chevron hugged the label instead of
+     sitting at the right edge) and no pointer cursor, despite the whole row
+     being the collapse toggle. */
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 6px;
+  transition: color 140ms ease;
 }
 .mb-side-drag-handle {
   cursor: grab;
@@ -351,12 +420,6 @@ button { font: inherit; }
     90deg, currentColor 2px, transparent 2px
   ) 0 10px / 14px 4px;
   background-repeat: no-repeat;
-}
-  justify-content: space-between;
-  cursor: pointer;
-  user-select: none;
-  border-radius: 6px;
-  transition: color 140ms ease;
 }
 .mb-section-title:hover { color: var(--text); }
 
@@ -389,7 +452,7 @@ button { font: inherit; }
   background: var(--accent);
   border-radius: 999px;
   pointer-events: none;
-  z-index: 5;
+  z-index: var(--z-raised);  /* drag drop-indicator */
 }
 .mb-side-section.drop-above::before { top: -1px; }
 .mb-side-section.drop-below::after  { bottom: -1px; }
@@ -430,8 +493,13 @@ button { font: inherit; }
   background: var(--accent-soft);
   color: var(--accent-ink);
 }
-.mb-folder .lab {
+/* .mb-label uses the same <span class="lab"> as .mb-folder, but the ellipsis
+   rule was scoped to folders only — a long user label ran past the 268px
+   sidebar and got chopped flat by .mb-side's overflow:hidden, with no "…". */
+.mb-folder .lab,
+.mb-label .lab {
   flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -488,13 +556,20 @@ button { font: inherit; }
   align-items: center;
   transition: gap 280ms ease;
   position: relative;
-  z-index: 10;
+  z-index: var(--z-sticky);  /* search bar above the scrolling list */
 }
 .mb-search-input {
   position: relative;
   grid-column: 1;
   grid-row: 1;
+  /* A grid item's automatic minimum size is its min-content width — here the
+     search <input>'s, around 227px. Together with the ~230px actions track
+     that gave the bar a ~460px floor it could not go below; .mb-list-wrap
+     clips its overflow, so past that point the sort control and "select all"
+     were simply cut off with nothing to indicate it. */
+  min-width: 0;
 }
+.mb-search-input input { min-width: 0; }
 .mb-chips {
   grid-column: 1 / -1;
   grid-row: 2;
@@ -860,7 +935,7 @@ button { font: inherit; }
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 8px 28px var(--shadow-md);
-  z-index: 300;
+  z-index: var(--z-dropdown);  /* sort menu — was 300, painted over the palette and cheat sheet */
   padding: 4px;
   flex-direction: column;
   gap: 2px;
@@ -884,6 +959,10 @@ button { font: inherit; }
   background: color-mix(in oklab, var(--accent) 10%, var(--surface));
   border-bottom: 1px solid color-mix(in oklab, var(--accent) 25%, var(--border));
   overflow: hidden;
+  /* Seven controls, no wrapping, and overflow:hidden — the right-hand ones
+     (Supprimer among them) were clipped below ~380px of list width. */
+  flex-wrap: wrap;
+  row-gap: 6px;
   animation: mb-sel-bar-in 200ms cubic-bezier(.25,.46,.45,.94) both;
 }
 .mb-sel-bar[hidden] { display: none; }
@@ -891,12 +970,16 @@ button { font: inherit; }
   animation: mb-sel-bar-out 180ms cubic-bezier(.55,0,1,.45) both;
   pointer-events: none;
 }
+/* max-height is the animation's end state and `both` makes it stick, so this
+   ceiling also governs the settled bar. At 60px a wrapped second row was
+   clipped by the very animation meant to reveal the bar — raised to clear
+   two rows. */
 @keyframes mb-sel-bar-in {
   from { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; transform: translateY(-6px); }
-  to   { opacity: 1; max-height: 60px; padding-top: 8px; padding-bottom: 8px; transform: translateY(0); }
+  to   { opacity: 1; max-height: 140px; padding-top: 8px; padding-bottom: 8px; transform: translateY(0); }
 }
 @keyframes mb-sel-bar-out {
-  from { opacity: 1; max-height: 60px; padding-top: 8px; padding-bottom: 8px; transform: translateY(0); }
+  from { opacity: 1; max-height: 140px; padding-top: 8px; padding-bottom: 8px; transform: translateY(0); }
   to   { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; transform: translateY(-6px); }
 }
 .mb-sel-bar .sel-left {
@@ -951,8 +1034,13 @@ button { font: inherit; }
 /* Floating popover for Move/Tag bulk actions */
 .sel-popover {
   position: fixed;
-  z-index: 200;
+  z-index: var(--z-dropdown);  /* move/tag popover */
   min-width: 200px;
+  /* The tag popover already caps its list; this one didn't. With enough
+     custom folders on a short window the position clamp pinned top to 8px
+     and the bottom of the list ran off-screen with no way to scroll to it. */
+  max-height: min(60vh, 400px);
+  overflow-y: auto;
   padding: 4px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1061,6 +1149,116 @@ button { font: inherit; }
 .sk-line-long  { width: 90%; }
 .sk-line-xs    { width: 20%; }
 .sk-line-tiny  { width: 28px; height: 20px; border-radius: 6px; }
+/*
+ * Focus rings for controls that set `outline: none` without a replacement.
+ * The global rule is `:where(button, a, input, [tabindex]):focus-visible` —
+ * :where() gives it (0,1,0) specificity, so ANY class-based rule carrying
+ * `outline: none` silently wins over it. These four had no visible focus at
+ * all; the reply composer, where you type the actual message, among them.
+ */
+.mb-composer textarea:focus-visible,
+.mb-composer-meta .mbc-input:focus-visible,
+.log-feed:focus-visible,
+.cmdk-search input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+
+/* Visually hidden but announced. Used for the live region that reports the
+   result count after a search or filter change — the list itself repaints
+   silently, so a screen-reader user had no signal at all. */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Empty + error states ──
+   These three blocks were inline-styled one-liners with no shared look and,
+   for the error cases, no way forward. */
+.mb-list-empty {
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--muted);
+}
+.mb-list-empty-ill {
+  margin: 0 auto 14px;
+  width: 56px; height: 56px;
+  border-radius: 16px;
+  background: var(--surface);
+  display: grid; place-items: center;
+  color: var(--muted);
+}
+.mb-list-empty-title { font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.mb-list-empty-desc  { font-size: 13px; max-width: 320px; margin: 0 auto; }
+.mb-empty-cta,
+.mb-list-error button,
+.mb-read-error button {
+  margin-top: 16px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+.mb-empty-cta:hover,
+.mb-list-error button:hover,
+.mb-read-error button:hover { border-color: var(--accent); background: var(--bg); }
+
+.mb-list-error,
+.mb-read-error {
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.mb-list-error-icon,
+.mb-read-error-icon {
+  width: 56px; height: 56px;
+  margin-bottom: 14px;
+  border-radius: 16px;
+  display: grid; place-items: center;
+  color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 10%, transparent);
+}
+.mb-list-error-msg,
+.mb-read-error p { font-size: 13px; max-width: 340px; margin: 0; }
+
+/* Reading-pane placeholder. Same shimmer as the list skeleton, laid out to
+   match renderEmail() so the real content doesn't jump when it lands. */
+.mb-read-skeleton .rsk {
+  display: block;
+  border-radius: 7px;
+  background: linear-gradient(90deg, var(--border) 25%, var(--border-2) 50%, var(--border) 75%);
+  background-size: 200% 100%;
+  animation: sk-shimmer 1.4s ease-in-out infinite;
+}
+.mb-read-skeleton .rsk-chip  { width: 104px; height: 22px; border-radius: 999px; }
+.mb-read-skeleton .rsk-date  { width: 168px; height: 13px; margin-bottom: 14px; }
+.mb-read-skeleton .rsk-title { width: 72%;   height: 28px; border-radius: 9px; margin-bottom: 22px; }
+.mb-read-skeleton .rsk-sender { display: flex; align-items: center; gap: 12px; padding-bottom: 10px; }
+.mb-read-skeleton .rsk-av    { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; }
+.mb-read-skeleton .rsk-name  { width: 148px; height: 14px; margin-bottom: 7px; }
+.mb-read-skeleton .rsk-addr  { width: 214px; height: 12px; }
+.mb-read-skeleton .rsk-line  { width: 100%; height: 13px; margin-bottom: 12px; }
+.mb-read-skeleton .rsk-line-short { width: 58%; }
+.mb-read-skeleton .rsk-line-mid   { width: 81%; }
+/* The pane's own entrance animation would fight the shimmer. */
+.mb-read-skeleton .mb-read-meta,
+.mb-read-skeleton .mb-read-content { animation: none; }
+
 .mb-card-skeleton .mb-summary-sk {
   margin-top: 2px;
 }
@@ -1091,7 +1289,7 @@ button { font: inherit; }
 .mb-avatar:hover {
   transform: scale(1.05);
   box-shadow: 0 2px 8px rgba(0,0,0,0.12);
-  z-index: 2;
+  z-index: var(--z-raised);  /* avatar hover lift */
 }
 .mb-avatar:active {
   transform: scale(0.95);
@@ -1162,7 +1360,8 @@ button { font: inherit; }
   color: #8B5CF6;            /* AI / sparkles purple */
   opacity: 0.9;
 }
-.mb-date { font-size: 11.5px; color: var(--muted-2); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+/* --muted, not --muted-2: this is text (2.41:1 vs 5.07:1 on --bg). */
+.mb-date { font-size: 11.5px; color: var(--muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .mb-cat-icon {
   width: 11px; height: 11px;
   flex-shrink: 0;
@@ -1189,7 +1388,8 @@ button { font: inherit; }
   min-width: 0;
 }
 .mb-summary {
-  font-size: 12.5px; color: var(--muted-2);
+  /* Same move as .mb-date — the AI summary is body text, not decoration. */
+  font-size: 12.5px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .mb-card-meta {
@@ -1229,7 +1429,8 @@ button { font: inherit; }
 }
 .score-pill.s-hi { background: var(--danger); color: var(--danger-on); }
 .score-pill.s-md { background: var(--warning); color: #1A1206; }
-.score-pill.s-lo { background: var(--muted-2); color: var(--surface); }
+/* White-on-#94A3B8 was 2.56:1. --muted as the fill puts it at 5.40:1. */
+.score-pill.s-lo { background: var(--muted); color: var(--surface); }
 
 /* Category chip — pastel pills */
 .cat-chip {
@@ -1243,12 +1444,15 @@ button { font: inherit; }
   letter-spacing: 0.01em;
 }
 .cat-chip svg { opacity: 0.8; }
-.cat-chip[data-cat="important"]      { background: color-mix(in oklab, var(--label-important) 28%, transparent); color: color-mix(in oklab, var(--label-important) 90%, var(--text)); }
-.cat-chip[data-cat="newsletter"]     { background: color-mix(in oklab, var(--label-newsletter) 28%, transparent); color: color-mix(in oklab, var(--label-newsletter) 90%, var(--text)); }
-.cat-chip[data-cat="transactional"]  { background: color-mix(in oklab, var(--label-transactional) 28%, transparent); color: color-mix(in oklab, var(--label-transactional) 90%, var(--text)); }
-.cat-chip[data-cat="spam"]           { background: color-mix(in oklab, var(--label-spam) 38%, transparent); color: var(--muted); }
-.cat-chip[data-cat="other"]          { background: color-mix(in oklab, var(--label-other) 28%, transparent); color: color-mix(in oklab, var(--label-other) 90%, var(--text)); }
-.cat-chip[data-cat="pending"]        { background: color-mix(in oklab, var(--label-pending) 32%, transparent); color: color-mix(in oklab, var(--label-pending) 90%, var(--text)); }
+/* 90% hue barely darkens a pastel — these read between 1.6:1 and 2.5:1 in
+   light mode. 45% is the point where the whole palette clears AA in both
+   themes while keeping the hue recognisable. */
+.cat-chip[data-cat="important"]      { background: color-mix(in oklab, var(--label-important) 28%, transparent); color: color-mix(in oklab, var(--label-important) 45%, var(--text)); }
+.cat-chip[data-cat="newsletter"]     { background: color-mix(in oklab, var(--label-newsletter) 28%, transparent); color: color-mix(in oklab, var(--label-newsletter) 45%, var(--text)); }
+.cat-chip[data-cat="transactional"]  { background: color-mix(in oklab, var(--label-transactional) 28%, transparent); color: color-mix(in oklab, var(--label-transactional) 45%, var(--text)); }
+.cat-chip[data-cat="spam"]           { background: color-mix(in oklab, var(--label-spam) 38%, transparent); color: var(--text); }
+.cat-chip[data-cat="other"]          { background: color-mix(in oklab, var(--label-other) 28%, transparent); color: color-mix(in oklab, var(--label-other) 45%, var(--text)); }
+.cat-chip[data-cat="pending"]        { background: color-mix(in oklab, var(--label-pending) 32%, transparent); color: color-mix(in oklab, var(--label-pending) 45%, var(--text)); }
 
 /* ── Page load entrance ── */
 @keyframes col-in {
@@ -1439,6 +1643,8 @@ button { font: inherit; }
   gap: 4px;
   align-items: center;
 }
+/* Wide layout shows the "X"; the narrow media query swaps in the back arrow. */
+.mb-read .icn-back-read { display: none; }
 .mb-read-sep {
   width: 1px;
   height: 20px;
@@ -1519,6 +1725,13 @@ button { font: inherit; }
   align-items: center;
   gap: 6px;
   margin-left: auto;
+  /* Five 34px buttons + separator + date ≈ 265px, and none of them shrink.
+     Once the read pane hit its 360px floor the row overflowed and
+     .mb-read-body's overflow:hidden cut it — Répondre and Transférer became
+     unreachable rather than merely cramped. Wrapping keeps them on screen. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 6px;
 }
 .mb-thread-actions .meta { margin-right: 4px; }
 .mb-thread-actions-sep {
@@ -1555,6 +1768,9 @@ button { font: inherit; }
   margin: 6px 0 18px;
   letter-spacing: -0.02em;
   line-height: 1.2;
+  /* The body already had word-break; the 26px heading did not, so a subject
+     carrying a URL or a long token overflowed and .mb-read-body clipped it. */
+  overflow-wrap: anywhere;
 }
 .mb-thread-item {
   display: grid;
@@ -1576,7 +1792,18 @@ button { font: inherit; }
 .meta-arrow { color: var(--muted-2); flex-shrink: 0; opacity: 0.5; }
 .meta-addr { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta-to { color: var(--accent-ink); font-weight: 500; }
-.mb-thread-item .name { font-weight: 600; }
+/* Sits in the grid's 1fr track, whose automatic minimum is min-content — so
+   a long display name (senders love stuffing a whole domain in there) widened
+   the middle column and shoved the action buttons out of the pane. The
+   addresses underneath were already truncated; this was the one that wasn't. */
+.mb-thread-item .name {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-thread-item > div { min-width: 0; }
 .mb-thread-item .snippet { color: var(--muted); font-size: 13px; }
 
 .mb-ai-box {
@@ -1628,6 +1855,63 @@ button { font: inherit; }
   color: var(--text);
 }
 .mb-body-text a { color: var(--accent); text-decoration: underline; }
+
+/* Conversation reader — collapsible accordion of the other messages in the
+   opened email's thread, injected above the pivot body by loadThreadInto(). */
+.mb-thread-convo {
+  margin: 0 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.mb-thread-convo-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--surface-2, rgba(0,0,0,0.02));
+  border-bottom: 1px solid var(--border);
+}
+.mb-thread-msg { border-bottom: 1px solid var(--border); }
+.mb-thread-msg:last-child { border-bottom: none; }
+.mb-thread-msg-sum {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.mb-thread-msg-sum::-webkit-details-marker { display: none; }
+.mb-thread-msg-sum:hover { background: var(--surface-2, rgba(0,0,0,0.02)); }
+.mb-thread-msg-av {
+  width: 26px; height: 26px;
+  flex-shrink: 0;
+  font-size: 10px;
+}
+.mb-thread-msg-from { font-weight: 600; font-size: 13px; flex-shrink: 0; }
+.mb-thread-msg-snip {
+  color: var(--muted);
+  font-size: 13px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-thread-msg-date {
+  color: var(--muted);
+  font-size: 12px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.mb-thread-msg[open] > .mb-thread-msg-sum { border-bottom: 1px solid var(--border); }
+.mb-thread-msg-body { padding: 10px 12px; }
 
 /* Image-blocker banner — sits above the email-body iframe when remote
    images were stripped. Two buttons: load once / trust sender. */
@@ -1685,23 +1969,30 @@ button { font: inherit; }
   border: 1px solid transparent;
 }
 .mb-auth-badge svg { width: 12px; height: 12px; flex: 0 0 auto; }
+/* Authentication badges. These were fixed rgb()/rgba() literals, so they kept
+   light-theme values on a dark surface: `pass` measured 3.02:1 in light, `warn`
+   3.12:1 in dark, and `unknown`'s rgba(0,0,0,.04) wash rendered as #131824 on a
+   #141925 surface — the badge simply vanished. Deriving from the theme tokens
+   makes each one flip with the theme. */
 .mb-auth-pass {
-  background: rgba(34, 197, 94, 0.10);
-  border-color: rgba(34, 197, 94, 0.35);
-  color: rgb(22, 163, 74);
+  background: color-mix(in oklab, var(--success) 12%, transparent);
+  border-color: color-mix(in oklab, var(--success) 40%, transparent);
+  color: color-mix(in oklab, var(--success) 45%, var(--text));
 }
 .mb-auth-warn {
-  background: rgba(217, 119, 6, 0.10);
-  border-color: rgba(217, 119, 6, 0.35);
-  color: rgb(180, 83, 9);
+  background: color-mix(in oklab, var(--warning) 12%, transparent);
+  border-color: color-mix(in oklab, var(--warning) 40%, transparent);
+  color: color-mix(in oklab, var(--warning) 45%, var(--text));
 }
 .mb-auth-fail {
-  background: rgba(220, 38, 38, 0.12);
-  border-color: rgba(220, 38, 38, 0.45);
-  color: var(--danger, rgb(220, 38, 38));
+  background: color-mix(in oklab, var(--danger) 14%, transparent);
+  border-color: color-mix(in oklab, var(--danger) 45%, transparent);
+  color: color-mix(in oklab, var(--danger) 45%, var(--text));
 }
 .mb-auth-unknown {
-  background: rgba(0, 0, 0, 0.04);
+  /* --text at 5%, not black: inverts with the theme instead of painting a
+     black wash onto an already-dark surface. */
+  background: color-mix(in oklab, var(--text) 5%, transparent);
   border-color: var(--border);
   color: var(--muted);
 }
@@ -1936,7 +2227,7 @@ a.lnk-warn {
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 8px 28px var(--shadow-md);
-  z-index: 300;
+  z-index: var(--z-dropdown);  /* composer account menu — was 300 */
   padding: 4px;
   flex-direction: column;
   gap: 2px;
@@ -2034,6 +2325,19 @@ a.lnk-warn {
 .mb-folder:hover .mb-folder-edit { opacity: 1; }
 .mb-folder-edit:hover { background: var(--surface-2); color: var(--text); }
 
+/*
+ * Colour comes in as --label-c (set inline by the JS that knows the label);
+ * the readable text colour is derived here rather than reusing the raw hue.
+ *
+ * Before, the markup shipped `background:<c>33; color:<c>` — the pure pastel
+ * as text on a 20% wash of itself, which measured between 1.31:1 and 2.20:1
+ * for 11 of the 12 palette entries in light mode, at 10.5–11.5px/600.
+ *
+ * Mixing the hue 45% into --text is what actually clears AA: worst case in the
+ * palette is 5.13:1 light / 5.80:1 dark. (The `.cat-chip` recipe of mixing 90%
+ * hue into --text does NOT — it barely shifts the pastel and bottoms out at
+ * 1.58:1. It has been corrected to the same 45% below.)
+ */
 .mb-label-chip {
   display: inline-flex;
   align-items: center;
@@ -2045,6 +2349,8 @@ a.lnk-warn {
   line-height: 1.4;
   white-space: nowrap;
   vertical-align: middle;
+  background: color-mix(in oklab, var(--label-c, var(--muted-2)) 28%, transparent);
+  color: color-mix(in oklab, var(--label-c, var(--muted-2)) 45%, var(--text));
 }
 .mb-label-chip-dot {
   width: 7px; height: 7px;
@@ -2080,7 +2386,7 @@ a.lnk-warn {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.45);
-  z-index: 800;
+  z-index: var(--z-modal);  /* label editor dialog */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3261,7 +3567,7 @@ a.lnk-warn {
   position: fixed; inset: 0;
   background: rgba(0,0,0,0.55);
   display: grid; place-items: center;
-  z-index: 80;
+  z-index: var(--z-overlay);  /* shortcuts sheet */
   backdrop-filter: blur(4px);
 }
 .cheat-overlay.hidden { display: none; }
@@ -3430,9 +3736,39 @@ kbd {
 /* ─────────────────────────────────────────────────────────
    Responsive
    ───────────────────────────────────────────────────────── */
+/* The 1025–1200px band is where the three columns are tightest — the window's
+   own minimum is 900px wide, so this is everyday territory, not an edge case.
+   Narrowing the sidebar here hands ~28px back to the list and the pane, and
+   .mb-read's width formula picks it up automatically via the variable. */
+@media (max-width: 1200px) {
+  .mailbox { --mb-side-w: 240px; }
+
+  /* The action row is max-content in a grid `auto` track, so flex-wrap alone
+     never triggers — the track just takes its width and the 1fr name column
+     collapses. Truncating the name then hid it entirely rather than letting
+     it push the buttons out. Give the actions their own row instead: the
+     name gets the full width, the buttons stay reachable. */
+  .mb-thread-item { grid-template-columns: 36px 1fr; }
+  .mb-thread-actions {
+    grid-column: 1 / -1;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+}
+
 @media (max-width: 1024px) {
   /* Small screens: read pane is a fixed full-screen overlay, no flex width needed */
-  .mb-side { flex: 0 0 240px; }
+  /*
+   * Narrow layout: the read pane stops being a flex column and becomes a
+   * full-screen overlay above the list.
+   *
+   * This used to key off a `.show` class that NOTHING ever added — so the
+   * pane was unconditionally `display:none` below 1024px and no email could
+   * be opened at all. Since the window's own min-size is 900x600
+   * (app_gui.py), that dead branch fired at the smallest allowed window.
+   * Keying off `no-selection` instead reuses the state setSelectionMode()
+   * already maintains on .mailbox, so there is no second flag to sync.
+   */
   .mb-read {
     display: none;
     width: auto !important;
@@ -3440,16 +3776,15 @@ kbd {
     visibility: visible;
     transition: none;
   }
-  .mailbox.no-selection .mb-read { display: none; }
-  .mb-read.show {
+  .mailbox:not(.no-selection) .mb-read {
     display: flex;
     position: fixed; inset: 0;
-    z-index: 60;
+    z-index: var(--z-overlay);  /* read pane as narrow-width overlay */
   }
-}
-@media (max-width: 720px) {
-  .mailbox { grid-template-columns: 1fr; }
-  .mb-side { display: none; }
+  /* Swap the close "X" for a back arrow — at this width the pane covers the
+     list, so the action reads as "back", not "dismiss". */
+  .mb-read .icn-close-read { display: none; }
+  .mb-read .icn-back-read  { display: block; }
 }
 
 /* prefers-reduced-motion */
@@ -3709,7 +4044,7 @@ kbd {
   border-radius: 12px;
   padding: 6px;
   box-shadow: var(--shadow-pop, 0 12px 32px -8px rgba(15,23,42,0.18));
-  z-index: 30;
+  z-index: var(--z-dropdown);  /* cleanup account menu */
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -4559,7 +4894,7 @@ kbd {
 .confirm-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 2000;
+  z-index: var(--z-modal);  /* confirm dialog */
   background: color-mix(in oklab, #000 48%, transparent);
   backdrop-filter: blur(4px);
   display: grid;
@@ -4655,7 +4990,7 @@ kbd {
 .unsub-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: var(--z-modal);  /* unsubscribe dialog */
   background: color-mix(in oklab, #000 42%, transparent);
   backdrop-filter: blur(4px);
   display: grid;
@@ -5171,7 +5506,7 @@ kbd {
 .cln-del-overlay {
   position: fixed;
   inset: 0;
-  z-index: 200;
+  z-index: var(--z-overlay);  /* cleanup delete overlay */
   background: rgba(0,0,0,.45);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
@@ -5346,7 +5681,7 @@ kbd {
   background: var(--surface);
   border-left: 1px solid var(--border);
   box-shadow: -8px 0 32px rgba(0,0,0,.12);
-  z-index: 120;
+  z-index: var(--z-overlay);  /* cleanup side panel */
   display: flex;
   flex-direction: column;
   transform: translateX(100%);
@@ -5360,7 +5695,7 @@ kbd {
 .cln-custom-panel-overlay {
   position: fixed;
   inset: 0;
-  z-index: 119;
+  z-index: calc(var(--z-overlay) - 1);  /* its backdrop — kept just under the panel */
   background: rgba(0, 0, 0, .18);
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
@@ -6130,7 +6465,7 @@ kbd {
 #update-banner {
   position: fixed;
   top: 0; left: 0; right: 0;
-  z-index: 9999;
+  z-index: var(--z-overlay);  /* update banner — was 9999, covered the confirm dialog */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -6180,7 +6515,7 @@ kbd {
   background: rgba(0,0,0,0.45);
   display: grid; place-items: start center;
   padding-top: 14vh;
-  z-index: 90;
+  z-index: var(--z-overlay);  /* command palette */
   backdrop-filter: blur(4px);
 }
 .cmdk-overlay.hidden { display: none; }

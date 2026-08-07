@@ -5,9 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title data-i18n="ob.title">Configuration — Lull Mail</title>
 
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<!-- Self-hosted fonts (vendored, no Google Fonts request). -->
+<link rel="stylesheet" href="/static/assets/fonts/fonts.css" />
 <link rel="stylesheet" href="/static/rail-toast.css" />
 
 <script>
@@ -21,20 +20,8 @@
   })();
 </script>
 
-<script src="https://cdn.tailwindcss.com"></script>
-<script>
-  tailwind.config = {
-    darkMode: ['selector', '[data-theme="dark"]'],
-    theme: {
-      extend: {
-        fontFamily: {
-          sans: ['Plus Jakarta Sans', 'system-ui', 'sans-serif'],
-          mono: ['JetBrains Mono', 'monospace'],
-        }
-      }
-    }
-  };
-</script>
+<!-- Vendored Tailwind (shared build; see frontend/tailwind.config.js). -->
+<link rel="stylesheet" href="/static/tailwind.css" />
 
 <style>
   /* ── Design tokens — aligned with style.css so the wizard matches the app ── */
@@ -1079,7 +1066,7 @@
   </div>
 </div>
 
-<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<script src="/static/vendor/lucide.min.js"></script>
 <script src="/static/i18n.js"></script>
 <script type="module" src="/static/rail-toast.js"></script>
 <script src="/static/onboarding.js"></script>

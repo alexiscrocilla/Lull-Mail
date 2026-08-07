@@ -7,6 +7,7 @@ import {
   CATEGORY_LABEL, CATEGORY_COLOR, CATEGORY_ICON, scoreClass,
 } from '/static/api.js';
 import { rewriteRemoteImages, senderDomain } from '/static/image-blocker.js';
+import { confirmAsync } from '/static/confirm.js';
 
 // Build the HTML <body> block for an email — sandboxed iframe with the
 // remote-image blocker applied unless the sender is trusted. Includes a
@@ -96,16 +97,30 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
     blockedCount = out.blockedCount;
   }
 
-  // 3. Inject our reset CSS and serialise.
-  const finalHtml = safeHtml.replace(/<head([^>]*)>/i, `<head$1>${INJECT}`)
-                            || (INJECT + safeHtml);
+  // 3. Inject our reset CSS and serialise. String.replace returns the
+  //    input UNCHANGED (truthy) when the pattern doesn't match, so a
+  //    plain `replace(...) || fallback` never reaches the fallback. Test
+  //    for the anchor explicitly. Emails with a <head> get INJECT inside
+  //    it; those with only <html> get a fresh <head>; bare fragments get
+  //    a leading <head> so <base>/reset CSS/image-blocker placeholders
+  //    always apply.
+  let finalHtml;
+  if (/<head[^>]*>/i.test(safeHtml)) {
+    finalHtml = safeHtml.replace(/<head([^>]*)>/i, `<head$1>${INJECT}`);
+  } else if (/<html[^>]*>/i.test(safeHtml)) {
+    finalHtml = safeHtml.replace(/<html([^>]*)>/i, `<html$1><head>${INJECT}</head>`);
+  } else {
+    finalHtml = `<head>${INJECT}</head>` + safeHtml;
+  }
 
   // SECURITY: no `allow-scripts`. Email JavaScript never runs.
   // `allow-popups` keeps `<a target="_blank">` opening in a new tab;
   // `allow-popups-to-escape-sandbox` lets that tab inherit a normal
   // (non-sandboxed) context so the OS browser handler can pick the
   // link up cleanly.
-  const iframe = `<iframe sandbox="allow-popups allow-popups-to-escape-sandbox" srcdoc="${escapeHtml(finalHtml)}" class="mb-body-iframe"></iframe>`;
+  // title is required: this iframe holds the message body, i.e. the main
+  // content of the view, and was announced as an unnamed frame.
+  const iframe = `<iframe sandbox="allow-popups allow-popups-to-escape-sandbox" srcdoc="${escapeHtml(finalHtml)}" class="mb-body-iframe" title="${escapeHtml(em.subject || _t('mb.no_subject'))}"></iframe>`;
 
   // Banner only when we actually blocked something. The two buttons
   // are wired up by attachImageBlockerHandlers() right after the
@@ -461,6 +476,51 @@ const ACCOUNT_TYPE_META = {
 };
 const ACCOUNT_TYPE_ORDER = ['proton', 'gmail', 'orange', 'ovh', 'other'];
 
+/*
+ * View state that survives leaving the mailbox and coming back.
+ *
+ * The router does `view.innerHTML = ''` and re-runs mountMailbox, and the whole
+ * state object lived in that function's closure — so a trip to Settings reset
+ * the folder, the category, the search, the sort and the scroll position. Users
+ * lost their place for looking up one preference.
+ *
+ * Only the *view* is kept. Loaded emails, accounts and the checked-ids set are
+ * deliberately NOT restored: the data is refetched anyway, and restoring a
+ * selection made against a list that no longer exists is exactly the bug that
+ * let bulk actions hit invisible mail.
+ *
+ * Module-level rather than sessionStorage on purpose — it should survive
+ * navigation, not an app restart, and there is no serialisation to keep in sync.
+ */
+let _persistedView = null;
+
+function _captureView(state, scrollTop) {
+  return {
+    folder: state.folder,
+    category: state.category,
+    query: state.query,
+    onlyUnread: state.onlyUnread,
+    onlyReply: state.onlyReply,
+    accountFilters: [...state.accountFilters],
+    sortMode: state.sortMode,
+    labelFilter: state.labelFilter,
+    scrollTop: scrollTop || 0,
+  };
+}
+
+function _applyView(state, saved) {
+  if (!saved) return 0;
+  state.folder = saved.folder ?? state.folder;
+  state.category = saved.category ?? '';
+  state.query = saved.query ?? '';
+  state.onlyUnread = !!saved.onlyUnread;
+  state.onlyReply = !!saved.onlyReply;
+  state.accountFilters = new Set(saved.accountFilters || []);
+  state.sortMode = saved.sortMode ?? state.sortMode;
+  state.labelFilter = saved.labelFilter ?? null;
+  return saved.scrollTop || 0;
+}
+
 export async function mountMailbox(host, _opts) {
   const t = window.t || ((k) => k);
   const FOLDERS_L = FOLDERS.map((f) => ({ ...f, label: t(f.labelKey) }));
@@ -602,7 +662,9 @@ export async function mountMailbox(host, _opts) {
             </button>
           </div>
         </div>
-        <div class="mb-list" id="email-list" role="list"></div>
+        <div class="mb-list" id="email-list" role="listbox" aria-multiselectable="true"
+             aria-label="${t('mb.aria.list')}" tabindex="0"></div>
+        <div id="mb-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
       </div>
 
       <div class="mb-read" id="read-pane"></div>
@@ -637,7 +699,70 @@ export async function mountMailbox(host, _opts) {
     customFolders: [], // Phase 4 — user-defined sidebar folders
   };
 
+  // Restore the view the user left behind (folder / filters / sort / scroll).
+  const _restoreScrollTop = _applyView(state, _persistedView);
+  let _scrollRestored = !_restoreScrollTop;
+
   const $ = (sel) => host.querySelector(sel);
+
+  // ── Composer drag & drop ──────────────────────────────────
+  // Attached ONCE here and routed to whichever composer is live via
+  // `_activeFilePick`. Previously renderEmail re-attached four host-level
+  // listeners on every open — after N opens a single dropped file was
+  // uploaded N times (one per stale closure) and could land in a closed
+  // email's staging list instead of the visible composer.
+  let _activeFilePick = null;
+
+  // Set by renderEmail() to the live reply composer's pending-save flusher,
+  // so the unmount cleanup can push the last keystrokes out before the view
+  // is torn down. Null whenever no email is open.
+  let _flushReplyDraft = null;
+
+  // In-flight SSE draft streams, aborted on unmount (see _streamDraftInto).
+  const _streamAborts = new Set();
+
+  /*
+   * Wrap an async click handler so it can't run twice concurrently on the
+   * same button. #btn-analyze and the send button already guarded themselves;
+   * the star / read / trash controls in the reading pane did not, so a fast
+   * double-click fired two PATCHes and two overlapping reloads.
+   * The flag lives on the element, so it survives re-renders of the pane and
+   * is released even if the handler throws.
+   */
+  const _once = (fn) => async (ev) => {
+    const btn = ev.currentTarget;
+    if (btn.dataset.busy) return;
+    btn.dataset.busy = '1';
+    try { await fn(ev); } finally { delete btn.dataset.busy; }
+  };
+  const _onComposerDragEnter = (e) => {
+    const composer = e.target.closest('#mb-composer');
+    if (!composer) return;
+    e.preventDefault();
+    composer.classList.add('mb-composer-dragover');
+  };
+  const _onComposerDragOver = (e) => {
+    if (!e.target.closest('#mb-composer')) return;
+    e.preventDefault();
+  };
+  const _onComposerDragLeave = (e) => {
+    const composer = e.target.closest('#mb-composer');
+    if (!composer) return;
+    if (!composer.contains(e.relatedTarget)) composer.classList.remove('mb-composer-dragover');
+  };
+  const _onComposerDrop = (e) => {
+    const composer = e.target.closest('#mb-composer');
+    if (!composer) return;
+    e.preventDefault();
+    composer.classList.remove('mb-composer-dragover');
+    const files = [...(e.dataTransfer?.files || [])];
+    if (!files.length) return;
+    _activeFilePick?.(files, 'attachment');
+  };
+  host.addEventListener('dragenter', _onComposerDragEnter);
+  host.addEventListener('dragover', _onComposerDragOver);
+  host.addEventListener('dragleave', _onComposerDragLeave);
+  host.addEventListener('drop', _onComposerDrop);
 
   // ── Collapsible sidebar sections ──────────────────────────
   function initCollapsible(titleEl, wrapEl, storageKey, { defaultCollapsed = false } = {}) {
@@ -794,9 +919,9 @@ export async function mountMailbox(host, _opts) {
       <button class="mb-folder ${state.folder === f.name ? 'active' : ''}" data-folder="${escapeHtml(f.name)}" data-folder-id="${f.id}">
         <i data-lucide="folder" class="w-4 h-4"></i>
         <span class="lab">${escapeHtml(f.name)}</span>
-        <button class="mb-folder-edit" data-edit-folder="${f.id}" title="${t('mb.folder.edit_title')}" aria-label="${t('mb.edit')}">
+        <span class="mb-folder-edit" role="button" tabindex="0" data-edit-folder="${f.id}" title="${t('mb.folder.edit_title')}" aria-label="${t('mb.edit')}">
           <i data-lucide="more-horizontal" class="w-3 h-3"></i>
-        </button>
+        </span>
       </button>
     `).join('');
     cont.innerHTML = builtins + customs;
@@ -820,12 +945,17 @@ export async function mountMailbox(host, _opts) {
       });
     });
     cont.querySelectorAll('[data-edit-folder]').forEach((b) => {
-      b.addEventListener('click', (e) => {
+      const openEdit = (e) => {
         e.stopPropagation();
         e.preventDefault();
         const id = parseInt(b.dataset.editFolder, 10);
         const folder = (state.customFolders || []).find((f) => f.id === id);
         if (folder) openFolderModal(folder);
+      };
+      b.addEventListener('click', openEdit);
+      // Span-based control: wire keyboard activation manually.
+      b.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') openEdit(e);
       });
     });
   }
@@ -834,7 +964,11 @@ export async function mountMailbox(host, _opts) {
     try {
       state.customFolders = await api.getFolders();
     } catch (_) {
-      state.customFolders = [];
+      // Do NOT blank the list on failure. Replacing it with [] made a timeout
+      // indistinguishable from "this account has no custom folders" — every
+      // folder the user created vanished from the sidebar with no message.
+      // Keep whatever we last knew; loadAccounts() already works this way.
+      if (!Array.isArray(state.customFolders)) state.customFolders = [];
     }
     renderFolders();
   }
@@ -862,7 +996,7 @@ export async function mountMailbox(host, _opts) {
     cont.innerHTML = `
       <button class="mb-label ${state.category === '' ? 'active' : ''}" data-cat="">
         <i data-lucide="inbox" class="cat-icon" style="color:var(--muted-2)"></i>
-        <span class="lab">Toutes</span>
+        <span class="lab">${t('mb.category.all')}</span>
         ${totalUnread > 0 ? `<span class="mb-label-count">${totalUnread}</span>` : ''}
       </button>
     ` + LABELS.map((l) => {
@@ -870,7 +1004,7 @@ export async function mountMailbox(host, _opts) {
       return `
       <button class="mb-label ${state.category === l.id ? 'active' : ''}" data-cat="${l.id}">
         <i data-lucide="${l.icon}" class="cat-icon" style="color:${l.color}"></i>
-        <span class="lab">${l.label}</span>
+        <span class="lab">${CATEGORY_LABEL[l.id] || l.label}</span>
         ${cnt > 0 ? `<span class="mb-label-count">${cnt}</span>` : ''}
       </button>
     `}).join('');
@@ -887,8 +1021,8 @@ export async function mountMailbox(host, _opts) {
 
   // Phase 3 — render the personal-labels block. Click a label to scope
   // the inbox to it; click "Toutes" / a second click on the active row
-  // clears the filter. Right-click opens a quick rename/recolour/delete
-  // popover (handled separately).
+  // clears the filter. The trailing "…" control opens the
+  // rename/recolour/delete modal.
   function renderUserLabels() {
     const cont = $('#mb-userlabels');
     if (!cont) return;
@@ -906,9 +1040,9 @@ export async function mountMailbox(host, _opts) {
       <button class="mb-label ${state.labelFilter === l.id ? 'active' : ''}" data-label-id="${l.id}" title="${escapeHtml(l.name)}">
         <span class="mb-userlabel-dot" style="background:${escapeHtml(l.color)}"></span>
         <span class="lab">${escapeHtml(l.name)}</span>
-        <button class="mb-userlabel-edit" data-edit-label="${l.id}" title="${t('mb.edit')}" aria-label="${t('mb.edit')}">
+        <span class="mb-userlabel-edit" role="button" tabindex="0" data-edit-label="${l.id}" title="${t('mb.edit')}" aria-label="${t('mb.edit')}">
           <i data-lucide="more-horizontal" class="w-3 h-3"></i>
-        </button>
+        </span>
       </button>
     `).join('');
     window.lucide?.createIcons({ el: cont });
@@ -926,12 +1060,17 @@ export async function mountMailbox(host, _opts) {
       });
     });
     cont.querySelectorAll('[data-edit-label]').forEach((b) => {
-      b.addEventListener('click', (e) => {
+      const openEdit = (e) => {
         e.stopPropagation();
         e.preventDefault();
         const id = parseInt(b.dataset.editLabel, 10);
         const label = state.userLabels.find((l) => l.id === id);
         if (label) openLabelModal(label);
+      };
+      b.addEventListener('click', openEdit);
+      // Span-based control: wire keyboard activation manually.
+      b.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') openEdit(e);
       });
     });
   }
@@ -940,7 +1079,10 @@ export async function mountMailbox(host, _opts) {
     try {
       state.userLabels = await api.getLabels();
     } catch (_) {
-      state.userLabels = [];
+      // Same as loadCustomFolders: a failed fetch previously showed the
+      // "Aucune étiquette" empty state, which reads as "you have none"
+      // rather than "we couldn't reach the server".
+      if (!Array.isArray(state.userLabels)) state.userLabels = [];
     }
     renderUserLabels();
   }
@@ -991,7 +1133,7 @@ export async function mountMailbox(host, _opts) {
           </div>
           <div class="mb-label-modal-preview">
             <span>${t('mb.label.modal.preview')}</span>
-            <span class="mb-label-chip" id="mb-label-preview-chip" style="background:${startColor}33;color:${startColor}">
+            <span class="mb-label-chip" id="mb-label-preview-chip" style="--label-c:${startColor}">
               <span class="mb-label-chip-dot" style="background:${startColor}"></span>
               <span id="mb-label-preview-text">${escapeHtml(startName || t('mb.label.modal.preview_fallback'))}</span>
             </span>
@@ -1021,8 +1163,10 @@ export async function mountMailbox(host, _opts) {
     backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
 
     const repaintPreview = () => {
-      chipEl.style.background = `${currentColor}33`;
-      chipEl.style.color = currentColor;
+      // Drive the CSS variable and let the stylesheet derive a readable text
+      // colour; setting background/color here would re-introduce the
+      // unreadable "pastel on pastel" the chip styles now avoid.
+      chipEl.style.setProperty('--label-c', currentColor);
       chipDot.style.background = currentColor;
       chipText.textContent = nameEl.value.trim() || t('mb.label.modal.preview_fallback');
     };
@@ -1300,7 +1444,7 @@ export async function mountMailbox(host, _opts) {
     if (!$('#wrap-accounts')) {
       outerWrap.innerHTML = `
         <div class="mb-section-title" id="title-accounts">
-          <span>Comptes</span>${chevSvg}
+          <span>${t('mb.sidebar.accounts')}</span>${chevSvg}
         </div>
         <div class="mb-collapsible" id="wrap-accounts">
           <div class="mb-collapsible-inner">
@@ -1525,16 +1669,28 @@ export async function mountMailbox(host, _opts) {
     state.query = '';
     state.accountFilters.clear();
     state.labelFilter = null;
+    state.searchResults = null;
+    _searchToken++;                 // invalidate any in-flight search
     const inp = $('#search');
     if (inp) inp.value = '';
     _filterDidChange = true;
     renderChips();
     renderLabels();
-    applyFilter();
+    renderUserLabels();             // drop the active label highlight
+    renderAccounts();               // drop the active account highlight
+    renderSearchFilters();          // reset the operator buttons + date select
+    // account/label are server-side filters, so state.emails only holds the
+    // previously-scoped subset — reload the full folder set rather than
+    // re-filtering the stale in-memory list.
+    loadEmails();
   }
 
   function renderChips() {
     const el = $('#filter-chips');
+    // A search debounce or a loadEmails() still in flight can land after the
+    // router has already wiped #view. renderSkeleton and renderSelectionBar
+    // guard; these two did not, and the late call threw on null.
+    if (!el) return;
     const existing = el.querySelectorAll('[data-quick]');
     const anyActive = _anyFilterActive();
 
@@ -1595,6 +1751,30 @@ export async function mountMailbox(host, _opts) {
     }
   }
 
+  /*
+   * Drop checked ids that the current filter no longer shows.
+   *
+   * Bulk actions read state.selectedIds, never the visible list, so a
+   * selection that outlived a filter change acted on mail the user could
+   * not see: check 20 in "Toutes", switch to a 3-mail category, hit
+   * Supprimer → 20 gone. Only the FOLDER handler used to call
+   * clearSelection(); category and search did not.
+   *
+   * Pruning here rather than in each handler covers every filtering path,
+   * present and future — applyFilter is the single choke point they all
+   * go through. Must run before renderList so cards paint with the right
+   * `checked` class.
+   */
+  function _pruneSelectionToVisible() {
+    if (!state.selectedIds.size) return;
+    const visible = new Set(state.filteredIds);
+    let dropped = false;
+    for (const id of [...state.selectedIds]) {
+      if (!visible.has(id)) { state.selectedIds.delete(id); dropped = true; }
+    }
+    if (dropped) renderSelectionBar();
+  }
+
   function applyFilter(_skipChips) {
     if (!_skipChips) renderChips();
     const q = state.query.trim().toLowerCase();
@@ -1619,9 +1799,11 @@ export async function mountMailbox(host, _opts) {
       });
       const items = sortEmails(scoped);
       state.filteredIds = items.map((e) => e.int_id);
+      _pruneSelectionToVisible();
       renderList(items);
       refreshGlobalSelectAll();
       updateBadge();
+      renderLabels();  // keep category unread counters live
       return;
     }
     const activeEmails = new Set(state.accounts.map((a) => a.email));
@@ -1644,9 +1826,11 @@ export async function mountMailbox(host, _opts) {
     });
     const items = sortEmails(filtered);
     state.filteredIds = items.map((e) => e.int_id);
+    _pruneSelectionToVisible();
     renderList(items);
     refreshGlobalSelectAll();
     updateBadge();
+    renderLabels();  // keep category unread counters live
   }
 
   function updateBadge() {
@@ -1664,9 +1848,13 @@ export async function mountMailbox(host, _opts) {
     const inboxEl = $('#badge-inbox');
     if (inboxEl) {
       // Sum unread from accountStats (database counts, inbox-filtered) across all accounts.
-      // Falls back to counting loaded emails if stats aren't available yet.
-      const unread = stats.reduce((acc, s) => acc + (s.unread || 0), 0)
-        || state.emails.reduce((acc, em) => acc + (em.is_read ? 0 : 1), 0);
+      // Fall back to counting loaded emails ONLY when viewing the inbox — in
+      // any other folder state.emails holds that folder's mail, so the
+      // fallback would show e.g. the trash's unread count on the inbox badge.
+      let unread = stats.reduce((acc, s) => acc + (s.unread || 0), 0);
+      if (!unread && (state.folder || 'inbox') === 'inbox') {
+        unread = state.emails.reduce((acc, em) => acc + (em.is_read ? 0 : 1), 0);
+      }
       setBadge(inboxEl, unread);
     }
 
@@ -1686,10 +1874,31 @@ export async function mountMailbox(host, _opts) {
   // resolves, the older response is dropped on the floor. Prevents the
   // "filter snaps back" race when a slow response overwrites fresh state.
   let _loadEmailsToken = 0;
+  // Same guard for openEmail: navigating fast (j/j/j) can resolve a slow
+  // detail fetch after a newer one, painting the wrong email over the pane.
+  let _openEmailToken = 0;
   // Stamped at the head of loadEmails / loadAccounts. Read by the
   // visibilitychange handler to debounce: a quick tab-switch must
   // not trigger a second reload on top of the periodic refresh.
   let _lastLoadAt = 0;
+  // `?focus=<id>` is a one-shot deep-link. Once honoured we strip it from
+  // the hash so periodic/mutation reloads don't reopen the email forever.
+  let _focusConsumed = false;
+
+  // Remove a single query param from the URL hash without triggering a
+  // hashchange (replaceState never fires one), preserving the rest.
+  // `src` lets callers chain several strips without writing the hash between
+  // each one; defaults to the live hash for the single-param callers.
+  function _stripHashParam(name, src) {
+    const h = src ?? (location.hash || '');
+    const qIdx = h.indexOf('?');
+    if (qIdx === -1) return h;
+    const path = h.slice(0, qIdx);
+    const params = new URLSearchParams(h.slice(qIdx + 1));
+    params.delete(name);
+    const qs = params.toString();
+    return qs ? `${path}?${qs}` : path;
+  }
 
   // ── Infinite scroll (virtual list) ───────────────────────
   const PAGE_SIZE = 80;
@@ -1701,20 +1910,54 @@ export async function mountMailbox(host, _opts) {
     if (_listObserver) { _listObserver.disconnect(); _listObserver = null; }
   }
 
+  /*
+   * Keyboard on the list. Previously the only per-card handler lived on the
+   * avatar; the card itself carried tabindex="0" but no keydown, so tabbing to
+   * a card and pressing Enter or Space did nothing at all. The avatar is no
+   * longer a focus target (it was a role=checkbox nested inside a listitem,
+   * which is invalid) — the option now owns both activation and selection.
+   *
+   *   Enter  → open
+   *   Space  → toggle selection (Shift+Space extends the range)
+   *
+   * Delegated on the list, so cards appended by later batches are covered
+   * without re-wiring. _attachCardAvatarKeydown is kept as the roving-tabindex
+   * pass over freshly inserted rows.
+   */
+  function _onListKeydown(e) {
+    const card = e.target.closest?.('.mb-card:not(.mb-card-skeleton)');
+    if (!card) return;
+    const id = parseInt(card.dataset.id, 10);
+    if (!Number.isFinite(id)) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      openEmail(id);
+    } else if (e.key === ' ' || e.key === 'Spacebar') {
+      // Space would scroll the list otherwise — the action AND a page jump.
+      e.preventDefault();
+      if (e.shiftKey && _lastCheckedId != null) rangeSelect(id);
+      else toggleSelection(id);
+    }
+  }
+
+  // Roving tabindex: exactly one card is in the tab order at a time, so Tab
+  // moves past the list instead of walking through every row.
+  function _setRovingFocus(id, { focus = true } = {}) {
+    const list = $('#email-list');
+    if (!list) return;
+    list.querySelectorAll('.mb-card').forEach((c) => { c.tabIndex = -1; });
+    const card = list.querySelector(`.mb-card[data-id="${id}"]`);
+    if (!card) return;
+    card.tabIndex = 0;
+    if (focus) card.focus({ preventScroll: true });
+  }
+
   function _attachCardAvatarKeydown(list, fromIdx, toIdx) {
+    // Newly appended rows default out of the tab order; the active card gets
+    // tabIndex 0 back via _setRovingFocus.
     const cards = list.querySelectorAll('.mb-card');
     for (let i = fromIdx; i < toIdx && i < cards.length; i++) {
-      const avatar = cards[i].querySelector('.mb-avatar');
-      if (!avatar) continue;
-      const id = parseInt(cards[i].dataset.id, 10);
-      avatar.addEventListener('keydown', (e) => {
-        if (e.key === ' ' || e.key === 'Enter') {
-          e.stopPropagation();
-          e.preventDefault();
-          if (e.shiftKey && _lastCheckedId != null) rangeSelect(id);
-          else toggleSelection(id);
-        }
-      });
+      if (parseInt(cards[i].dataset.id, 10) !== state.selectedId) cards[i].tabIndex = -1;
     }
   }
 
@@ -1849,8 +2092,12 @@ export async function mountMailbox(host, _opts) {
     const wasScrolled = list.scrollTop > 4;
 
     list.insertAdjacentHTML('afterbegin', html);
-    _attachCardHandlers(list, 0, diff);
-    window.lucide?.createIcons();
+    // Card clicks are delegated on #email-list; only the per-card avatar
+    // keydown needs wiring on freshly inserted rows.
+    _attachCardAvatarKeydown(list, 0, diff);
+    // Scoped to the list, like _appendBatch does. Unscoped, this walked the
+    // whole document on every auto-refresh that brought new mail.
+    window.lucide?.createIcons({ el: list });
 
     _listAllItems = items;
     _listRendered += diff;
@@ -1867,6 +2114,7 @@ export async function mountMailbox(host, _opts) {
   }
 
   function renderList(items) {
+    if (!$('#email-list')) return;   // view already unmounted — see renderChips
     // Fast-path 1: same ids in the same order, no flag change → in-place
     // patch. Skips the innerHTML wipe + 1111-card rebuild that drives
     // the jank on large inboxes. _firstRender (mount animation) and
@@ -1912,22 +2160,107 @@ export async function mountMailbox(host, _opts) {
       list.classList.add('mb-list--swap');
       setTimeout(() => list.classList.remove('mb-list--swap'), 180);
     }
+    _announceCount(items.length);
     if (!items.length) {
-      list.innerHTML = `
-        <div style="padding:48px 24px;text-align:center;color:var(--muted)">
-          <div class="ill" style="margin:0 auto 14px;width:56px;height:56px;border-radius:16px;background:var(--surface);display:grid;place-items:center;color:var(--muted-2)">
-            <i data-lucide="inbox" class="w-6 h-6"></i>
-          </div>
-          <div style="font-weight:600;color:var(--text);margin-bottom:4px">${t('mb.list.empty_title')}</div>
-          <div style="font-size:13px">${t('mb.list.empty_filter')}</div>
-        </div>`;
-      window.lucide?.createIcons();
+      renderEmptyState(list);
       return;
+    }
+    // One-shot: put the scroll back where the user left it before navigating
+    // away. Runs after the first paint that actually has rows, and only once —
+    // later renders must not yank the list around.
+    if (!_scrollRestored) {
+      _scrollRestored = true;
+      requestAnimationFrame(() => {
+        const el = $('#email-list');
+        if (el) el.scrollTop = _restoreScrollTop;
+      });
     }
 
     list.innerHTML = '';
     _appendBatch(list, animate, newIds);
     if (anchor) _restorePositionAnchor(anchor);
+  }
+
+  /*
+   * The empty list used to be one generic block — same icon, same title —
+   * for five different situations, and it carried no action at all. The reset
+   * chip exists but lives up in the filter bar, away from where the user is
+   * looking. Pick the message from what actually caused the emptiness and put
+   * the way out inside the block.
+   */
+  function _emptyStateFor() {
+    const q = state.query.trim();
+    if (q) {
+      return { icon: 'search-x', title: t('mb.empty.search_title'),
+               desc: t('mb.empty.search_desc', { q }), action: 'clear-search' };
+    }
+    if (_anyFilterActive()) {
+      return { icon: 'filter-x', title: t('mb.empty.filter_title'),
+               desc: t('mb.list.empty_filter'), action: 'clear-filters' };
+    }
+    if (state.folder === 'deleted') {
+      return { icon: 'trash-2', title: t('mb.empty.trash_title'), desc: t('mb.empty.trash_desc') };
+    }
+    if (state.folder === 'draft') {
+      return { icon: 'pencil-line', title: t('mb.empty.draft_title'), desc: t('mb.empty.draft_desc') };
+    }
+    if (state.folder === 'favourite') {
+      return { icon: 'star', title: t('mb.empty.fav_title'), desc: t('mb.empty.fav_desc') };
+    }
+    return { icon: 'inbox', title: t('mb.list.empty_title'), desc: t('mb.list.empty_none') };
+  }
+
+  /*
+   * Report the result count to assistive tech. Searching, toggling a chip or
+   * picking a category repaints the list silently — visually obvious, but a
+   * screen-reader user got no signal that anything had happened, and the empty
+   * state itself was only ever rendered visually.
+   * Debounced: typing in the search box repaints on every keystroke and each
+   * one would otherwise interrupt the previous announcement.
+   */
+  let _announceTimer = null;
+  function _announceCount(n) {
+    const el = $('#mb-live');
+    if (!el) return;
+    clearTimeout(_announceTimer);
+    _announceTimer = setTimeout(() => {
+      const msg = n === 0
+        ? (state.query.trim() ? t('mb.aria.no_results') : t('mb.aria.empty'))
+        : t('mb.aria.count', { n });
+      // Same string twice in a row is not re-announced; a trailing space
+      // forces the region to look changed.
+      el.textContent = el.textContent === msg ? msg + ' ' : msg;
+    }, 400);
+  }
+
+  function renderEmptyState(list) {
+    const s = _emptyStateFor();
+    const btn = s.action === 'clear-search'
+      ? `<button type="button" class="mb-empty-cta" data-empty-act="clear-search">${t('mb.empty.clear_search')}</button>`
+      : s.action === 'clear-filters'
+      ? `<button type="button" class="mb-empty-cta" data-empty-act="clear-filters">${t('mb.empty.clear_filters')}</button>`
+      : '';
+    list.innerHTML = `
+      <div class="mb-list-empty">
+        <div class="mb-list-empty-ill"><i data-lucide="${s.icon}" class="w-6 h-6"></i></div>
+        <div class="mb-list-empty-title">${escapeHtml(s.title)}</div>
+        <div class="mb-list-empty-desc">${escapeHtml(s.desc)}</div>
+        ${btn}
+      </div>`;
+    window.lucide?.createIcons({ nodes: [list] });
+    list.querySelector('[data-empty-act]')?.addEventListener('click', (e) => {
+      if (e.currentTarget.dataset.emptyAct === 'clear-search') {
+        const inp = $('#search');
+        if (inp) inp.value = '';
+        state.query = '';
+        _searchToken++;
+        state.searchResults = null;
+        renderSearchFilters();
+        applyFilter();
+      } else {
+        _clearAllFilters();
+      }
+    });
   }
 
   function cardHtml(em, animIdx = -1, isNew = false, isPage2Plus = false) {
@@ -1962,8 +2295,8 @@ export async function mountMailbox(host, _opts) {
       : '';
 
     return `
-      <article class="mb-card${animClass} ${isUnread ? 'unread' : ''} ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''}" data-id="${em.int_id}" role="listitem" tabindex="0"${animStyle}>
-        <div class="mb-avatar" style="background:${col}" role="checkbox" aria-checked="${isChecked}" aria-label="${t('mb.list.select_aria')}" title="${t('mb.list.select_title')}" tabindex="0">
+      <article class="mb-card${animClass} ${isUnread ? 'unread' : ''} ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''}" data-id="${em.int_id}" role="option" aria-selected="${isChecked ? 'true' : 'false'}" aria-current="${isSelected ? 'true' : 'false'}" tabindex="${isSelected ? '0' : '-1'}"${animStyle}>
+        <div class="mb-avatar" style="background:${col}" aria-hidden="true" title="${t('mb.list.select_title')}">
           <span class="av-text">${escapeHtml(ini)}</span>
           ${logoImg}
           <span class="av-check"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
@@ -1974,7 +2307,7 @@ export async function mountMailbox(host, _opts) {
               <span class="mb-sender">${escapeHtml(sName || sEmail || t('mb.unknown_sender'))}</span>
               ${Array.isArray(em.labels) && em.labels.length ? `
                 <span class="mb-card-labels">
-                  ${em.labels.slice(0, 3).map((l) => `<span class="mb-label-chip mb-label-chip-sm" style="background:${escapeHtml(l.color)}33;color:${escapeHtml(l.color)}" title="${escapeHtml(l.name)}"><span class="mb-label-chip-dot" style="background:${escapeHtml(l.color)}"></span>${escapeHtml(l.name)}</span>`).join('')}
+                  ${em.labels.slice(0, 3).map((l) => `<span class="mb-label-chip mb-label-chip-sm" style="--label-c:${escapeHtml(l.color)}" title="${escapeHtml(l.name)}"><span class="mb-label-chip-dot" style="background:${escapeHtml(l.color)}"></span>${escapeHtml(l.name)}</span>`).join('')}
                   ${em.labels.length > 3 ? `<span class="mb-label-chip mb-label-chip-sm mb-label-chip-more" title="${t('mb.label.more', { n: em.labels.length - 3 })}">+${em.labels.length - 3}</span>` : ''}
                 </span>
               ` : ''}
@@ -2032,8 +2365,7 @@ export async function mountMailbox(host, _opts) {
       const id = parseInt(c.dataset.id, 10);
       if (state.selectedIds.has(id)) {
         c.classList.add('checked');
-        const av = c.querySelector('.mb-avatar');
-        if (av) av.setAttribute('aria-checked', 'true');
+        c.setAttribute('aria-selected', 'true');
       }
     });
     refreshGlobalSelectAll();
@@ -2047,8 +2379,7 @@ export async function mountMailbox(host, _opts) {
     if (card) {
       const on = state.selectedIds.has(id);
       card.classList.toggle('checked', on);
-      const av = card.querySelector('.mb-avatar');
-      if (av) av.setAttribute('aria-checked', on ? 'true' : 'false');
+      card.setAttribute('aria-selected', on ? 'true' : 'false');
     }
     _lastCheckedId = id;
     refreshGlobalSelectAll();
@@ -2071,8 +2402,7 @@ export async function mountMailbox(host, _opts) {
       const card = host.querySelector(`.mb-card[data-id="${eid}"]`);
       if (card) {
         card.classList.add('checked');
-        const av = card.querySelector('.mb-avatar');
-        if (av) av.setAttribute('aria-checked', 'true');
+        card.setAttribute('aria-selected', 'true');
       }
     }
     _lastCheckedId = id;
@@ -2102,7 +2432,7 @@ export async function mountMailbox(host, _opts) {
         window.lucide?.createIcons({ el: parent });
       } else {
         iconEl.setAttribute('data-lucide', icon);
-        window.lucide?.createIcons();
+        window.lucide?.createIcons({ el: iconEl.parentNode || iconEl });
       }
     }
   }
@@ -2114,8 +2444,7 @@ export async function mountMailbox(host, _opts) {
     _lastCheckedId = null;
     host.querySelectorAll('.mb-card.checked').forEach((c) => {
       c.classList.remove('checked');
-      const av = c.querySelector('.mb-avatar');
-      if (av) av.setAttribute('aria-checked', 'false');
+      c.setAttribute('aria-selected', 'false');
     });
     refreshGlobalSelectAll();
     renderSelectionBar();
@@ -2137,6 +2466,13 @@ export async function mountMailbox(host, _opts) {
     bar.hidden = false;
     const num = $('#sel-count-num');
     if (num) num.textContent = String(n);
+    // Inside the trash, "delete" mapped to a PATCH {folder:'deleted'} on mail
+    // already in 'deleted' — a no-op that still toasted "N deleted". There is
+    // no permanent-delete endpoint to wire it to (src/api.py exposes only
+    // GET/PATCH on /api/emails), so hide the control rather than keep
+    // claiming a deletion that never happens.
+    const delBtn = bar.querySelector('[data-act="delete"]');
+    if (delBtn) delBtn.hidden = (state.folder === 'deleted');
     refreshGlobalSelectAll();
     refreshReadButton();
   }
@@ -2154,7 +2490,7 @@ export async function mountMailbox(host, _opts) {
     const next = allRead ? 'unread' : 'read';
     if (btn.dataset.act === next) return;
     btn.dataset.act = next;
-    const label = allRead ? 'Marquer comme non lu' : 'Marquer comme lu';
+    const label = allRead ? t('mb.action.mark_unread') : t('mb.action.mark_read');
     btn.title = label;
     btn.setAttribute('aria-label', label);
     btn.innerHTML = `<i data-lucide="${allRead ? 'mail' : 'mail-open'}" class="w-4 h-4"></i>`;
@@ -2165,6 +2501,7 @@ export async function mountMailbox(host, _opts) {
     const ids = [...state.selectedIds];
     if (!ids.length) return;
     let updated = 0;
+    const tasks = [];
     for (const id of ids) {
       const idx = state.emails.findIndex((e) => e.int_id === id);
       const em = idx >= 0 ? state.emails[idx] : null;
@@ -2176,14 +2513,23 @@ export async function mountMailbox(host, _opts) {
         c.classList.toggle('unread', !target);
       });
       updated++;
-      api.patchEmail(id, { is_read: target }).catch(() => {});
+      tasks.push(api.patchEmail(id, { is_read: target }));
     }
     updateBadge();
     clearSelection();
-    if (updated) {
-      window.toast(target ? t('mb.toast.marked_read', { n: updated }) : t('mb.toast.marked_unread', { n: updated }));
-    } else {
+    if (!updated) {
       window.toast(target ? t('mb.toast.already_read') : t('mb.toast.already_unread'));
+      return;
+    }
+    const failed = (await Promise.allSettled(tasks)).filter((r) => r.status === 'rejected').length;
+    if (failed) {
+      window.toast(t('mb.toast.bulk_error', { n: failed }), 4000);
+      // The optimistic read-flip above was never persisted for the failed
+      // ids; reload so state.emails + the badge match the server now instead
+      // of quietly reverting on the next 60s tick.
+      await loadEmails({ background: true });
+    } else {
+      window.toast(target ? t('mb.toast.marked_read', { n: updated }) : t('mb.toast.marked_unread', { n: updated }));
     }
   }
 
@@ -2203,10 +2549,12 @@ export async function mountMailbox(host, _opts) {
     const ids = [...state.selectedIds];
     if (!ids.length) return;
     await animateCardLeave(ids);
-    await Promise.all(ids.map((id) => api.patchEmail(id, { category }).catch(() => {})));
-    window.toast(t('mb.toast.categorized', { n: ids.length }));
+    const failed = (await Promise.allSettled(ids.map((id) => api.patchEmail(id, { category }))))
+      .filter((r) => r.status === 'rejected').length;
+    if (failed) window.toast(t('mb.toast.bulk_error', { n: failed }), 4000);
+    else window.toast(t('mb.toast.categorized', { n: ids.length }));
     clearSelection();
-    await loadEmails();
+    await loadEmails({ background: true });
   }
 
   // Translate a logical popover target (inbox / favourite / deleted) into the
@@ -2256,6 +2604,18 @@ export async function mountMailbox(host, _opts) {
     const cur = state.folder || 'inbox';
     const plan = _patchForTarget(target, cur);
     if (!plan) return;
+
+    // Snapshot each row's real `folder` value BEFORE patching, so an undo
+    // restores exactly where the mail came from. Reading it back afterwards
+    // is impossible — the reload has already overwritten state.emails — and
+    // deriving it from `cur` would be wrong for the Favoris view, which is a
+    // filter over folder='inbox', not a folder of its own.
+    const prevFolder = new Map();
+    for (const id of ids) {
+      const row = state.emails.find((e) => e.int_id === id);
+      if (row && id >= 0) prevFolder.set(id, row.folder || 'inbox');
+    }
+
     if (plan.leavesView) await animateCardLeave(ids);
 
     // Drafts in the Brouillons folder use synthetic negative ids and
@@ -2294,17 +2654,44 @@ export async function mountMailbox(host, _opts) {
       }
     }
     for (const id of realIds) {
-      tasks.push(api.patchEmail(id, plan.patch).catch(() => {}));
+      tasks.push(api.patchEmail(id, plan.patch));
     }
-    await Promise.all(tasks);
+    const failed = (await Promise.allSettled(tasks)).filter((r) => r.status === 'rejected').length;
 
-    window.toast(t('mb.toast.bulk_done', { n: ids.length, verb: plan.verb }));
+    if (failed) {
+      window.toast(t('mb.toast.bulk_error', { n: failed }), 4000);
+    } else if (target === 'deleted' && cur !== 'deleted' && realIds.length && !draftIds.length) {
+      // Undo is offered only for a clean move to the trash. Excluded:
+      //  - partial failures (which ids would we put back?),
+      //  - drafts, hard-deleted through api.deleteDraft with no way back,
+      //  - deletes issued from inside the trash (nothing to restore to).
+      window.toast({
+        variant: 'success',
+        message: t('mb.toast.bulk_done', { n: ids.length, verb: plan.verb }),
+        duration: 5000,
+        action: {
+          label: t('mb.toast.undo'),
+          onClick: async () => {
+            const back = await Promise.allSettled(
+              realIds.map((id) => api.patchEmail(id, { folder: prevFolder.get(id) || 'inbox' }))
+            );
+            const ko = back.filter((r) => r.status === 'rejected').length;
+            window.toast(ko
+              ? { variant: 'error', message: t('mb.toast.undo_failed') }
+              : t('mb.toast.undone'));
+            await loadEmails({ background: true });
+          },
+        },
+      });
+    } else {
+      window.toast(t('mb.toast.bulk_done', { n: ids.length, verb: plan.verb }));
+    }
     // If the open email left the current view, close the read pane.
     if (state.selectedId != null && ids.includes(state.selectedId) && plan.leavesView) {
       renderEmpty();
     }
     clearSelection();
-    await loadEmails();
+    await loadEmails({ background: true });
   }
 
   async function bulkReanalyze() {
@@ -2335,7 +2722,7 @@ export async function mountMailbox(host, _opts) {
       });
     }
     clearSelection();
-    await loadEmails();
+    await loadEmails({ background: true });
     // If the email currently opened in the read pane was part of the batch,
     // refresh it so the user sees the new summary/score/draft right away.
     if (openId != null && ids.includes(openId)) {
@@ -2498,18 +2885,34 @@ export async function mountMailbox(host, _opts) {
         .map((cb) => parseInt(cb.dataset.labelId, 10));
       closePopover();
       try {
-        await Promise.all(ids.map((eid) => api.setEmailLabels(eid, checked).catch(() => {})));
-        // Mirror locally so cards repaint without a full reload.
+        // allSettled, not all(+per-request .catch): the swallowing catch made
+        // Promise.all infallible, so the `catch (err)` below was unreachable
+        // and every run reported success. Tagging 30 mails offline painted 30
+        // sets of chips that vanished on the next reload.
+        const results = await Promise.allSettled(
+          ids.map((eid) => api.setEmailLabels(eid, checked))
+        );
+        const failed = results.filter((r) => r.status === 'rejected').length;
+
+        // Mirror locally so cards repaint without a full reload — but only
+        // for the ids that actually landed.
         const labelById = new Map(state.userLabels.map((l) => [l.id, l]));
         const labelsArr = checked.map((id) => labelById.get(id)).filter(Boolean);
+        const okIds = new Set(
+          ids.filter((_, i) => results[i].status === 'fulfilled')
+        );
         for (const em of state.emails) {
-          if (idSet.has(em.int_id)) em.labels = labelsArr.slice();
+          if (idSet.has(em.int_id) && okIds.has(em.int_id)) em.labels = labelsArr.slice();
         }
         applyFilter();
         if (typeof opts.onUpdated === 'function') {
           opts.onUpdated(labelsArr);
         }
-        window.toast(t('mb.toast.tagged', { n: ids.length }));
+        if (failed) {
+          window.toast({ variant: 'error', message: t('mb.toast.bulk_error', { n: failed }) });
+        } else {
+          window.toast(t('mb.toast.tagged', { n: ids.length }));
+        }
       } catch (err) {
         window.toast(err?.message || t('mb.toast.fail_tag'));
       }
@@ -2541,6 +2944,29 @@ export async function mountMailbox(host, _opts) {
     openPopover(anchor, [...builtins, ...customs], (target) => bulkSetTarget(target));
   }
 
+  // Bulk delete needed a gate of its own: selectAll() can check the whole
+  // loaded page, and the raw action then moved every one of them with no
+  // confirmation and no way back — while deleting a single draft or a label
+  // has always asked. Below the threshold the undo toast is protection
+  // enough; above it, the reach is too large to be undone by hand if the
+  // toast is missed.
+  const BULK_DELETE_CONFIRM_AT = 20;
+
+  async function bulkDelete() {
+    const n = state.selectedIds.size;
+    if (!n) return;
+    if (n >= BULK_DELETE_CONFIRM_AT) {
+      const ok = await confirmAsync({
+        title: t('mb.confirm.bulk_delete_title'),
+        message: t('mb.confirm.bulk_delete_msg', { n }),
+        confirmLabel: t('mb.action.delete'),
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    return bulkSetTarget('deleted');
+  }
+
   function onSelBarClick(e) {
     const btn = e.target.closest('[data-act]');
     if (!btn) return;
@@ -2548,7 +2974,7 @@ export async function mountMailbox(host, _opts) {
     if (act === 'clear')       return clearSelection();
     if (act === 'read')        return bulkSetRead(true);
     if (act === 'unread')      return bulkSetRead(false);
-    if (act === 'delete')      return bulkSetTarget('deleted');
+    if (act === 'delete')      return bulkDelete();
     if (act === 'tag')         return openTagPopover(btn);
     if (act === 'move')        return openMovePopover(btn);
     if (act === 'ai')          return bulkReanalyze();
@@ -2644,10 +3070,61 @@ export async function mountMailbox(host, _opts) {
         </div>
       </div>`).join('');
     list.innerHTML = rows;
+
+    // renderList's two fast paths (_canPatchInPlace and _tryPrependNewCards)
+    // decide what to do by comparing _listAllItems — they never look at the
+    // DOM. Wiping the list here without resetting that bookkeeping let the
+    // next render splice into skeleton rows: restoring mail from the trash
+    // prepended 3 real cards on top of the 8 skeletons and left them there
+    // for good. Any foreground reload that adds rows at the top hits this,
+    // including a manual sync that pulls in new mail.
+    _listAllItems = [];
+    _listRendered = 0;
+  }
+
+  /*
+   * Placeholder for the reading pane while an email is being fetched.
+   * Shapes mirror renderEmail()'s real layout — category chip, date, subject,
+   * sender row, body lines — so the swap doesn't jump. Painted by openEmail()
+   * BEFORE its await; previously the pane simply stayed blank for the whole
+   * round-trip, which on a cold IMAP lazy-scan can be seconds.
+   */
+  function renderReadSkeleton() {
+    const pane = $('#read-pane');
+    if (!pane) return;
+    pane.innerHTML = `
+      <div class="mb-read-inner mb-read-skeleton" aria-busy="true" aria-live="polite"
+           aria-label="${t('mb.read.loading')}">
+        <div class="mb-read-head">
+          <span class="rsk rsk-chip"></span>
+        </div>
+        <div class="mb-read-body">
+          <div class="mb-read-meta">
+            <span class="rsk rsk-date"></span>
+            <span class="rsk rsk-title"></span>
+            <div class="rsk-sender">
+              <span class="rsk rsk-av"></span>
+              <span>
+                <span class="rsk rsk-name"></span>
+                <span class="rsk rsk-addr"></span>
+              </span>
+            </div>
+          </div>
+          <div class="mb-read-content">
+            <span class="rsk rsk-line"></span>
+            <span class="rsk rsk-line"></span>
+            <span class="rsk rsk-line rsk-line-short"></span>
+            <span class="rsk rsk-line"></span>
+            <span class="rsk rsk-line rsk-line-mid"></span>
+          </div>
+        </div>
+      </div>`;
   }
 
   function renderEmpty() {
     const pane = host.querySelector('#read-pane');
+    // No composer is live once the pane closes — stop routing drops.
+    _activeFilePick = null;
     setSelectionMode(false);
     // Wait for the close animation to finish before wiping the markup —
     // otherwise the content vanishes a frame before the pane has shrunk.
@@ -2690,7 +3167,11 @@ export async function mountMailbox(host, _opts) {
   }
 
   function renderAttachmentsBlock(em) {
-    const list = em.attachments || [];
+    // The detail endpoint ships `attachments` as an array of objects, but a
+    // list-row `em` (e.g. passed by the label-edit refresh path) carries it
+    // as a {total,dangerous,suspicious} summary dict. Guard so `.map` never
+    // throws (the error used to be swallowed, leaving the pane stale).
+    const list = Array.isArray(em.attachments) ? em.attachments : [];
     // Lazy-scan hint for legacy mails. The backend kicks off a single-
     // message IMAP fetch the moment GET /api/emails/{id} sees the
     // unscanned flag — we just nudge the user to refresh.
@@ -2776,12 +3257,21 @@ export async function mountMailbox(host, _opts) {
     const rescan = host.querySelector('#read-pane #btn-rescan-one');
     if (rescan && em) {
       rescan.addEventListener('click', async () => {
+        const idle = rescan.textContent;
         rescan.disabled = true;
         rescan.textContent = t('mb.att.scanning_short');
         // Re-fetch the email after a short wait — this triggers a fresh
         // lazy-scan task on the backend if needed.
         setTimeout(async () => {
-          try { await openEmail(em.int_id); } catch (_) {}
+          try {
+            await openEmail(em.int_id);
+          } catch (_) {
+            // openEmail() repaints the pane on success, so this button is
+            // normally gone by now. On failure it stays — and used to stay
+            // disabled reading "Analyse…" forever, with no way to retry.
+            // The node may still have been replaced, hence isConnected.
+            if (rescan.isConnected) { rescan.disabled = false; rescan.textContent = idle; }
+          }
         }, 1500);
       });
     }
@@ -2889,7 +3379,7 @@ export async function mountMailbox(host, _opts) {
           <i data-lucide="tag" class="w-3 h-3"></i>${escapeHtml(CATEGORY_LABEL[cat] || cat)}
         </span>
         ${Array.isArray(em.labels) && em.labels.length ? em.labels.map((l) => `
-          <span class="mb-label-chip" style="background:${escapeHtml(l.color)}33;color:${escapeHtml(l.color)}" title="${escapeHtml(l.name)}">
+          <span class="mb-label-chip" style="--label-c:${escapeHtml(l.color)}" title="${escapeHtml(l.name)}">
             <span class="mb-label-chip-dot" style="background:${escapeHtml(l.color)}"></span>${escapeHtml(l.name)}
           </span>
         `).join('') : ''}
@@ -2901,7 +3391,13 @@ export async function mountMailbox(host, _opts) {
           <button class="icon-btn" id="btn-print" title="${t('mb.action.print')}"><i data-lucide="printer" class="w-4 h-4"></i></button>
           <button class="icon-btn" id="btn-more" title="${t('mb.action.more')}"><i data-lucide="more-vertical" class="w-4 h-4"></i></button>
           <div class="mb-read-sep"></div>
-          <button class="icon-btn" id="btn-close-read" title="${t('mb.close')}"><i data-lucide="x" class="w-4 h-4"></i></button>
+          <!-- Two icons, one button: below 1024px the pane covers the list,
+               so the same action reads as "back" rather than "close". CSS
+               swaps them at the breakpoint — no JS width tracking. -->
+          <button class="icon-btn" id="btn-close-read" title="${t('mb.close')}" aria-label="${t('mb.close')}">
+            <i data-lucide="x" class="w-4 h-4 icn-close-read"></i>
+            <i data-lucide="arrow-left" class="w-4 h-4 icn-back-read"></i>
+          </button>
         </div>
       </div>
       <div class="mb-read-body">
@@ -2928,9 +3424,10 @@ export async function mountMailbox(host, _opts) {
               <button class="read-action-btn read-action-btn-muted" id="btn-read-toggle" title="${em.is_read ? t('mb.action.mark_unread') : t('mb.action.mark_read')}">
                 <i data-lucide="${em.is_read ? 'mail' : 'mail-open'}" class="w-4 h-4"></i>
               </button>
+              ${state.folder === 'deleted' ? '' : `
               <button class="read-action-btn read-action-btn-danger" id="btn-trash" title="${t('mb.action.delete')}">
                 <i data-lucide="trash-2" class="w-4 h-4"></i>
-              </button>
+              </button>`}
               <span class="mb-thread-actions-sep" aria-hidden="true"></span>
               <!-- Group 2 — engagement : analyser IA / répondre.
                    The analyse-IA button is hidden in no-AI mode — clicking
@@ -3060,16 +3557,20 @@ export async function mountMailbox(host, _opts) {
       }, 80);
     });
 
-    $('#btn-fav-toggle').addEventListener('click', async () => {
+    $('#btn-fav-toggle').addEventListener('click', _once(async () => {
       const target = !em.is_favourite;
-      em.is_favourite = target;
-      const idx = state.emails.findIndex((e) => e.int_id === em.int_id);
-      if (idx >= 0) state.emails[idx].is_favourite = target ? 1 : 0;
-      const btn = $('#btn-fav-toggle');
-      btn.classList.toggle('is-fav', target);
-      btn.title = target ? t('mb.action.unstar') : t('mb.action.star');
-      btn.setAttribute('aria-pressed', target ? 'true' : 'false');
-      try { await api.patchEmail(em.int_id, { is_favourite: target }); } catch (_) {}
+      const applyState = (fav) => {
+        em.is_favourite = fav;
+        const idx = state.emails.findIndex((e) => e.int_id === em.int_id);
+        if (idx >= 0) state.emails[idx].is_favourite = fav ? 1 : 0;
+        const btn = $('#btn-fav-toggle');
+        if (btn) {
+          btn.classList.toggle('is-fav', fav);
+          btn.title = fav ? t('mb.action.unstar') : t('mb.action.star');
+          btn.setAttribute('aria-pressed', fav ? 'true' : 'false');
+        }
+      };
+      applyState(target);
       // The email stays in the current folder set — no need to re-fetch.
       // applyFilter() repaints the list from state.emails (already updated
       // optimistically above) so the star icon on the visible card appears
@@ -3078,34 +3579,58 @@ export async function mountMailbox(host, _opts) {
       // _loadEmailsToken mid-fetch, the foreground response got dropped
       // and the skeletons never went away until the next navigation.
       applyFilter();
-      loadAccounts().catch(() => {});       // async badge-count refresh
-      window.toast(target ? t('mb.toast.starred') : t('mb.toast.unstarred'));
-    });
+      try {
+        await api.patchEmail(em.int_id, { is_favourite: target });
+        loadAccounts().catch(() => {});       // async badge-count refresh
+        window.toast(target ? t('mb.toast.starred') : t('mb.toast.unstarred'));
+      } catch (err) {
+        applyState(!target);                  // revert the optimistic flip
+        applyFilter();
+        window.toast(t('mb.toast.error', { msg: err?.message || '' }), 4000);
+      }
+    }));
 
-    $('#btn-read-toggle').addEventListener('click', async () => {
+    $('#btn-read-toggle').addEventListener('click', _once(async () => {
       const target = !em.is_read;
-      em.is_read = target ? 1 : 0;
-      const idx = state.emails.findIndex((e) => e.int_id === em.int_id);
-      if (idx >= 0) state.emails[idx].is_read = em.is_read;
-      host.querySelectorAll(`.mb-card[data-id="${em.int_id}"]`).forEach((c) => {
-        c.classList.toggle('unread', !target);
-      });
-      updateBadge();
-      const btn = $('#btn-read-toggle');
-      btn.title = target ? t('mb.action.mark_unread') : t('mb.action.mark_read');
-      btn.innerHTML = `<i data-lucide="${target ? 'mail' : 'mail-open'}" class="w-4 h-4"></i>`;
-      window.lucide?.createIcons();
-      try { await api.patchEmail(em.int_id, { is_read: target }); } catch (_) {}
-      window.toast(target ? t('mb.toast.read') : t('mb.toast.unread'));
-    });
+      const applyState = (read) => {
+        em.is_read = read ? 1 : 0;
+        const idx = state.emails.findIndex((e) => e.int_id === em.int_id);
+        if (idx >= 0) state.emails[idx].is_read = em.is_read;
+        host.querySelectorAll(`.mb-card[data-id="${em.int_id}"]`).forEach((c) => {
+          c.classList.toggle('unread', !read);
+        });
+        updateBadge();
+        const btn = $('#btn-read-toggle');
+        if (btn) {
+          btn.title = read ? t('mb.action.mark_unread') : t('mb.action.mark_read');
+          btn.innerHTML = `<i data-lucide="${read ? 'mail' : 'mail-open'}" class="w-4 h-4"></i>`;
+          window.lucide?.createIcons();
+        }
+      };
+      applyState(target);
+      try {
+        await api.patchEmail(em.int_id, { is_read: target });
+        window.toast(target ? t('mb.toast.read') : t('mb.toast.unread'));
+      } catch (err) {
+        applyState(!target);                  // revert
+        window.toast(t('mb.toast.error', { msg: err?.message || '' }), 4000);
+      }
+    }));
 
-    $('#btn-trash').addEventListener('click', async () => {
+    // Absent while viewing the trash — see the render above.
+    $('#btn-trash')?.addEventListener('click', _once(async () => {
       await animateCardLeave(em.int_id);
-      try { await api.patchEmail(em.int_id, { folder: 'deleted' }); } catch (_) {}
-      window.toast(t('mb.toast.deleted'));
-      renderEmpty();
-      await loadEmails();
-    });
+      try {
+        await api.patchEmail(em.int_id, { folder: 'deleted' });
+        window.toast(t('mb.toast.deleted'));
+        renderEmpty();
+      } catch (err) {
+        // Server refused — the card animated out but wasn't moved. Surface
+        // the failure; the reload below restores the card from fresh data.
+        window.toast(t('mb.toast.error', { msg: err?.message || '' }), 4000);
+      }
+      await loadEmails({ background: true });
+    }));
 
     $('#btn-more').addEventListener('click', () => {
       const anchor = $('#btn-more');
@@ -3121,7 +3646,7 @@ export async function mountMailbox(host, _opts) {
           try {
             const fresh = await api.reanalyzeEmail(em.int_id);
             renderEmail(fresh);
-            await loadEmails();
+            await loadEmails({ background: true });
             toastCtrl?.success(t('mb.ai.done'));
           } catch (_) {
             toastCtrl?.error(t('mb.ai.fail'));
@@ -3129,10 +3654,21 @@ export async function mountMailbox(host, _opts) {
         } else if (action === 'move') {
           const target = cur === 'deleted' ? 'inbox' : 'deleted';
           await animateCardLeave(em.int_id);
-          try { await api.patchEmail(em.int_id, { folder: target }); } catch (_) {}
-          window.toast(target === 'deleted' ? t('mb.toast.moved_trash') : t('mb.toast.restored'));
+          // The success toast used to fire unconditionally next to an empty
+          // catch: on a failing backend the card animated out, the toast said
+          // "moved to trash", then the loadEmails() below brought the mail
+          // straight back. Reads as a ghost bug — report what actually
+          // happened instead. (The card still round-trips through
+          // loadEmails() on failure; restoring it without a reload is
+          // handled separately.)
+          try {
+            await api.patchEmail(em.int_id, { folder: target });
+            window.toast(target === 'deleted' ? t('mb.toast.moved_trash') : t('mb.toast.restored'));
+          } catch (err) {
+            window.toast({ variant: 'error', message: t('mb.toast.error', { msg: err.message }) });
+          }
           renderEmpty();
-          await loadEmails();
+          await loadEmails({ background: true });
         }
       });
     });
@@ -3203,6 +3739,16 @@ export async function mountMailbox(host, _opts) {
     // Reply-composer autosave state. Persisted in the `drafts` table
     // with `in_reply_to_int = em.int_id` so the draft survives across
     // app restarts AND shows up in the Brouillons folder.
+    // Captured once, deliberately. saveReplyDraft() used to reach for its
+    // fields through `$` (= host.querySelector) — but `host` is #view, and by
+    // the time the 1.5s debounce fires after a route change the router has
+    // already refilled it. The lookup returned null, the guard below returned
+    // early, and the last keystrokes were dropped with no error anywhere.
+    // Holding the node keeps the query working on the detached tree, which is
+    // what renderComposeNew() has always done.
+    const paneEl = $('#read-pane');
+    const q = (sel) => (paneEl ? paneEl.querySelector(sel) : null);
+
     const replyDraft = {
       id: null,
       lastSnapshot: '',
@@ -3213,6 +3759,8 @@ export async function mountMailbox(host, _opts) {
       // fired before the first createDraft had returned an id.
       inflight: null,
       deleted: false,        // user/send killed it; ignore late saves
+      saveFailed: false,     // latched so the error toast fires once, not per keystroke
+      failToast: null,       // handle to the persistent 'not saved' toast, dismissed on recovery
     };
 
     // Repaint the #mb-draft box from current state. Called after every
@@ -3304,10 +3852,10 @@ export async function mountMailbox(host, _opts) {
       const run = (async () => {
         if (prior) { try { await prior; } catch (_) {} }
         if (replyDraft.deleted) return;
-        const ta = $('#mb-composer textarea');
-        const toEl = $('#mbc-to');
-        const subjEl = $('#mbc-subject');
-        const fromEl = $('#mbc-from');
+        const ta = q('#mb-composer textarea');
+        const toEl = q('#mbc-to');
+        const subjEl = q('#mbc-subject');
+        const fromEl = q('#mbc-from');
         if (!ta || !fromEl) return;
         const body = ta.value;
         const to = (toEl?.value || '').trim();
@@ -3342,15 +3890,27 @@ export async function mountMailbox(host, _opts) {
             id: replyDraft.id, account_email: fromAcc, to, subject, body_text: body,
           };
           refreshDraftBox();
+          replyDraft.saveFailed = false;
+          // A save landed — take the persistent 'not saved' warning back down.
+          if (replyDraft.failToast) { replyDraft.failToast.dismiss(); replyDraft.failToast = null; }
           flagSavingReply(t('mb.draft.saved'));
           setTimeout(() => flagSavingReply(''), 2000);
           // If the visible folder is Brouillons, refresh so the row
           // updated_at hops back to the top.
-          if (state.folder === 'draft') loadEmails();
+          if (state.folder === 'draft') loadEmails({ background: true });
         } catch (_) {
           flagSavingReply(t('mb.draft.save_fail'));
-          // Network/validation failure — keep going; next keystroke
-          // schedules another attempt.
+          // The inline tag alone was too quiet for what this actually costs:
+          // leaving the mailbox deliberately KEEPS the autosaved draft rather
+          // than warning, so a save that never landed means the message is
+          // simply gone. Toast once on the transition into the failed state —
+          // every keystroke reschedules a save, so toasting per attempt would
+          // machine-gun the user. Persistent (duration 0) because it must
+          // survive until they notice.
+          if (!replyDraft.saveFailed) {
+            replyDraft.saveFailed = true;
+            replyDraft.failToast = window.toast({ variant: 'error', message: t('mb.draft.save_fail_toast'), duration: 0 });
+          }
         }
       })();
       replyDraft.inflight = run;
@@ -3371,6 +3931,15 @@ export async function mountMailbox(host, _opts) {
       }, 1500);
     }
 
+    // Fire any debounced save immediately. Called on unmount so leaving the
+    // mailbox mid-sentence doesn't drop the last 1.5s of typing.
+    _flushReplyDraft = () => {
+      if (!replyDraft.timer) return null;
+      clearTimeout(replyDraft.timer);
+      replyDraft.timer = null;
+      return saveReplyDraft();
+    };
+
     // Drop the linked draft. Called after a successful send (the reply
     // is no longer "in progress") and from the trash button on the
     // draft box. Resilient to the row not existing yet. Also clears
@@ -3387,8 +3956,21 @@ export async function mountMailbox(host, _opts) {
       replyDraft.id = null;
       em._user_reply_draft = null;
       replyDraft.lastSnapshot = '';
+      // Reported back so callers don't announce a deletion that didn't
+      // happen — the discard handler used to toast "Brouillon supprimé"
+      // unconditionally right after this returned.
+      let ok = true;
       if (id != null) {
-        try { await api.deleteDraft(id); } catch (_) {}
+        // Same as the compose-new discard: a swallowed failure here leaves
+        // the row in Brouillons after the user asked for it to be dropped.
+        try {
+          await api.deleteDraft(id);
+        } catch (err) {
+          if (err && err.status !== 404) {
+            ok = false;
+            window.toast({ variant: 'error', message: t('mb.draft.discard_failed') });
+          }
+        }
       }
       if (alsoClearAi && em.draft_response) {
         em.draft_response = '';
@@ -3402,23 +3984,34 @@ export async function mountMailbox(host, _opts) {
       // autosave path so the next keystroke creates a fresh row.
       replyDraft.deleted = false;
       refreshDraftBox();
-      if (state.folder === 'draft') loadEmails();
+      if (state.folder === 'draft') loadEmails({ background: true });
+      return ok;
     }
 
     function closeComposer({ skipDraftSync = false } = {}) {
       const composer = $('#mb-composer');
       if (!composer) return;
-      // Confirm close if the user typed something
+      // Confirm close if the user typed something. Confirming means DISCARD
+      // — so we must NOT then save the draft (the old behaviour saved on
+      // close, making the "Abandonner ce message ?" dialog a lie).
       const ta = composer.querySelector('textarea');
+      let discarded = false;
       if (ta && ta.value.trim().length > 0) {
         if (!window.confirm(t('mb.composer.confirm_discard'))) return;
+        discarded = true;
       }
       const draft = $('#mb-draft');
       $('#btn-reply-toggle')?.classList.remove('active');
-      // Flush any pending autosave so the user doesn't lose the last
-      // <1.5s of typing. Skip on send paths — the draft is about to
-      // be deleted anyway and we'd race the DELETE.
-      if (!skipDraftSync) {
+      if (discarded) {
+        // Drop the pending autosave AND the persisted draft row, and clear
+        // the field so a later reopen doesn't resurrect the discarded text.
+        if (replyDraft.timer) { clearTimeout(replyDraft.timer); replyDraft.timer = null; }
+        if (ta) ta.value = '';
+        deleteReplyDraft();
+      } else if (!skipDraftSync) {
+        // Normal close (no text to lose): flush any pending autosave so the
+        // last <1.5s of typing in To/Subject isn't dropped. Skip on send
+        // paths — the draft is about to be deleted and we'd race the DELETE.
         if (replyDraft.timer) { clearTimeout(replyDraft.timer); replyDraft.timer = null; }
         saveReplyDraft();
       }
@@ -3549,34 +4142,10 @@ export async function mountMailbox(host, _opts) {
       e.target.value = '';
       handleFilePick(files, 'inline');
     });
-    // Drag-and-drop files onto the composer (uses delegation on read-pane
-    // so it covers both the inline reply composer and the standalone new composer).
-    const onDropFiles = (e) => {
-      const composer = e.target.closest('#mb-composer');
-      if (!composer) return;
-      e.preventDefault();
-      composer.classList.remove('mb-composer-dragover');
-      const files = [...(e.dataTransfer?.files || [])];
-      if (!files.length) return;
-      // Detect which composer is active: new compose has its own handler
-      const isNew = composer.classList.contains('mb-composer-standalone');
-      handleFilePick(files, 'attachment');
-    };
-    host.addEventListener('dragenter', (e) => {
-      if (!e.target.closest('#mb-composer')) return;
-      e.preventDefault();
-      e.target.closest('#mb-composer')?.classList.add('mb-composer-dragover');
-    });
-    host.addEventListener('dragover', (e) => {
-      if (!e.target.closest('#mb-composer')) return;
-      e.preventDefault();
-    });
-    host.addEventListener('dragleave', (e) => {
-      const composer = e.target.closest('#mb-composer');
-      if (!composer) return;
-      if (!composer.contains(e.relatedTarget)) composer.classList.remove('mb-composer-dragover');
-    });
-    host.addEventListener('drop', onDropFiles);
+    // Route drops onto this email's composer to its staging handler. The
+    // host-level dnd listeners are attached once at mount and dispatch to
+    // whatever `_activeFilePick` currently points at.
+    _activeFilePick = handleFilePick;
 
     async function sendCurrentMessage({ trigger, replyToIntId, bodyOverride } = {}) {
       const fromSel = $('#mbc-from');
@@ -3703,12 +4272,13 @@ export async function mountMailbox(host, _opts) {
       if (!confirm(confirmMsg)) return;
       const ta = $('#mb-composer textarea');
       if (ta) ta.value = '';
-      await deleteReplyDraft({ alsoClearAi: true });
+      const ok = await deleteReplyDraft({ alsoClearAi: true });
       const composer = $('#mb-composer');
       if (composer && composer.style.display !== 'none') {
         closeComposer({ skipDraftSync: true });
       }
-      window.toast(t('mb.toast.draft_deleted'));
+      // deleteReplyDraft already toasted the specific failure.
+      if (ok) window.toast(t('mb.toast.draft_deleted'));
     });
 
     // Attach `input` listeners on the four composer fields exactly
@@ -3843,7 +4413,7 @@ export async function mountMailbox(host, _opts) {
       try {
         const fresh = await api.reanalyzeEmail(em.int_id);
         renderEmail(fresh);
-        await loadEmails();
+        await loadEmails({ background: true });
         toastCtrl?.success(t('mb.ai.done'));
       } catch (_) {
         toastCtrl?.error(t('mb.ai.fail'));
@@ -3881,6 +4451,7 @@ export async function mountMailbox(host, _opts) {
       window.railToast?.setAiBusy?.(true);
       try {
         const streamed = await _streamDraftInto(em.int_id, ta);
+        if (streamed.aborted) return;  // navigated away / unmounted — not an error
         if (!streamed.ok) {
           // Soit le streaming a refusé (provider OpenAI → 409), soit
           // il a crashé en cours. Fallback non-streaming.
@@ -3920,6 +4491,81 @@ export async function mountMailbox(host, _opts) {
     window.lucide?.createIcons();
   }
 
+  // Conversation reader. After the opened message renders, fetch the rest
+  // of its thread and inject a collapsible "earlier in this conversation"
+  // accordion above the body. Best-effort + non-blocking: a single-message
+  // thread or a failed fetch simply leaves the single-message view intact.
+  async function loadThreadInto(em) {
+    if (!em || em.int_id < 0) return;
+    let data;
+    try {
+      data = await api.getThread(em.int_id);
+    } catch (_) { return; }
+    // The user may have navigated to another email while we fetched.
+    if (state.selectedId !== em.int_id) return;
+    const msgs = ((data && data.messages) || []).filter((m) => m.folder !== 'deleted');
+    if (msgs.length <= 1) return;
+    const others = msgs.filter((m) => m.int_id !== em.int_id);
+    if (!others.length) return;
+    const content = host.querySelector('#read-pane .mb-read-content');
+    if (!content || content.querySelector('.mb-thread-convo')) return;
+
+    const byId = new Map(others.map((m) => [m.int_id, m]));
+    const rowHtml = (m) => {
+      const sName = senderName(m.sender);
+      const sEmail = senderEmail(m.sender);
+      const ini = initials(sName || sEmail);
+      const col = avatarColor(sEmail || sName);
+      const snippet = (m.summary || m.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 90);
+      return `
+        <details class="mb-thread-msg" data-int-id="${escapeHtml(String(m.int_id))}">
+          <summary class="mb-thread-msg-sum">
+            <span class="mb-avatar mb-thread-msg-av" style="background:${col}"><span class="av-text">${escapeHtml(ini)}</span></span>
+            <span class="mb-thread-msg-from">${escapeHtml(sName || sEmail || t('mb.unknown_sender'))}</span>
+            <span class="mb-thread-msg-snip">${escapeHtml(snippet)}</span>
+            <span class="mb-thread-msg-date">${escapeHtml(shortDate(m.date_received))}</span>
+          </summary>
+          <div class="mb-thread-msg-body" data-lazy="1"></div>
+        </details>`;
+    };
+
+    const wrap = document.createElement('div');
+    wrap.className = 'mb-thread-convo';
+    wrap.innerHTML = `
+      <div class="mb-thread-convo-head">
+        <i data-lucide="messages-square" class="w-4 h-4"></i>
+        <span>${t('mb.thread.convo_head', { n: msgs.length })}</span>
+      </div>
+      ${others.map(rowHtml).join('')}
+    `;
+    content.insertBefore(wrap, content.firstChild);
+    window.lucide?.createIcons({ el: wrap });
+
+    // Lazy-render each message body on first expand so a long thread doesn't
+    // spin up N sandboxed iframes up front. Prefer the plain-text part for
+    // these context messages (avoids the image-blocker banner whose buttons
+    // aren't wired outside the pivot); fall back to the HTML iframe only when
+    // there's no text part.
+    wrap.querySelectorAll('.mb-thread-msg').forEach((d) => {
+      d.addEventListener('toggle', () => {
+        if (!d.open) return;
+        const bodyEl = d.querySelector('.mb-thread-msg-body');
+        if (!bodyEl || bodyEl.dataset.lazy !== '1') return;
+        const m = byId.get(parseInt(d.dataset.intId, 10));
+        if (!m) return;
+        const hasText = m.body_text && m.body_text.trim().length;
+        const hasHtml = m.body_html && m.body_html.trim().length;
+        bodyEl.innerHTML = hasText
+          ? `<div class="mb-body-text">${linkify(m.body_text)}</div>`
+          : (hasHtml
+              ? buildHtmlBodyBlock(m)
+              : `<div style="color:var(--muted);font-style:italic">${t('mb.read.empty_body')}</div>`);
+        bodyEl.dataset.lazy = '0';
+        window.lucide?.createIcons({ el: bodyEl });
+      });
+    });
+  }
+
   async function openEmail(intId) {
     // Drafts use synthetic negative ids — re-route to the composer
     // pre-filled with the saved body/recipient/subject instead of
@@ -3938,13 +4584,34 @@ export async function mountMailbox(host, _opts) {
     setSelectionMode(true);
     // Reflect selection in list (targeted, not full iteration)
     _selectCard(intId);
+    const myTok = ++_openEmailToken;
+
+    // Paint the intermediate state BEFORE the await, not after.
+    // Two things were broken by doing it afterwards:
+    //  - first open: renderEmpty() had blanked the pane, so it stayed white
+    //    for the whole round-trip (up to the 30s api.js timeout) and then
+    //    jumped straight to an error string;
+    //  - switching A→B: the mb-read-swap fade was added after the response
+    //    landed, so email A stayed fully rendered while B loaded and only the
+    //    card highlight moved — it read as "the click did nothing".
+    const pane = $('#read-pane');
+    const hadContent = !!(pane && pane.innerHTML.trim());
+    if (pane) {
+      if (hadContent) pane.classList.add('mb-read-swap');
+      else renderReadSkeleton();
+    }
+
     try {
       const em = await api.getEmail(intId);
-      // Prevent re-animation when switching between emails: brief fade
-      const pane = $('#read-pane');
-      if (pane && pane.innerHTML.trim()) pane.classList.add('mb-read-swap');
+      // A newer openEmail started while this fetch was in flight — drop the
+      // stale response so it can't paint over the email the user is now on.
+      if (myTok !== _openEmailToken) return;
       renderEmail(em);
       if (pane) setTimeout(() => pane.classList.remove('mb-read-swap'), 280);
+      // Pull in the rest of the conversation (non-blocking): the opened
+      // message renders first, then the earlier-messages accordion fills in.
+      // Works in both flat and conversation views.
+      loadThreadInto(em);
       const idx = state.emails.findIndex((e) => e.int_id === intId);
       // Mark read locally + remotely
       if (!em.is_read) {
@@ -3953,7 +4620,16 @@ export async function mountMailbox(host, _opts) {
           host.querySelectorAll(`.mb-card[data-id="${intId}"]`).forEach((c) => c.classList.remove('unread'));
           updateBadge();
         }
-        api.patchEmail(intId, { is_read: true }).catch(() => {});
+        // Roll the optimistic read back if the server never got it.
+        // Without this, working through 20 mails against a dead backend
+        // looked fine until the 60s refresh put every one of them back in
+        // bold — the "my mail marks itself unread again" report.
+        api.patchEmail(intId, { is_read: true }).catch(() => {
+          const i = state.emails.findIndex((e) => e.int_id === intId);
+          if (i >= 0) state.emails[i].is_read = 0;
+          host.querySelectorAll(`.mb-card[data-id="${intId}"]`).forEach((c) => c.classList.add('unread'));
+          updateBadge();
+        });
       }
       // Sync attachment summary into the list card.
       // The detail endpoint triggers a lazy IMAP scan; the list may have been
@@ -3979,7 +4655,22 @@ export async function mountMailbox(host, _opts) {
         }
       }
     } catch (err) {
-      $('#read-pane').innerHTML = `<div class="mb-read-empty">${t('mb.read.error_load', { msg: escapeHtml(err.message) })}</div>`;
+      if (myTok !== _openEmailToken) return;  // superseded → don't paint stale error
+      // Was a bare string with no way forward: the only escapes were the 60s
+      // background tick or navigating away by hand. Give it an icon and a
+      // retry that re-runs the same open.
+      const p = $('#read-pane');
+      if (!p) return;
+      p.innerHTML = `
+        <div class="mb-read-inner">
+          <div class="mb-read-error" role="alert">
+            <span class="mb-read-error-icon"><i data-lucide="unplug" class="w-6 h-6"></i></span>
+            <p>${t('mb.read.error_load', { msg: escapeHtml(err.message) })}</p>
+            <button type="button" id="btn-read-retry">${t('mb.read.retry')}</button>
+          </div>
+        </div>`;
+      window.lucide?.createIcons({ nodes: [p] });
+      p.querySelector('#btn-read-retry')?.addEventListener('click', () => openEmail(intId));
     }
   }
 
@@ -4057,11 +4748,20 @@ export async function mountMailbox(host, _opts) {
    */
   async function _streamDraftInto(intId, targetTextarea) {
     let resp;
+    // Every other network call goes through api.js, which wraps each request
+    // in an AbortController. This one was a bare fetch feeding an unbounded
+    // reader loop: navigating away mid-generation left the SSE stream running
+    // to completion and the loop holding a detached textarea (and its whole
+    // closure) alive with no way to stop it.
+    const ctrl = new AbortController();
+    _streamAborts.add(ctrl);
     try {
       resp = await fetch(`/api/emails/${intId}/draft/stream`, {
         method: 'POST',
+        signal: ctrl.signal,
       });
     } catch (e) {
+      _streamAborts.delete(ctrl);
       return { ok: false };
     }
     if (resp.status === 409) {
@@ -4076,6 +4776,7 @@ export async function mountMailbox(host, _opts) {
     let buf = '';
     let finalText = '';
     let sawError = false;
+    try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -4118,6 +4819,16 @@ export async function mountMailbox(host, _opts) {
           }
         }
       }
+    }
+    } catch (err) {
+      // Aborted because the view is being torn down (unmount) or the user
+      // navigated away mid-generation — not a generation failure, so the
+      // caller must stay silent rather than toast an error.
+      if (err?.name === 'AbortError' || ctrl.signal.aborted) return { ok: false, aborted: true };
+      throw err;
+    } finally {
+      _streamAborts.delete(ctrl);
+      try { reader.cancel(); } catch (_) {}
     }
     if (sawError && !finalText) return { ok: false };
     return { ok: true };
@@ -4209,6 +4920,10 @@ export async function mountMailbox(host, _opts) {
       }
       const card = host.querySelector(`.mb-card[data-id="${id}"]`);
       if (card) card.scrollIntoView({ block: 'nearest' });
+      // Move real DOM focus with the selection. Without this the accent bar
+      // and the focus ring pointed at two different rows, and a screen reader
+      // heard nothing at all as j/k walked the list.
+      _setRovingFocus(id);
       openEmail(id);
     }
   }
@@ -4358,30 +5073,64 @@ export async function mountMailbox(host, _opts) {
         }
         renderSelectionBar();
       }
+      // Any reload while a search is active would otherwise re-render the
+      // stale searchResults — new mail stays invisible on a background
+      // tick, and a just-deleted/moved hit reappears after a foreground
+      // mutation reload (bulkSetTarget/trash call loadEmails). Re-issue
+      // the search so the result set always reflects the fresh data.
+      const hadSearch = !!(state.query.trim() && state.searchResults);
+
+      // A FOREGROUND reload means the underlying set changed identity
+      // (folder switch, mutation). The hits we still hold were computed
+      // against the previous set, and applyFilter() below renders straight
+      // from them — that painted Inbox results inside Trash for the ~250ms
+      // until the re-issued search landed, and a click during that window
+      // fed _patchForTarget() the wrong current folder.
+      // Background ticks keep the hits: same set identity, and blanking the
+      // list mid-search would fight the user.
+      if (hadSearch && !isBackground) {
+        state.searchResults = null;
+        _searchToken++;   // strand any search still in flight over the old set
+      }
+
       applyFilter(isBackground);
 
-      // A background refresh that lands while a search is active would
-      // otherwise re-render the stale searchResults (new mail invisible).
-      // Re-issue the search so the result set reflects the fresh data.
-      if (isBackground && state.query.trim() && state.searchResults) {
-        runServerSearch();
-      }
+      if (hadSearch) runServerSearch();
 
       // Auto-focus from URL ?focus=. Always open — even if the email is
       // outside the visible list (older than the 300 row cap, in another
       // folder, hidden by current filters…). openEmail() fetches the row
       // through the API so the read pane works regardless of list state.
-      const m = location.hash.match(/[?&]focus=(\d+)/);
+      const m = _focusConsumed ? null : location.hash.match(/[?&]focus=(\d+)/);
       if (m) {
+        _focusConsumed = true;
         const id = parseInt(m[1], 10);
         if (Number.isFinite(id)) openEmail(id);
+        // Consume the param so later reloads (folder switch, 60s refresh,
+        // post-mutation reload) don't reopen it and fight the user closing
+        // the pane.
+        try { history.replaceState(null, '', _stripHashParam('focus')); } catch (_) {}
       }
       // NOTE: renderEmpty() is intentionally NOT called here for background
       // refreshes — the initial mount already calls it, and periodic reloads
       // must never close a mail the user is currently reading.
     } catch (err) {
       if (myToken !== _loadEmailsToken) return;  // stale → drop (don't paint old error)
-      $('#email-list').innerHTML = `<div style="padding:24px;color:var(--danger)">${t('mb.list.error', { msg: escapeHtml(err.message) })}</div>`;
+      // A background tick must not replace a working list with an error block
+      // just because one poll failed — the user keeps reading what they had.
+      if (isBackground) return;
+      const list = $('#email-list');
+      if (!list) return;
+      // Inline styles and no way out before: the only escapes were the 60s tick
+      // or a manual folder change.
+      list.innerHTML = `
+        <div class="mb-list-error" role="alert">
+          <span class="mb-list-error-icon"><i data-lucide="unplug" class="w-6 h-6"></i></span>
+          <div class="mb-list-error-msg">${t('mb.list.error', { msg: escapeHtml(err.message) })}</div>
+          <button type="button" id="btn-list-retry">${t('mb.read.retry')}</button>
+        </div>`;
+      window.lucide?.createIcons({ nodes: [list] });
+      list.querySelector('#btn-list-retry')?.addEventListener('click', () => loadEmails());
     }
   }
 
@@ -4433,6 +5182,7 @@ export async function mountMailbox(host, _opts) {
 
   async function pollSync() {
     if (syncTimer) return;
+    const stop = () => { if (syncTimer) { clearInterval(syncTimer); syncTimer = null; } };
     const tick = async () => {
       try {
         const s = await api.getSyncStatus();
@@ -4448,9 +5198,15 @@ export async function mountMailbox(host, _opts) {
             loadEmails({ background: true });
             loadAccounts();
           }
+          // Idle: stop the fast 5s poll instead of spinning it forever.
+          // Rearmed by triggerSync() and by the 60s background refresh, so a
+          // server-side auto-sync is still noticed (within ~60s, then polled
+          // at 5s until it finishes).
+          stop();
         }
       } catch (_) {
         setSyncSpinner(false);
+        stop();
       }
     };
     syncTimer = setInterval(tick, 5000);
@@ -4488,6 +5244,10 @@ export async function mountMailbox(host, _opts) {
 
   $('#search').addEventListener('input', (e) => {
     state.query = e.target.value;
+    // Typing is a filter change like any chip. Without this, renderList took
+    // the scroll-anchor path and opened the result list already scrolled to
+    // wherever the previous view happened to be.
+    _filterDidChange = true;
     renderSearchFilters();  // reflect operators typed by hand on the buttons
     if (_searchTimer) clearTimeout(_searchTimer);
     if (!state.query.trim()) { _searchToken++; state.searchResults = null; applyFilter(); return; }
@@ -4509,7 +5269,10 @@ export async function mountMailbox(host, _opts) {
   function _setAfterDays(days) {
     state.query = state.query.replace(/(^|\s)after:\S+/ig, ' ').replace(/\s+/g, ' ').trim();
     if (days > 0) {
-      const d = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+      // Build the date in LOCAL time. toISOString() is UTC, so "7 derniers
+      // jours" landed a day off for users west of UTC around midnight.
+      const dt = new Date(Date.now() - days * 86400000);
+      const d = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
       state.query = (state.query + ' after:' + d).trim();
     }
   }
@@ -4572,6 +5335,11 @@ export async function mountMailbox(host, _opts) {
     state.query = q;
     const inp = $('#search');
     if (inp) inp.value = q;
+    // Run it through the SERVER search like a typed query, so operators
+    // (from:, subject:, has:…) are honoured — not just treated as a local
+    // substring by the initial applyFilter.
+    renderSearchFilters();
+    runServerSearch();
   })();
 
   // Honour `#/inbox?sort=score&unread=1` for deep-links from other views.
@@ -4595,9 +5363,17 @@ export async function mountMailbox(host, _opts) {
       state.onlyReply = true;
       renderChips();
     }
+    // Consume them, the way ?focus= already is. Left in the hash, these
+    // re-applied their filter on every later remount — clicking "Toutes"
+    // cleared the chip but the next re-render silently put it back.
+    if (sortM || unreadM || hash.match(/[?&]reply=1/)) {
+      try {
+        let h = location.hash;
+        for (const k of ['sort', 'unread', 'reply']) h = _stripHashParam(k, h);
+        if (h !== location.hash) history.replaceState(null, '', h);
+      } catch (_) {}
+    }
   })();
-
-  // `#/inbox?smart=<id>` deep-link is handled after smart folders load (see below).
 
   // Render a compose-from-scratch pane in #read-pane. Used by both the
   // sidebar "Nouveau message" CTA and the 'c' keyboard shortcut. The
@@ -4730,6 +5506,10 @@ export async function mountMailbox(host, _opts) {
       }
     }
 
+    // Route composer drops (host-level dnd, attached once at mount) to this
+    // compose-new staging handler.
+    _activeFilePick = handleFilePickNew;
+
     pane.querySelector('#btn-attach-file-new')?.addEventListener('click', () => pane.querySelector('#mb-file-input-new')?.click());
     pane.querySelector('#btn-attach-image-new')?.addEventListener('click', () => pane.querySelector('#mb-image-input-new')?.click());
     pane.querySelector('#mb-file-input-new')?.addEventListener('change', (e) => {
@@ -4747,6 +5527,8 @@ export async function mountMailbox(host, _opts) {
     let saveTimer = null;
     let savePromise = null;
     let pendingDelete = false;  // set when user clicks the trash; aborts the next autosave
+    let saveFailed = false;     // latched so the error toast fires once, not per keystroke
+    let failToast = null;       // handle to the persistent 'not saved' toast, dismissed on recovery
     const collect = () => ({
       from_account: (pane.querySelector('#mbc-from')?.value || '').trim(),
       to:       (pane.querySelector('#mbc-to')?.value || '').trim(),
@@ -4774,11 +5556,20 @@ export async function mountMailbox(host, _opts) {
           await api.updateDraft(draftId, v);
         }
         lastSnapshot = snap;
+        saveFailed = false;
+        // A save landed — take the persistent 'not saved' warning back down.
+        if (failToast) { failToast.dismiss(); failToast = null; }
         flagSaving(t('mb.draft.saved'));
         // Brief auto-clear so the tag doesn't permanently squat the bar.
         setTimeout(() => { if (tagEl && tagEl.textContent === t('mb.draft.saved')) tagEl.textContent = ''; }, 2000);
       } catch (err) {
         flagSaving(t('mb.draft.save_fail'));
+        // Same reasoning as the reply composer: a silently failed autosave
+        // loses the message the moment the user navigates away.
+        if (!saveFailed) {
+          saveFailed = true;
+          failToast = window.toast({ variant: 'error', message: t('mb.draft.save_fail_toast'), duration: 0 });
+        }
       }
       return draftId;
     }
@@ -4809,7 +5600,7 @@ export async function mountMailbox(host, _opts) {
         await api.deleteDraft(draftId);
         window.toast(t('mb.toast.draft_deleted'));
         renderEmpty();
-        if (state.folder === 'draft') loadEmails();
+        if (state.folder === 'draft') loadEmails({ background: true });
       } catch (err) {
         pendingDelete = false;
         window.toast(t('mb.toast.fail_delete') + ': ' + (err.message || ''));
@@ -4817,17 +5608,32 @@ export async function mountMailbox(host, _opts) {
     });
 
     pane.querySelector('#btn-close-compose')?.addEventListener('click', async () => {
-      // Confirm close if the user typed something
+      // The X is the explicit "abandon" affordance (navigating away via the
+      // sidebar keeps the autosaved draft). Confirming DISCARD must delete
+      // the draft, not save it — the old code asked "Abandonner ?" then
+      // called saveNow(), keeping exactly what the user chose to drop.
       const ta = pane.querySelector('textarea');
-      if (ta && ta.value.trim().length > 0 && !draftId) {
+      const hasContent = (ta && ta.value.trim().length > 0) || draftId != null;
+      if (hasContent) {
         if (!window.confirm(t('mb.composer.confirm_discard'))) return;
+        pendingDelete = true;
+        if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+        if (draftId != null) {
+          // Swallowing this was the worst of the silent cleanups: the user
+          // explicitly confirmed "discard", the pane closed as if it worked,
+          // and the draft was still sitting in Brouillons on the next visit.
+          // 404 means it is already gone, which is the outcome we wanted.
+          try {
+            await api.deleteDraft(draftId);
+          } catch (err) {
+            if (err && err.status !== 404) {
+              window.toast({ variant: 'error', message: t('mb.draft.discard_failed') });
+            }
+          }
+        }
       }
-      // Flush any pending edit before closing so the user doesn't lose
-      // a draft they typed during the last 1.5s.
-      if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-      try { await saveNow(); } catch (_) {}
       renderEmpty();
-      if (state.folder === 'draft') loadEmails();
+      if (state.folder === 'draft') loadEmails({ background: true });
     });
 
     pane.querySelector('#btn-compose-send-new')?.addEventListener('click', async (e) => {
@@ -4890,35 +5696,42 @@ export async function mountMailbox(host, _opts) {
   $('#cta-compose').addEventListener('click', () => renderComposeNew());
 
   // ── Keyboard ──────────────────────────────────────────────
+  // Only the keys app.js actually relays over the `app:key` bus (j / k /
+  // Enter / e) are handled. A previous version also branched on r/f/s/c/u/
+  // v/#/m/*, but app.js never dispatched those — dead code (and `m` even
+  // called bulkSetTarget('archived') for a folder that doesn't exist). If
+  // these get revived, relay them from app.js AND make the single-email
+  // actions target `state.selectedId`, not the multi-select set.
   function onKey(e) {
     const k = e.detail.key;
     const sel = state.selectedId;
     if (k === 'j') moveSelection(1);
     else if (k === 'k') moveSelection(-1);
-    else if (k === 'Enter' && sel == null && state.filteredIds.length) openEmail(state.filteredIds[0]);
+    // The `sel == null` guard inverted what the shortcut sheet promises
+    // ("open the selected mail"): Enter only ever opened the FIRST row, and
+    // only while nothing was selected — so after a single `j` the key was dead.
+    else if (k === 'Enter' && state.filteredIds.length) {
+      openEmail(sel != null && state.filteredIds.includes(sel) ? sel : state.filteredIds[0]);
+    }
     else if (k === 'e' && sel != null) {
-      api.patchEmail(sel, { is_read: true }).catch(() => {});
+      // Keep in-memory state + the unread badge in sync with the card, not
+      // just the visual class (the "Non lus" chip counted it otherwise).
+      const idx = state.emails.findIndex((em) => em.int_id === sel);
+      const prev = idx >= 0 ? state.emails[idx].is_read : undefined;
+      if (idx >= 0) state.emails[idx].is_read = 1;
       const c = host.querySelector(`.mb-card[data-id="${sel}"]`);
       if (c) c.classList.remove('unread');
+      updateBadge();
+      // Roll the optimistic read back if the server never got it, like
+      // openEmail does — otherwise it silently reverts on the next refresh.
+      api.patchEmail(sel, { is_read: true }).catch(() => {
+        if (idx >= 0) state.emails[idx].is_read = prev;
+        if (!prev) {
+          host.querySelectorAll(`.mb-card[data-id="${sel}"]`).forEach((el) => el.classList.add('unread'));
+        }
+        updateBadge();
+      });
     }
-    // Gmail-like shortcuts (only when no input is focused)
-    else if (k === 'r' && sel != null) $('#btn-reply-toggle')?.click();
-    else if (k === 'f' && sel != null) $('#btn-forward')?.click();
-    else if (k === '#' && sel != null) {
-      const cur = state.folder || 'inbox';
-      let target = cur === 'deleted' ? 'inbox' : 'deleted';
-      if (state.selectedIds.size > 1) { bulkSetTarget(target); } else { bulkSetTarget(target); }
-    }
-    else if (k === 's' && sel != null) $('#btn-fav-toggle')?.click();
-    else if (k === 'u') { triggerSync().catch(() => {}); }
-    else if (k === 'c') $('#cta-compose')?.click();
-    else if (k === 'm' && sel != null) {
-      const cur = state.folder || 'inbox';
-      if (cur === 'deleted') return;
-      bulkSetTarget('archived');
-    }
-    else if (k === 'v' && sel != null) openMovePopover($(`.mb-card[data-id="${sel}"]`) || undefined);
-    else if (k === '*') selectAll();
   }
   window.addEventListener('app:key', onKey);
 
@@ -4954,9 +5767,16 @@ export async function mountMailbox(host, _opts) {
   }
 
   function _backgroundRefresh() {
+    // A hidden window has nobody watching: the tick still cost two requests
+    // (one of them /api/dashboard) plus a sync poll, every minute, forever.
+    // onVisibility below already refreshes on the way back in.
+    if (document.hidden) return;
     if (_userIsBusy()) return;
     loadEmails({ background: true }).catch(() => {});
     loadAccounts().catch(() => {});
+    // Re-arm the sync poll: ticks once, spins up the 5s poll if a server-side
+    // sync is running, otherwise stops immediately.
+    pollSync();
   }
 
   const refreshTimer = setInterval(_backgroundRefresh, 60_000);
@@ -4973,6 +5793,13 @@ export async function mountMailbox(host, _opts) {
 
   // ── Initial render ────────────────────────────────────────
   const _mountedAt = Date.now(); // used to synchronise accounts stagger with static stagger
+  // The restored view lives in `state`; the input is the one control that
+  // doesn't read from it, so put the query back by hand before the renders
+  // below reflect everything else.
+  if (state.query) {
+    const _si = $('#search');
+    if (_si) _si.value = state.query;
+  }
   renderFolders();
   renderLabels();
   renderUserLabels();
@@ -5038,6 +5865,9 @@ export async function mountMailbox(host, _opts) {
   }
 
   // Event delegation for card clicks (avoids per-card listeners).
+  // Keyboard activation, delegated alongside the click handler below.
+  $('#email-list').addEventListener('keydown', _onListKeydown);
+
   $('#email-list').addEventListener('click', (e) => {
     const card = e.target.closest('.mb-card');
     if (!card) return;
@@ -5124,13 +5954,34 @@ export async function mountMailbox(host, _opts) {
 
   // Cleanup on unmount
   return () => {
+    // Before anything is torn down: push out a reply draft still sitting in
+    // its 1.5s debounce. Fire-and-forget — the request outlives the view, and
+    // saveReplyDraft() now reads the composer through a captured node so it
+    // still works once #view has been refilled.
+    try { _flushReplyDraft?.(); } catch (_) {}
+    _flushReplyDraft = null;
+    // Snapshot the view so coming back lands where the user left.
+    try {
+      _persistedView = _captureView(state, $('#email-list')?.scrollTop || 0);
+    } catch (_) {}
     if (_sortDropCleanup) _sortDropCleanup();
     closePopover();
     _teardownListObserver();
+    // Kill any AI draft stream still running; otherwise it keeps reading and
+    // writing into a textarea that no longer exists.
+    _streamAborts.forEach((c) => { try { c.abort(); } catch (_) {} });
+    _streamAborts.clear();
+    clearTimeout(_searchTimer);
     if (syncTimer) clearInterval(syncTimer);
     if (refreshTimer) clearInterval(refreshTimer);
     document.removeEventListener('visibilitychange', onVisibility);
     window.removeEventListener('app:key', onKey);
     document.removeEventListener('keydown', onEscape);
+    // `host` (= #view) persists across navigations, so its dnd listeners
+    // would leak into the next view if not removed here.
+    host.removeEventListener('dragenter', _onComposerDragEnter);
+    host.removeEventListener('dragover', _onComposerDragOver);
+    host.removeEventListener('dragleave', _onComposerDragLeave);
+    host.removeEventListener('drop', _onComposerDrop);
   };
 }

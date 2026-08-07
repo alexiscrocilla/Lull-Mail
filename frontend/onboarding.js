@@ -34,16 +34,10 @@ const SERVICE_DOMAINS = {
   free:     'free.fr',
 };
 
-function providerLogoHtml(provider) {
-  const type = String(provider?.type || '').toLowerCase();
-  const domain = SERVICE_DOMAINS[type];
-  const fallback = `<i data-lucide="mail"></i>`;
-  if (!domain) return fallback;
-  const src = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64`;
-  return `<img src="${src}" alt=""
-            loading="lazy"
-            onload="if(this.naturalWidth<=16)this.replaceWith(Object.assign(document.createElement('i'),{outerHTML:'<i data-lucide=&quot;mail&quot;></i>'}))"
-            onerror="this.outerHTML='<i data-lucide=&quot;mail&quot;></i>';if(window.lucide)window.lucide.createIcons();">`;
+function providerLogoHtml(_provider) {
+  // Privacy + offline: don't fetch provider favicons from google.com. A
+  // generic mail glyph (rendered locally by lucide) stands in.
+  return `<i data-lucide="mail"></i>`;
 }
 
 function refreshIcons() {

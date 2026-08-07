@@ -7,46 +7,10 @@ import {
   shortDate, escapeHtml,
   CATEGORY_COLOR,
 } from '/static/api.js';
+import { confirmAsync } from '/static/confirm.js';
 
-/**
- * Show a branded confirm dialog. Returns a Promise<boolean>.
- * opts: { title, message, confirmLabel, danger }
- */
-function confirmAsync({ title = '', message = '', confirmLabel = '', danger = false } = {}) {
-  const _t = window.t || ((k) => k);
-  const _title = title || _t('cleanup.confirm.default_title');
-  const _label = confirmLabel || _t('cleanup.confirm.default_ok');
-  return new Promise((resolve) => {
-    const backdrop = document.createElement('div');
-    backdrop.className = 'confirm-backdrop';
-    backdrop.innerHTML = `
-      <div class="confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
-        <div class="confirm-head">
-          <span class="confirm-icon ${danger ? 'confirm-icon-danger' : ''}">
-            <i data-lucide="${danger ? 'triangle-alert' : 'help-circle'}"></i>
-          </span>
-          <strong id="confirm-title">${escapeHtml(_title)}</strong>
-        </div>
-        <p class="confirm-msg">${escapeHtml(message)}</p>
-        <div class="confirm-actions">
-          <button class="confirm-btn-cancel">${_t('cleanup.cancel')}</button>
-          <button class="confirm-btn-ok ${danger ? 'is-danger' : ''}">${escapeHtml(_label)}</button>
-        </div>
-      </div>`;
-
-    const close = (result) => { backdrop.remove(); resolve(result); };
-    backdrop.querySelector('.confirm-btn-cancel').addEventListener('click', () => close(false));
-    backdrop.querySelector('.confirm-btn-ok').addEventListener('click', () => close(true));
-    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(false); });
-    document.addEventListener('keydown', function esc(e) {
-      if (e.key === 'Escape') { document.removeEventListener('keydown', esc); close(false); }
-    });
-
-    document.body.appendChild(backdrop);
-    window.lucide?.createIcons({ nodes: [backdrop] });
-    backdrop.querySelector('.confirm-btn-ok').focus();
-  });
-}
+// confirmAsync now lives in /static/confirm.js (imported above) so the
+// mailbox can use the same dialog for bulk delete.
 
 // Labels are resolved at runtime via t() inside mountCleanup.
 // Kept as key references here so the array is still static at parse time.
@@ -134,6 +98,15 @@ function relativeFrench(iso) {
 
 export async function mountCleanup(host, _opts) {
   const t = window.t || ((k) => k);
+
+  // See the same helper in settings.js: document-level listeners survive the
+  // router's host.innerHTML = '', so they have to be registered somewhere the
+  // returned cleanup can reach.
+  const _docTeardown = [];
+  const onDoc = (type, fn, opt) => {
+    document.addEventListener(type, fn, opt);
+    _docTeardown.push(() => document.removeEventListener(type, fn, opt));
+  };
 
   // Resolve translated labels for static arrays (TABS + RULES).
   const TABS_L  = TABS.map((tab) => ({ ...tab, label: t(tab.labelKey) }));
@@ -339,7 +312,7 @@ export async function mountCleanup(host, _opts) {
       paint();
       loadSenders();
     });
-    document.addEventListener('click', (e) => {
+    onDoc('click', (e) => {
       if (!drop.contains(e.target) && !btn.contains(e.target)) drop.hidden = true;
     });
   }
@@ -2681,7 +2654,10 @@ export async function mountCleanup(host, _opts) {
   window.lucide?.createIcons();
 
   return () => {
-    // No persistent timers/listeners beyond the document-level dropdown
-    // closer; that one auto-collapses the next time it fires.
+    // The document-level dropdown closer used to be left running here, on
+    // the theory that it "auto-collapses the next time it fires" — it does
+    // not unregister itself, it just pokes a detached node forever.
+    _docTeardown.forEach((off) => off());
+    _docTeardown.length = 0;
   };
 }
