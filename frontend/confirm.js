@@ -4,11 +4,9 @@
 // needed it too for bulk delete — copying it would have meant two dialogs
 // drifting apart, and window.confirm() looks nothing like the rest of the app.
 
-function escapeHtml(s) {
-  return String(s ?? '').replace(/[&<>"']/g, (c) => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-  ));
-}
+// Reuse the canonical escaper rather than shipping a third copy that could
+// drift from the one cleanup.js and mailbox.js already import.
+import { escapeHtml } from '/static/api.js';
 
 /**
  * Show a branded confirm dialog. Returns a Promise<boolean>.

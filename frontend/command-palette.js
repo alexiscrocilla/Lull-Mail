@@ -21,7 +21,9 @@ export function initCommandPalette({ navigate }) {
       <div class="cmdk-search">
         <i data-lucide="search" class="w-4 h-4"></i>
         <input id="cmdk-input" type="text" autocomplete="off" spellcheck="false"
-               placeholder="${t('cmdk.placeholder')}" aria-label="${t('cmdk.placeholder')}" />
+               placeholder="${t('cmdk.placeholder')}" aria-label="${t('cmdk.placeholder')}"
+               role="combobox" aria-expanded="true" aria-controls="cmdk-list"
+               aria-autocomplete="list" />
       </div>
       <ul id="cmdk-list" class="cmdk-list" role="listbox"></ul>
       <div id="cmdk-result" class="cmdk-result hidden"></div>
@@ -78,11 +80,17 @@ export function initCommandPalette({ navigate }) {
     }
     if (active >= filtered.length) active = 0;
     list.innerHTML = filtered.map((c, i) => `
-      <li class="cmdk-item ${i === active ? 'active' : ''}" data-i="${i}" role="option">
+      <li class="cmdk-item ${i === active ? 'active' : ''}" data-i="${i}" id="cmdk-opt-${i}"
+          role="option" aria-selected="${i === active}">
         <i data-lucide="${c.icon}" class="w-4 h-4"></i>
         <span>${c.label}</span>
         ${c.ai ? `<span class="cmdk-tag">IA</span>` : ''}
       </li>`).join('');
+    // The arrow keys moved a purely visual `.active` class: nothing tied the
+    // highlighted row to the input, so a screen reader announced neither the
+    // move nor the option under it. aria-activedescendant is what makes a
+    // combobox report its current option without moving DOM focus.
+    input.setAttribute('aria-activedescendant', filtered.length ? `cmdk-opt-${active}` : '');
     window.lucide?.createIcons?.();
   }
 

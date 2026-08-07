@@ -364,10 +364,13 @@ def get_email_thread(int_id: int, locale: str = Depends(get_locale)):
     em = db.get_email_by_id(int_id)
     if not em:
         raise HTTPException(404, tr("email.not_found", locale))
-    thread_id = em.get("thread_id") or em.get("message_id")
-    rows = db.get_thread(thread_id)
+    # Conversation identity = COALESCE(thread_id, message_id), matching the
+    # collapsed list view (get_threads). Passing message_id when thread_id is
+    # NULL keeps the pivot in its own thread.
+    thread_key = em.get("thread_id") or em.get("message_id")
+    rows = db.get_thread(thread_key)
     _attach_counts_and_labels(rows)
-    return {"thread_id": thread_id, "messages": rows}
+    return {"thread_id": thread_key, "messages": rows}
 
 
 def _lazy_scan_one(int_id: int, account_email: str, uid: str, message_id: str):

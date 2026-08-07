@@ -10,11 +10,18 @@
    so it shares the same flow position. A 36×36 placeholder keeps the
    visual presence of an avatar; an active toast is positioned absolutely
    on top and extends to the right of the rail. */
+/* Fixed to the rail's bottom slot rather than living inside <nav id="rail">.
+   The rail sets position + z-index, i.e. a stacking context, so a z-index
+   here was clamped to the rail's own and the toast disappeared behind the
+   palette, the narrow read pane and every modal.
+   left = (64px rail − 36px slot) / 2 ; bottom = the rail's own bottom padding. */
 #rail-toast-host {
-  position: relative;
+  position: fixed;
+  left: 14px;
+  bottom: 18px;
   width: 36px;
   height: 36px;
-  z-index: 110;
+  z-index: var(--z-toast, 400);
 }
 .rt-placeholder {
   position: absolute;

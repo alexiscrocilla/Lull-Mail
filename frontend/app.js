@@ -17,11 +17,24 @@ function refreshIcons() {
 }
 
 // ── Routing ────────────────────────────────────────────────
+const ROUTES = ['inbox', 'dashboard', 'cleanup', 'settings'];
+
 function currentRoute() {
   const h = location.hash || '';
-  if (h.startsWith('#/dashboard')) return 'dashboard';
-  if (h.startsWith('#/cleanup')) return 'cleanup';
-  if (h.startsWith('#/settings')) return 'settings';
+  // Match the route segment exactly: startsWith() accepted '#/dashboardXYZ'
+  // as the dashboard, and any typo ('#/reglages') silently fell through to
+  // the inbox while the address bar kept claiming otherwise.
+  const seg = h.replace(/^#\/?/, '').split(/[?&/]/)[0];
+  return ROUTES.includes(seg) ? seg : null;
+}
+
+// Unknown routes get normalised so the hash stops lying about where we are.
+// replace(), not assign(), to avoid leaving the bad URL in history.
+function resolveRoute() {
+  const r = currentRoute();
+  if (r) return r;
+  const clean = '#/inbox';
+  if (location.hash !== clean) location.replace(clean);
   return 'inbox';
 }
 
@@ -44,24 +57,43 @@ function setActiveRail(route) {
   indicator.style.opacity = '1';
 }
 
+let _renderGen = 0;
+
 async function render() {
+  // Generation guard: two navigations in quick succession both run render()
+  // concurrently (each awaits an async mount). Without this token, a slow
+  // mount A can resolve AFTER mount B and overwrite `cleanup` with A's
+  // teardown — orphaning B's listeners/intervals so they never get removed
+  // and pile up on the next mount. We stamp a generation, and any render
+  // that finds itself superseded tears down its own view immediately.
+  const gen = ++_renderGen;
   if (cleanup) {
     try { cleanup(); } catch (_) {}
     cleanup = null;
   }
   view.innerHTML = '';
-  const route = currentRoute();
+  const route = resolveRoute();
   setActiveRail(route);
 
+  let fn;
   if (route === 'dashboard') {
-    cleanup = await mountDashboard(view, { onRouteChange: navigate });
+    fn = await mountDashboard(view, { onRouteChange: navigate });
   } else if (route === 'cleanup') {
-    cleanup = await mountCleanup(view, { onRouteChange: navigate });
+    fn = await mountCleanup(view, { onRouteChange: navigate });
   } else if (route === 'settings') {
-    cleanup = await mountSettings(view, { onRouteChange: navigate });
+    fn = await mountSettings(view, { onRouteChange: navigate });
   } else {
-    cleanup = await mountMailbox(view, { onRouteChange: navigate });
+    fn = await mountMailbox(view, { onRouteChange: navigate });
   }
+
+  if (gen !== _renderGen) {
+    // A newer render() already ran while we were mounting — this view is
+    // stale. Tear it down now instead of stashing its cleanup (which the
+    // newer render already cleared).
+    try { fn?.(); } catch (_) {}
+    return;
+  }
+  cleanup = fn;
   refreshIcons();
 }
 
@@ -119,10 +151,54 @@ document.querySelectorAll('[data-toast]').forEach((el) => {
   });
 });
 
+// ── Modal focus management ─────────────────────────────────
+// The overlays used to only toggle `.hidden`: focus stayed on whatever opened
+// them (a rail button, behind the overlay), Tab walked the whole page
+// underneath, and closing left focus nowhere useful. This keeps focus inside
+// the dialog while it is open and hands it back to the trigger on close.
+const FOCUSABLE = [
+  'a[href]', 'button:not([disabled])', 'input:not([disabled])',
+  'select:not([disabled])', 'textarea:not([disabled])', 'summary',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
+const _trapReturn = new WeakMap();
+
+function trapFocus(dialog) {
+  _trapReturn.set(dialog, document.activeElement);
+  const onKeydown = (e) => {
+    if (e.key !== 'Tab') return;
+    const items = [...dialog.querySelectorAll(FOCUSABLE)]
+      .filter((el) => el.offsetParent !== null || el === document.activeElement);
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    // Wrap at both ends, and pull focus back in if it escaped somehow.
+    if (e.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault(); first.focus();
+    }
+  };
+  dialog.addEventListener('keydown', onKeydown);
+  dialog._untrap = () => dialog.removeEventListener('keydown', onKeydown);
+  // Prefer the first control; fall back to the dialog itself.
+  const target = dialog.querySelector(FOCUSABLE) || dialog;
+  if (target === dialog && !dialog.hasAttribute('tabindex')) dialog.tabIndex = -1;
+  requestAnimationFrame(() => target.focus());
+}
+
+function releaseFocus(dialog) {
+  dialog._untrap?.();
+  dialog._untrap = null;
+  const back = _trapReturn.get(dialog);
+  _trapReturn.delete(dialog);
+  if (back && document.contains(back)) back.focus();
+}
+
 // ── Cheat sheet (?) ────────────────────────────────────────
 const cheat = document.getElementById('cheat-overlay');
-function openCheat() { cheat.classList.remove('hidden'); refreshIcons(); }
-function closeCheat() { cheat.classList.add('hidden'); }
+function openCheat() { cheat.classList.remove('hidden'); refreshIcons(); trapFocus(cheat); }
+function closeCheat() { cheat.classList.add('hidden'); releaseFocus(cheat); }
 cheat.addEventListener('click', (e) => { if (e.target === cheat) closeCheat(); });
 cheat.querySelector('.cheat-close').addEventListener('click', closeCheat);
 document.getElementById('cheat-toggle').addEventListener('click', openCheat);
@@ -239,6 +315,7 @@ function reportRefresh() {
 async function openReport() {
   reportOverlay.classList.remove('hidden');
   refreshIcons();
+  trapFocus(reportOverlay);
   reportToggleKindFields();
   if (reportDiagCache === null) {
     if (reportPreview) reportPreview.textContent = (window.t || ((k) => k))('diag.loading');
@@ -251,7 +328,7 @@ async function openReport() {
   }
   reportRefresh();
 }
-function closeReport() { reportOverlay.classList.add('hidden'); }
+function closeReport() { reportOverlay.classList.add('hidden'); releaseFocus(reportOverlay); }
 
 document.getElementById('report-toggle').addEventListener('click', openReport);
 document.getElementById('report-close').addEventListener('click', closeReport);
@@ -334,7 +411,16 @@ document.addEventListener('keydown', (e) => {
 // because `has_openai` was always false.
 async function refreshAiFlag() {
   try {
-    const r = await fetch('/api/setup/status');
+    // Bound the probe: a hung backend must not stall the first render()
+    // (which awaits this at boot) and leave a blank screen forever.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    let r;
+    try {
+      r = await fetch('/api/setup/status', { signal: ctrl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
     if (!r.ok) return;
     const s = await r.json();
     // Backwards compat : older builds expose only `has_openai`.
@@ -349,9 +435,12 @@ async function refreshAiFlag() {
 }
 window.addEventListener('ai-config-changed', async () => {
   await refreshAiFlag();
-  // Re-render the current view so its AI-conditional UI updates without
-  // a hard reload.
-  render();
+  // Re-render so AI-conditional UI updates without a hard reload — but NOT
+  // when the user is sitting in Settings, which is where the event comes from.
+  // Saving an API key re-mounted the very page being edited: scrolled back to
+  // the top, other sections' inputs cleared, and the previous instance's
+  // loadAll() left running against detached DOM.
+  if (currentRoute() !== 'settings') render();
 });
 
 // ── Boot ───────────────────────────────────────────────────

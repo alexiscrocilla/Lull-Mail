@@ -42,19 +42,10 @@ const SERVICE_DOMAINS = {
   icloud:   'icloud.com',
   free:     'free.fr',
 };
-function serviceLogoHtml(account) {
-  const type = String(account?.type || '').toLowerCase();
-  const email = String(account?.email || '');
-  const at = email.lastIndexOf('@');
-  const emailDomain = at >= 0 ? email.slice(at + 1).toLowerCase() : '';
-  const domain = SERVICE_DOMAINS[type] || emailDomain;
-  if (!domain) return '';
-  const src = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64`;
-  // Hide if Google returns the generic globe (naturalWidth ≤ 16) or 404s.
-  return `<img class="set-svc-logo" src="${src}" alt=""
-    loading="lazy"
-    onload="if(this.naturalWidth<=16)this.style.display='none'"
-    onerror="this.style.display='none'">`;
+function serviceLogoHtml(_account) {
+  // Privacy + offline: don't fetch provider favicons from google.com. A
+  // generic mail glyph (rendered locally by lucide) stands in.
+  return `<i data-lucide="mail" class="set-svc-logo"></i>`;
 }
 
 function refreshIcons() {
@@ -77,6 +68,19 @@ function setBusy(el, busy, label) {
 
 export async function mountSettings(host, opts = {}) {
   const t = window.t || ((k) => k);
+
+  // Listeners on `document` outlive host.innerHTML = '' — the router only
+  // wipes the view element. Register them through this helper so the
+  // cleanup below can actually take them back down; otherwise every visit
+  // to Settings left another live handler running `wrap.contains(e.target)`
+  // against detached DOM on every click in the app, holding the whole view
+  // closure alive with it.
+  const _docTeardown = [];
+  const onDoc = (type, fn, opt) => {
+    document.addEventListener(type, fn, opt);
+    _docTeardown.push(() => document.removeEventListener(type, fn, opt));
+  };
+
   host.innerHTML = `
     <div class="dash">
       <div class="dash-head">
@@ -647,7 +651,7 @@ export async function mountSettings(host, opts = {}) {
       });
     });
 
-    document.addEventListener('click', (e) => {
+    onDoc('click', (e) => {
       if (!wrap.contains(e.target) && !menu.contains(e.target)) closeMenu();
     });
 
@@ -1886,7 +1890,7 @@ export async function mountSettings(host, opts = {}) {
   await loadAll().catch(e => window.toast?.(t('set.toast.load_failed', { msg: e.message }), 3500));
 
   // Cleanup callback for the router.
-  return () => { /* no timers / listeners outside the host element */ };
+  return () => { _docTeardown.forEach((off) => off()); _docTeardown.length = 0; };
 }
 
 
