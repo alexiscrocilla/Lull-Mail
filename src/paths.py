@@ -119,6 +119,11 @@ ATTACHMENTS_DIR: Path = DATA_DIR / "attachments"
 # resolution / threat-scan logic. Files here are short-lived: created
 # on POST /api/uploads, consumed by send_message, then removed.
 OUTBOX_ATTACHMENTS_DIR: Path = DATA_DIR / "outbox-attachments"
+# Sender-domain favicons, fetched + cached locally by src/brand_logos.py so
+# the UI can show a brand logo next to each email without the client ever
+# talking to a third party (e.g. Google's favicon service). One file per
+# domain; negative results are cached too, to avoid re-hitting dead hosts.
+BRAND_LOGOS_DIR: Path = DATA_DIR / "brand-logos"
 # Phase 2 (local LLM) — où atterrissent les modèles GGUF téléchargés
 # (Phi-3.5-mini pour l'analyzer, Mistral 7B ou Qwen 7B pour le drafter).
 # Hors de DATA_DIR pour pouvoir être conservé entre désinstallations et
@@ -133,6 +138,7 @@ def ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
     OUTBOX_ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    BRAND_LOGOS_DIR.mkdir(parents=True, exist_ok=True)
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 
