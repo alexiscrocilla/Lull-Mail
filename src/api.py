@@ -2620,6 +2620,26 @@ if FRONTEND.exists():
 
     from fastapi.responses import RedirectResponse  # local import keeps top tidy
 
+    # The HTML shells need the same no-cache treatment as /static — and they
+    # need it MORE. FileResponse sets etag + last-modified but no
+    # Cache-Control, and RFC 9111 lets a cache invent a heuristic freshness
+    # lifetime when none is given (commonly 10% of the file's age). WebView2
+    # then serves index.html from disk WITHOUT asking the server.
+    #
+    # That is how a desktop upgrade could still paint the previous release's
+    # UI: the packaged app keeps a persistent WebView2 profile
+    # (private_mode=False) and deliberately reuses the same port across
+    # launches (_pick_stable_port, so localStorage survives), so the origin
+    # and the URL are identical from one version to the next — a perfect
+    # cache hit. The rail markup lives in index.html, so users saw the old
+    # navbar while the freshly-shipped JS/CSS underneath were already
+    # no-cache and up to date.
+    _HTML_NO_CACHE = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+
     @app.get("/")
     def root():
         # First-run UX: send users straight to the wizard instead of
@@ -2627,8 +2647,8 @@ if FRONTEND.exists():
         from src import config as _cfg
         if not _cfg.is_configured():
             return RedirectResponse(url="/onboarding", status_code=302)
-        return FileResponse(str(FRONTEND / "index.html"))
+        return FileResponse(str(FRONTEND / "index.html"), headers=_HTML_NO_CACHE)
 
     @app.get("/onboarding", response_class=HTMLResponse)
     def onboarding():
-        return FileResponse(str(FRONTEND / "onboarding.html"))
+        return FileResponse(str(FRONTEND / "onboarding.html"), headers=_HTML_NO_CACHE)

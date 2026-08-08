@@ -177,6 +177,59 @@ def _pick_ephemeral_port() -> int:
     return port
 
 
+def _purge_webview_cache_on_upgrade(storage_path: Path) -> None:
+    """Drop the WebView2 HTTP cache when the app version changed.
+
+    The packaged app is a perfect cache-hit machine: a persistent WebView2
+    profile (private_mode=False) plus a deliberately stable port means the
+    URL of every asset is identical from one release to the next. Anything
+    the embedded browser decided to keep therefore survives an upgrade, and
+    users can end up running new backend code behind the previous release's
+    HTML — the "wrong navbar after updating" report.
+
+    The server now sends no-store on the HTML shells and /static, which
+    prevents NEW stale entries, but it cannot evict what a previous version
+    already banked: a cache entry with a heuristic freshness lifetime is
+    served without ever asking us. So on the first launch after a version
+    change we delete the cache directories outright.
+
+    Deliberately narrow: only the HTTP cache folders go. `Local Storage`,
+    `Session Storage` and the rest of the profile stay, so pinned mail tabs,
+    sidebar order and sort prefs survive the upgrade. Best-effort — a
+    locked file (rare: this runs before the browser starts) just means the
+    purge is skipped, never a failed launch.
+    """
+    from src.updater import get_current_version
+
+    marker = storage_path / ".app_version"
+    current = get_current_version()
+    try:
+        previous = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        previous = ""
+
+    if previous == current:
+        return
+
+    if previous:   # a real upgrade, not a first run
+        import shutil
+        for rel in ("EBWebView/Default/Cache", "EBWebView/Default/Code Cache"):
+            target = storage_path / rel
+            if not target.exists():
+                continue
+            try:
+                shutil.rmtree(target)
+                logger.info("Cache WebView2 purgé (%s → %s) : %s",
+                            previous, current, rel)
+            except OSError as e:
+                logger.warning("Purge du cache WebView2 ignorée (%s) : %s", rel, e)
+
+    try:
+        marker.write_text(current, encoding="utf-8")
+    except OSError as e:
+        logger.warning("Impossible d'écrire le marqueur de version : %s", e)
+
+
 def _pick_stable_port() -> int:
     """Reuse the port from the previous session when possible.
 
@@ -398,6 +451,7 @@ def main() -> int:
     from src.paths import APP_DATA_DIR
     webview_storage = APP_DATA_DIR / "webview"
     webview_storage.mkdir(parents=True, exist_ok=True)
+    _purge_webview_cache_on_upgrade(webview_storage)
     try:
         webview.start(private_mode=False, storage_path=str(webview_storage))
     finally:
