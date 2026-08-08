@@ -134,22 +134,41 @@ class AnthropicConfig(BaseModel):
         return v
 
 
+class OpenRouterConfig(BaseModel):
+    """Sous-config du provider `openrouter` (agrégateur cloud multi-modèles,
+    API compatible OpenAI sur https://openrouter.ai/api/v1). La clé vit dans
+    le keyring (sentinel résolu avec SERVICE_OPENROUTER) ; `config.yaml` ne
+    porte que le sentinel. `model` est un slug OpenRouter `vendeur/modèle`."""
+
+    api_key: str = ""
+    model: str = "openai/gpt-4o-mini"
+
+    @field_validator("api_key")
+    @classmethod
+    def _no_todo(cls, v: str) -> str:
+        if v.startswith(_TODO_PLACEHOLDER):
+            raise ValueError("clé API OpenRouter non configurée (placeholder TODO)")
+        return v
+
+
 class LLMConfig(BaseModel):
     """Sélecteur de provider LLM.
 
-    - `openai`    : API OpenAI cloud (clé dans `openai.api_key`).
-    - `local`     : `LocalLLMProvider` (llama.cpp embarqué + GGUF téléchargé).
-    - `ollama`    : serveur Ollama local de l'utilisateur (API OpenAI-compat).
-    - `anthropic` : API Claude (clé dans `llm.anthropic.api_key`).
+    - `openai`     : API OpenAI cloud (clé dans `openai.api_key`).
+    - `local`      : `LocalLLMProvider` (llama.cpp embarqué + GGUF téléchargé).
+    - `ollama`     : serveur Ollama local de l'utilisateur (API OpenAI-compat).
+    - `anthropic`  : API Claude (clé dans `llm.anthropic.api_key`).
+    - `openrouter` : agrégateur OpenRouter (clé dans `llm.openrouter.api_key`).
 
     Le champ est tolérant : un YAML sans section `llm:` retombe sur les
     défauts, donc les installations antérieures ne cassent pas.
     """
 
-    provider: Literal["openai", "local", "ollama", "anthropic"] = "openai"
+    provider: Literal["openai", "local", "ollama", "anthropic", "openrouter"] = "openai"
     local: LocalLLMConfig = Field(default_factory=LocalLLMConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     anthropic: AnthropicConfig = Field(default_factory=AnthropicConfig)
+    openrouter: OpenRouterConfig = Field(default_factory=OpenRouterConfig)
 
 
 class NtfyConfig(BaseModel):
@@ -364,6 +383,15 @@ def _resolve_secrets(conf: Dict[str, Any]) -> None:
         except _ss.SecretsBackendError as e:
             raise ConfigError(f"clé Anthropic : {e}") from e
 
+    # OpenRouter key: same keyring scheme, its own service.
+    openrouter = (conf.get("llm") or {}).get("openrouter") or {}
+    or_key = openrouter.get("api_key", "")
+    if _ss.is_sentinel(or_key):
+        try:
+            openrouter["api_key"] = _ss.resolve(or_key, _ss.SERVICE_OPENROUTER)
+        except _ss.SecretsBackendError as e:
+            raise ConfigError(f"clé OpenRouter : {e}") from e
+
     for acc in conf.get("accounts") or []:
         pwd = acc.get("password", "")
         if _ss.is_sentinel(pwd):
@@ -431,6 +459,8 @@ def ai_enabled() -> bool:
         return bool((llm.get("ollama") or {}).get("model"))
     if provider == "anthropic":
         return bool((llm.get("anthropic") or {}).get("api_key"))
+    if provider == "openrouter":
+        return bool((llm.get("openrouter") or {}).get("api_key"))
     if provider == "local":
         # Lazy imports — `paths` est toujours présent, `catalog` peut être
         # absent pendant la transition Phase 1 → Phase 2 si quelqu'un fait

@@ -60,6 +60,9 @@ def get_provider() -> LLMProvider:
     elif provider_name == "anthropic":
         from src.llm.anthropic_provider import AnthropicProvider
         _provider = AnthropicProvider()
+    elif provider_name == "openrouter":
+        from src.llm.openrouter_provider import OpenRouterProvider
+        _provider = OpenRouterProvider()
     else:
         _provider = OpenAIProvider()
     return _provider

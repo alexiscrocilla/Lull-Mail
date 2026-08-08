@@ -77,7 +77,7 @@ def start_email_services(*, restart: bool = False) -> bool:
                 logger.warning("Local LLM indisponible (%s) — mode sans IA", e)
             except Exception:
                 logger.exception("init du provider local a échoué")
-        elif provider_name in ("ollama", "anthropic"):
+        elif provider_name in ("ollama", "anthropic", "openrouter"):
             # Lightweight remote/HTTP backends: no embedded server to spawn,
             # just (re)build the client. Reset covers a provider switch.
             from src.llm.registry import get_provider, reset as _reset_provider

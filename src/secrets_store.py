@@ -44,6 +44,8 @@ SERVICE_OPENAI = "lull-mail-openai"
 OPENAI_USERNAME = "default"
 SERVICE_ANTHROPIC = "lull-mail-anthropic"
 ANTHROPIC_USERNAME = "default"
+SERVICE_OPENROUTER = "lull-mail-openrouter"
+OPENROUTER_USERNAME = "default"
 
 # Sentinel marker stored in config.yaml. The colon-delimited form is
 # easy to grep, easy to spot, and unambiguous (a real IMAP password is
@@ -168,6 +170,30 @@ def delete_anthropic() -> None:
         kr.delete_password(SERVICE_ANTHROPIC, ANTHROPIC_USERNAME)
     except Exception as e:
         logger.debug("delete_anthropic ignored: %s", e)
+
+
+def store_openrouter(api_key: str) -> str:
+    """Persist the OpenRouter API key in the keyring. Returns the sentinel
+    (resolved later with SERVICE_OPENROUTER)."""
+    if not api_key:
+        raise ValueError("clé API vide — rien à stocker")
+    kr = _keyring()
+    try:
+        kr.set_password(SERVICE_OPENROUTER, OPENROUTER_USERNAME, api_key)
+    except Exception as e:
+        raise SecretsBackendError(
+            f"Impossible d'écrire la clé OpenRouter dans le keyring : {e}"
+        ) from e
+    return f"{SENTINEL_PREFIX}{OPENROUTER_USERNAME}"
+
+
+def delete_openrouter() -> None:
+    """Remove the OpenRouter key entry. Idempotent."""
+    kr = _keyring()
+    try:
+        kr.delete_password(SERVICE_OPENROUTER, OPENROUTER_USERNAME)
+    except Exception as e:
+        logger.debug("delete_openrouter ignored: %s", e)
 
 
 def resolve(value: Optional[str], service: str) -> str:

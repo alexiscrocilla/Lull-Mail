@@ -77,6 +77,8 @@ _STRINGS: dict[str, dict[str, str]] = {
 
         # ── Setup / accounts ─────────────────────────────────────────────────
         "setup.openai.bad_format":      "Format de clé OpenAI inattendu (devrait commencer par sk-).",
+        "setup.anthropic.bad_format":   "Format de clé Anthropic inattendu (devrait commencer par sk-ant-).",
+        "setup.openrouter.bad_format":  "Format de clé OpenRouter inattendu (devrait commencer par sk-or-).",
         "setup.ntfy.topic_required":    "Topic ntfy requis quand activé.",
         "setup.account.exists":         "Un compte avec l'adresse {email} existe déjà.",
         "setup.account.password_required": "Mot de passe requis pour créer un compte.",
@@ -224,6 +226,8 @@ _STRINGS: dict[str, dict[str, str]] = {
 
         # ── Setup / accounts ─────────────────────────────────────────────────
         "setup.openai.bad_format":      "Unexpected OpenAI key format (should start with sk-).",
+        "setup.anthropic.bad_format":   "Unexpected Anthropic key format (should start with sk-ant-).",
+        "setup.openrouter.bad_format":  "Unexpected OpenRouter key format (should start with sk-or-).",
         "setup.ntfy.topic_required":    "ntfy topic required when push is on.",
         "setup.account.exists":         "An account with the address {email} already exists.",
         "setup.account.password_required": "Password required to create an account.",
