@@ -1,6 +1,22 @@
-"""Local MCP server (P3.2) — reuses the shared tool layer, no send tool."""
+"""Local MCP server (P3.2) — reuses the shared tool layer, no send tool.
+
+The `mcp` SDK is an OPTIONAL dependency: the MCP server lets external
+tools drive the mailbox, but the app itself runs fine without it, so it is
+absent from requirements-dev.txt. These tests skip rather than fail when
+it isn't installed — otherwise CI is permanently red for a feature nobody
+broke, which trains everyone to ignore the signal.
+
+Install it (`pip install mcp`) to exercise them locally.
+"""
 
 from __future__ import annotations
+
+import pytest
+
+mcp_sdk = pytest.importorskip(
+    "mcp.server.fastmcp",
+    reason="optional `mcp` SDK not installed — MCP server tests skipped",
+)
 
 
 def test_build_server_registers_shared_tools(fresh_app):
