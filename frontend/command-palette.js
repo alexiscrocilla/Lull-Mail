@@ -39,7 +39,6 @@ export function initCommandPalette({ navigate }) {
   function commands() {
     const cmds = [
       { id: 'go-inbox', icon: 'inbox', label: t('cmdk.go_inbox'), run: () => navigate('#/inbox') },
-      { id: 'go-dashboard', icon: 'activity', label: t('cmdk.go_dashboard'), run: () => navigate('#/dashboard') },
       { id: 'go-cleanup', icon: 'sparkles', label: t('cmdk.go_cleanup'), run: () => navigate('#/cleanup') },
       { id: 'go-settings', icon: 'settings', label: t('cmdk.go_settings'), run: () => navigate('#/settings') },
       { id: 'sync', icon: 'refresh-cw', label: t('cmdk.sync'), run: async () => {
@@ -105,6 +104,9 @@ export function initCommandPalette({ navigate }) {
       .replace(/<function_call>[\s\S]*?<\/function_call>/g, '')
       .replace(/<tool_response>[\s\S]*?<\/tool_response>/g, '')
       .replace(/\[TOOL_CALLS\]\s*(?:\[[\s\S]*?\]|\{[\s\S]*?\})/g, '')
+      // Source markers are rendered as clickable chips on the AI page; the
+      // palette shows plain text, so drop them rather than display noise.
+      .replace(/\s*\[mail:\d+\]/g, '')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
   }
@@ -161,6 +163,14 @@ export function initCommandPalette({ navigate }) {
       case 'draft_reply':   return 'pen-line';
       case 'mark_email_read': return 'check';
       case 'move_email':    return 'move';
+      case 'top_senders':   return 'users';
+      case 'mailbox_stats': return 'pie-chart';
+      case 'unsubscribe_candidates': return 'mail-x';
+      case 'list_labels':   return 'tag';
+      case 'list_folders':  return 'folder';
+      case 'list_accounts': return 'at-sign';
+      case 'set_favourite': return 'star';
+      case 'label_email':   return 'tag';
       default:              return 'sparkles';
     }
   }

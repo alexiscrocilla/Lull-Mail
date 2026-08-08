@@ -115,8 +115,11 @@ export async function mountSettings(host, opts = {}) {
             </span>
           </h3>
 
-          <!-- Provider tiles — click to pick the AI backend -->
-          <div class="ai-tiles" id="ai-tiles" role="radiogroup" aria-label="${t('set.llm.provider_label')}">
+          <!-- Provider tiles — click to pick the AI backend. "APIs" groups
+               both cloud providers (OpenAI, Claude) behind one tile; the
+               actual fournisseur choice lives in its sub-panel and only
+               becomes the active backend when a key is saved. -->
+          <div class="ai-tiles ai-tiles--3" id="ai-tiles" role="radiogroup" aria-label="${t('set.llm.provider_label')}">
             <button class="ai-tile" type="button" data-provider="local" role="radio" aria-checked="false">
               <i data-lucide="cpu" class="w-5 h-5"></i>
               <span class="ai-tile-name">${t('set.llm.tile_local')}</span>
@@ -127,50 +130,11 @@ export async function mountSettings(host, opts = {}) {
               <span class="ai-tile-name">Ollama</span>
               <span class="ai-tile-sub">${t('set.llm.tile_ollama_sub')}</span>
             </button>
-            <button class="ai-tile" type="button" data-provider="openai" role="radio" aria-checked="false">
-              <i data-lucide="sparkles" class="w-5 h-5"></i>
-              <span class="ai-tile-name">OpenAI</span>
+            <button class="ai-tile" type="button" data-provider="apis" role="radio" aria-checked="false">
+              <i data-lucide="cloud" class="w-5 h-5"></i>
+              <span class="ai-tile-name">${t('set.apis.title')}</span>
               <span class="ai-tile-sub">${t('set.llm.tile_cloud_sub')}</span>
             </button>
-            <button class="ai-tile" type="button" data-provider="anthropic" role="radio" aria-checked="false">
-              <i data-lucide="bot" class="w-5 h-5"></i>
-              <span class="ai-tile-name">Claude</span>
-              <span class="ai-tile-sub">${t('set.llm.tile_cloud_sub')}</span>
-            </button>
-          </div>
-
-          <!-- Sous-panneau OpenAI (mode cloud) -->
-          <div id="ai-panel-openai" class="hidden" style="margin-top:8px">
-            <div id="ai-disabled-msg" class="sub hidden" style="margin-top:8px">
-              ${t('set.ai.disabled_msg')}
-            </div>
-            <div id="ai-fields" style="display:flex;align-items:center;gap:16px;margin-top:10px">
-              <div class="set-grid" style="flex:1">
-                <label class="set-field">
-                  <span class="set-label">${t('set.ai.key_label')}</span>
-                  <input id="openai-key" type="password" class="set-input mono" placeholder="${t('set.ai.key_ph_empty')}" autocomplete="new-password" />
-                  <span class="set-hint">${t('set.ai.key_hint')}</span>
-                </label>
-                <label class="set-field">
-                  <span class="set-label">${t('set.ai.model_label')}</span>
-                  <input type="hidden" id="openai-model" value="gpt-4o-mini" />
-                  <div class="set-drop-wrap" id="openai-model-wrap">
-                    <button class="set-drop-btn" id="openai-model-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
-                      <span id="openai-model-label">gpt-4o-mini</span>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-                    </button>
-                    <div class="set-drop-menu" id="openai-model-drop" role="listbox">
-                      ${['gpt-4o-mini','gpt-4o','gpt-4.1-mini'].map(v => `
-                        <div class="acc-select-opt" data-val="${v}" role="option">${v}</div>
-                      `).join('')}
-                    </div>
-                  </div>
-                </label>
-              </div>
-              <div class="set-actions" style="margin-top:0;padding-top:0;border-top:none;border-left:1px solid var(--border-2);padding-left:16px;flex-shrink:0">
-                <button class="mb-cta set-btn" id="btn-save-openai">${t('set.save')}</button>
-              </div>
-            </div>
           </div>
 
           <!-- Sous-panneau Local (mode 100% gratuit + privé, peuplé à la volée).
@@ -213,25 +177,36 @@ export async function mountSettings(host, opts = {}) {
             </div>
           </div>
 
-          <!-- Sous-panneau Claude (Anthropic) -->
-          <div id="ai-panel-anthropic" class="hidden" style="margin-top:8px">
+          <!-- Sous-panneau APIs (OpenAI / Claude) — un formulaire
+               fournisseur + clé. Enregistrer la clé rend ce fournisseur
+               actif ; le simple clic sur la tuile ne bascule rien. -->
+          <div id="ai-panel-apis" class="hidden" style="margin-top:8px">
+            <p class="set-hint" style="margin-bottom:10px">${t('set.apis.intro')}</p>
+            <div id="api-active-note" class="set-hint hidden" style="margin-bottom:10px"></div>
             <div class="set-grid">
               <label class="set-field">
-                <span class="set-label">${t('set.anthropic.key_label')}</span>
-                <input id="anthropic-key" type="password" class="set-input mono" placeholder="${t('set.anthropic.key_ph')}" autocomplete="new-password" />
-                <span class="set-hint">${t('set.anthropic.key_hint')}</span>
+                <span class="set-label">${t('set.apis.provider_label')}</span>
+                <select id="api-provider" class="set-input">
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Claude</option>
+                  <option value="openrouter">OpenRouter</option>
+                </select>
               </label>
               <label class="set-field">
                 <span class="set-label">${t('set.ai.model_label')}</span>
-                <select id="anthropic-model" class="set-input">
-                  ${['claude-3-5-haiku-latest','claude-3-5-sonnet-latest','claude-3-7-sonnet-latest'].map(v => `<option value="${v}">${v}</option>`).join('')}
-                </select>
+                <select id="api-model" class="set-input"></select>
               </label>
             </div>
+            <label class="set-field" style="margin-top:12px">
+              <span class="set-label">${t('set.apis.key_label')}</span>
+              <input id="api-key" type="password" class="set-input mono" autocomplete="new-password" />
+              <span class="set-hint" id="api-key-hint">${t('set.apis.key_hint')}</span>
+            </label>
             <div class="set-actions">
-              <button class="mb-cta set-btn" id="btn-save-anthropic">${t('set.save')}</button>
+              <button class="mb-cta set-btn" id="btn-save-api">${t('set.apis.save')}</button>
             </div>
           </div>
+
         </section>
 
         <!-- Notifications -->
@@ -278,7 +253,7 @@ export async function mountSettings(host, opts = {}) {
             </span>
           </h3>
           <div class="set-inline-save-row">
-            <div class="set-grid" style="flex:1">
+            <div class="set-grid set-grid-3" style="flex:1">
               <label class="set-field">
                 <span class="set-label">${t('set.polling.interval_label')}</span>
                 <div style="display:flex;align-items:center;gap:8px">
@@ -528,21 +503,20 @@ export async function mountSettings(host, opts = {}) {
     dataDir:  host.querySelector('#set-data-dir'),
     services: host.querySelector('#set-services'),
     accList:  host.querySelector('#accounts-list'),
-    openaiKey:   host.querySelector('#openai-key'),
-    openaiModel: host.querySelector('#openai-model'),
-    aiFields:    host.querySelector('#ai-fields'),
-    aiDisabledMsg: host.querySelector('#ai-disabled-msg'),
-    // Provider radio (OpenAI / Local) — section IA
+    // On-device AI provider tiles/panels — section IA
     aiTiles:         host.querySelector('#ai-tiles'),
-    panelOpenAI:     host.querySelector('#ai-panel-openai'),
     panelLocal:      host.querySelector('#ai-panel-local'),
     panelOllama:     host.querySelector('#ai-panel-ollama'),
-    panelAnthropic:  host.querySelector('#ai-panel-anthropic'),
+    panelApis:       host.querySelector('#ai-panel-apis'),
     ollamaUrl:       host.querySelector('#ollama-url'),
     ollamaModel:     host.querySelector('#ollama-model'),
     ollamaStatus:    host.querySelector('#ollama-status'),
-    anthropicKey:    host.querySelector('#anthropic-key'),
-    anthropicModel:  host.querySelector('#anthropic-model'),
+    // Cloud APIs — section APIs (OpenAI / Claude behind one fournisseur + clé)
+    apiProvider:     host.querySelector('#api-provider'),
+    apiModel:        host.querySelector('#api-model'),
+    apiKey:          host.querySelector('#api-key'),
+    apiKeyHint:      host.querySelector('#api-key-hint'),
+    apiActiveNote:   host.querySelector('#api-active-note'),
     llmModelsList:   host.querySelector('#llm-models-list'),
     llmDiskUsage:    host.querySelector('#llm-disk-usage'),
     btnActivateLocal:host.querySelector('#btn-activate-local'),
@@ -553,7 +527,7 @@ export async function mountSettings(host, opts = {}) {
     genInterval: host.querySelector('#general-interval'),
     genInjection: host.querySelector('#general-injection'),
     btnAdd:    host.querySelector('#btn-add-acc'),
-    btnSaveOA: host.querySelector('#btn-save-openai'),
+    btnSaveApi: host.querySelector('#btn-save-api'),
     btnSaveNt: host.querySelector('#btn-save-ntfy'),
     btnSaveGn: host.querySelector('#btn-save-general'),
     modal:    host.querySelector('#set-modal'),
@@ -597,67 +571,8 @@ export async function mountSettings(host, opts = {}) {
     downloadsInFlight: new Set(),  // model_ids en cours de DL — bloque l'Activate
   };
 
-  // ── Model custom dropdown ──────────────────────────────────
-  (function initModelDrop() {
-    const wrap  = host.querySelector('#openai-model-wrap');
-    const btn   = host.querySelector('#openai-model-btn');
-    const menu  = host.querySelector('#openai-model-drop');
-    const input = host.querySelector('#openai-model');
-    const label = host.querySelector('#openai-model-label');
-    if (!wrap) return;
-
-    // Move menu to body so no ancestor overflow/transform clips it
-    document.body.appendChild(menu);
-
-    function syncLabel(val) {
-      label.textContent = val || input.value;
-      menu.querySelectorAll('.acc-select-opt').forEach(opt => {
-        const active = opt.dataset.val === (val || input.value);
-        opt.classList.toggle('active', active);
-        opt.setAttribute('aria-selected', active);
-      });
-    }
-
-    function positionMenu() {
-      const r = btn.getBoundingClientRect();
-      menu.style.top   = (r.bottom + 4) + 'px';
-      menu.style.left  = r.left + 'px';
-      menu.style.width = r.width + 'px';
-    }
-
-    function openMenu() {
-      positionMenu();
-      menu.style.display = 'flex';
-      wrap.classList.add('open');
-      btn.setAttribute('aria-expanded', 'true');
-    }
-    function closeMenu() {
-      menu.style.display = 'none';
-      wrap.classList.remove('open');
-      btn.setAttribute('aria-expanded', 'false');
-    }
-
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      menu.style.display === 'flex' ? closeMenu() : openMenu();
-    });
-
-    menu.querySelectorAll('.acc-select-opt').forEach(opt => {
-      opt.addEventListener('click', (e) => {
-        e.stopPropagation();
-        input.value = opt.dataset.val;
-        closeMenu();
-        syncLabel(opt.dataset.val);
-      });
-    });
-
-    onDoc('click', (e) => {
-      if (!wrap.contains(e.target) && !menu.contains(e.target)) closeMenu();
-    });
-
-    // Expose sync so renderConfig can call it after setting input.value
-    wrap._sync = syncLabel;
-  })();
+  // The OpenAI model picker used a custom body-portaled dropdown; the APIs
+  // section now uses a plain <select id="api-model">, so that widget is gone.
 
   // ── Data ──
   async function loadAll() {
@@ -1096,18 +1011,25 @@ export async function mountSettings(host, opts = {}) {
   }
 
   function setActiveProvider(provider, { skipPersist = false } = {}) {
-    // Tile + panel visual state
+    // "apis" is a UI grouping, not a backend provider: one tile covers both
+    // cloud providers (OpenAI / Claude), whose real fournisseur choice lives
+    // in the sub-panel. The tile highlights when either cloud provider is
+    // the active backend, and clicking it only reveals the panel — the
+    // backend switches to the chosen cloud provider when a key is saved
+    // (saveApi), never on tile click, so a keyless click can't break AI.
+    const cloud = provider === 'apis' || provider === 'openai'
+      || provider === 'anthropic' || provider === 'openrouter';
     host.querySelectorAll('#ai-tiles .ai-tile').forEach((tile) => {
-      const on = tile.dataset.provider === provider;
+      const on = tile.dataset.provider === provider
+        || (tile.dataset.provider === 'apis' && cloud);
       tile.classList.toggle('is-active', on);
       tile.setAttribute('aria-checked', on ? 'true' : 'false');
     });
-    els.panelOpenAI.classList.toggle('hidden', provider !== 'openai');
     els.panelLocal.classList.toggle('hidden', provider !== 'local');
     els.panelOllama.classList.toggle('hidden', provider !== 'ollama');
-    els.panelAnthropic.classList.toggle('hidden', provider !== 'anthropic');
+    els.panelApis.classList.toggle('hidden', !cloud);
 
-    if (skipPersist) return;
+    if (skipPersist || cloud) return;
     // Persist the switch, then refresh (local lazy-loads its model list;
     // ollama refreshes its model dropdown).
     api('POST', '/api/setup/llm', { provider })
@@ -1158,21 +1080,83 @@ export async function mountSettings(host, opts = {}) {
     } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
   }
 
-  // ── Claude (Anthropic) panel ──────────────────────────────────
-  async function saveAnthropic() {
-    // Empty field: keep the existing key (MASK) when one is set, else stay
-    // cleared. A typed value replaces it.
-    const hasKey = els.anthropicKey.placeholder === t('set.ai.key_ph_set');
-    const raw = els.anthropicKey.value.trim();
-    const api_key = raw !== '' ? raw : (hasKey ? '***' : '');
+  // ── APIs section (OpenAI / Claude) ────────────────────────────
+  // One "fournisseur + clé" form for both cloud providers. Model options
+  // and the "key already set" placeholder follow the picked provider.
+  const API_MODELS = {
+    openai:     ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini'],
+    anthropic:  ['claude-3-5-haiku-latest', 'claude-3-5-sonnet-latest', 'claude-3-7-sonnet-latest'],
+    // OpenRouter slugs (vendor/model) — a small curated spread across
+    // vendors; the aggregator carries hundreds more. gemini-2.5-flash-lite
+    // is the budget pick (~$0.10/$0.40 per M, reliable JSON mode + tools);
+    // the paid nemotron-3-super is the open-weights alternative at the same
+    // price point. Its :free variant is deliberately NOT listed — NVIDIA's
+    // free endpoint logs usage to improve their products, and what this app
+    // sends the model is the user's email content.
+    openrouter: ['google/gemini-2.5-flash-lite', 'openai/gpt-4o-mini',
+                 'anthropic/claude-3.5-haiku', 'nvidia/nemotron-3-super-120b-a12b',
+                 'deepseek/deepseek-chat'],
+  };
+
+  function _apiCfg(provider) {
+    // OpenAI key lives at config.openai (legacy layout); Claude and
+    // OpenRouter under config.llm.<provider>. All mask a stored key
+    // rather than echo it.
+    const cfg = state.config || {};
+    if (provider === 'openai') {
+      const oa = cfg.openai || {};
+      return { key: oa.api_key, model: oa.model || 'gpt-4o-mini' };
+    }
+    if (provider === 'openrouter') {
+      const orc = (cfg.llm || {}).openrouter || {};
+      return { key: orc.api_key, model: orc.model || 'openai/gpt-4o-mini' };
+    }
+    const an = (cfg.llm || {}).anthropic || {};
+    return { key: an.api_key, model: an.model || 'claude-3-5-haiku-latest' };
+  }
+
+  function syncApiProviderUI() {
+    if (!els.apiProvider) return;
+    const provider = els.apiProvider.value;
+    const { key, model } = _apiCfg(provider);
+    const models = API_MODELS[provider] || [];
+    els.apiModel.innerHTML = models
+      .map((m) => `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join('');
+    els.apiModel.value = models.includes(model) ? model : (models[0] || '');
+    // Never re-display a stored key — placeholder just signals it's set.
+    els.apiKey.value = '';
+    els.apiKey.placeholder = key ? t('set.ai.key_ph_set') : t('set.apis.key_ph');
+  }
+
+  async function saveApi() {
+    const provider = els.apiProvider.value;
+    const raw = els.apiKey.value.trim();
+    const model = els.apiModel.value;
+    // Empty field with a key already on file → MASK keeps it; empty with no
+    // stored key → nothing to save.
+    const hasStored = els.apiKey.placeholder === t('set.ai.key_ph_set');
+    const api_key = raw !== '' ? raw : (hasStored ? MASK : '');
+    if (!api_key) { window.toast?.(t('set.apis.need_key'), 3500); return; }
+    setBusy(els.btnSaveApi, true, t('set.busy.saving'));
     try {
-      await api('POST', '/api/setup/llm/anthropic', {
-        api_key,
-        model: els.anthropicModel.value || 'claude-3-5-haiku-latest',
-      });
-      window.toast?.(t('set.toast.saved'));
+      if (provider === 'openai') {
+        await api('POST', '/api/setup/openai', { api_key, model });
+      } else if (provider === 'openrouter') {
+        await api('POST', '/api/setup/llm/openrouter', { api_key, model });
+      } else {
+        await api('POST', '/api/setup/llm/anthropic', { api_key, model });
+      }
+      // Saving a cloud key makes that provider the active LLM backend.
+      await api('POST', '/api/setup/llm', { provider });
+      window.toast?.(t('set.toast.ai_on'));
+      els.apiKey.value = '';
+      window.dispatchEvent(new CustomEvent('ai-config-changed', { detail: { enabled: true } }));
       await loadAll();
-    } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
+    } catch (e) {
+      window.toast?.(t('set.toast.error', { msg: e.message }), 3500);
+    } finally {
+      setBusy(els.btnSaveApi, false);
+    }
   }
 
   function render() {
@@ -1250,7 +1234,7 @@ export async function mountSettings(host, opts = {}) {
 
     // ── IA — Provider tiles + sous-panneaux ───────────────────────
     const llmCfg = state.config.llm || { provider: 'openai' };
-    const _validProv = ['openai', 'local', 'ollama', 'anthropic'];
+    const _validProv = ['openai', 'local', 'ollama', 'anthropic', 'openrouter'];
     const providerActive = _validProv.includes(llmCfg.provider) ? llmCfg.provider : 'openai';
     setActiveProvider(providerActive, { skipPersist: true });
 
@@ -1260,24 +1244,22 @@ export async function mountSettings(host, opts = {}) {
     state._ollamaModelWanted = ol.model || '';
     if (providerActive === 'ollama') refreshOllamaModels();
 
-    // Sous-panneau Claude (Anthropic) — la clé n'est jamais ré-affichée.
-    const an = llmCfg.anthropic || {};
-    els.anthropicModel.value = an.model || 'claude-3-5-haiku-latest';
-    els.anthropicKey.value = '';
-    els.anthropicKey.placeholder = an.api_key === '***'
-      ? t('set.ai.key_ph_set') : t('set.anthropic.key_ph');
-
-    // Sous-panneau OpenAI (toujours peuplé pour ne pas perdre l'état
-    // quand l'user bascule local → openai → local sans recharger).
-    const oa = state.config.openai || {};
-    const aiOn = !!oa.api_key;
-    els.aiFields.classList.toggle('hidden', !aiOn);
-    els.aiDisabledMsg.classList.toggle('hidden', aiOn);
-    els.openaiKey.value = '';
-    els.openaiKey.placeholder = aiOn ? t('set.ai.key_ph_set') : t('set.ai.key_ph_empty');
-    els.openaiModel.value = oa.model || 'gpt-4o-mini';
-    const _mWrap = host.querySelector('#openai-model-wrap');
-    if (_mWrap && _mWrap._sync) _mWrap._sync(els.openaiModel.value);
+    // ── APIs section (OpenAI / Claude) ────────────────────────────
+    // Default the fournisseur dropdown to the active cloud provider when one
+    // is active; otherwise leave it on OpenAI. syncApiProviderUI fills the
+    // model list + "key set" placeholder for whatever's selected.
+    if (els.apiProvider) {
+      const cloudNames = { openai: 'OpenAI', anthropic: 'Claude', openrouter: 'OpenRouter' };
+      const cloudActive = providerActive in cloudNames;
+      els.apiProvider.value = cloudActive ? providerActive : 'openai';
+      syncApiProviderUI();
+      els.apiActiveNote.classList.toggle('hidden', !cloudActive);
+      if (cloudActive) {
+        els.apiActiveNote.textContent = t('set.apis.active_note', {
+          name: cloudNames[providerActive],
+        });
+      }
+    }
 
     // Sous-panneau Local — chargé à la demande la 1ère fois qu'on bascule.
     if (providerActive === 'local' && !state.localLoaded) {
@@ -1319,30 +1301,6 @@ export async function mountSettings(host, opts = {}) {
   }
 
   // ── Saves ──
-  async function saveOpenAI() {
-    const key = els.openaiKey.value.trim();
-    const model = els.openaiModel.value;
-    // Two cases now (le toggle on/off est devenu le radio Provider) :
-    //   • champ vide : MASK = "garde la clé existante" (no-op si déjà set,
-    //     no-AI mode si jamais set)
-    //   • champ rempli : nouvelle clé. Pour DÉSACTIVER l'IA OpenAI, l'user
-    //     passe par la radio Provider → Local, OU efface explicitement la
-    //     clé en envoyant "" via le bouton Désactiver dans une révision
-    //     future. Aujourd'hui, vider la clé garde l'ancienne (sécurité).
-    const apiKey = key || MASK;
-    setBusy(els.btnSaveOA, true, t('set.busy.saving'));
-    try {
-      await api('POST', '/api/setup/openai', { api_key: apiKey, model });
-      window.toast?.(t('set.toast.ai_on'));
-      els.openaiKey.value = '';
-      // Notify the rest of the SPA (mailbox / dashboard) so they re-render
-      // their AI-conditional UI without a hard reload.
-      window.dispatchEvent(new CustomEvent('ai-config-changed', { detail: { enabled: true } }));
-      await loadAll();
-    } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
-    finally { setBusy(els.btnSaveOA, false); }
-  }
-
   async function saveNtfy() {
     const enabled = els.ntfySegOn.checked;
     const topic = els.ntfyTopic.value.trim();
@@ -1742,14 +1700,15 @@ export async function mountSettings(host, opts = {}) {
   els.ntfySegOff?.addEventListener('change', _syncNtfySegActive);
   els.ntfySegOn?.addEventListener('change', _syncNtfySegActive);
   els.btnAdd.addEventListener('click', openModal);
-  els.btnSaveOA.addEventListener('click', saveOpenAI);
-  // Provider tiles — pick a backend: show its panel + persist via /api/setup/llm.
+  // APIs section — swap model list / key placeholder on provider change; save.
+  els.apiProvider?.addEventListener('change', syncApiProviderUI);
+  els.btnSaveApi?.addEventListener('click', saveApi);
+  // Provider tiles — pick an on-device backend: show its panel + persist via /api/setup/llm.
   els.aiTiles?.querySelectorAll('.ai-tile').forEach((tile) => {
     tile.addEventListener('click', () => setActiveProvider(tile.dataset.provider));
   });
   host.querySelector('#ollama-refresh')?.addEventListener('click', refreshOllamaModels);
   host.querySelector('#btn-save-ollama')?.addEventListener('click', saveOllama);
-  host.querySelector('#btn-save-anthropic')?.addEventListener('click', saveAnthropic);
   els.btnActivateLocal.addEventListener('click', activateLocal);
   els.btnSaveNt.addEventListener('click', saveNtfy);
   els.btnSaveGn.addEventListener('click', saveGeneral);
@@ -2276,6 +2235,9 @@ function injectStyles() {
       display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
       margin: 4px 0 6px;
     }
+    /* Three tiles: Intégré / Ollama / APIs (the two cloud providers merged
+       behind one tile whose sub-panel carries the fournisseur choice). */
+    .ai-tiles--3 { grid-template-columns: repeat(3, 1fr); }
     .ai-tile {
       display: flex; flex-direction: column; align-items: center; gap: 4px;
       padding: 12px 8px; cursor: pointer; text-align: center;

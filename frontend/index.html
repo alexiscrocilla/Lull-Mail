@@ -39,15 +39,15 @@
            aria-label="Boîte de réception" title="Boîte de réception">
           <i data-lucide="inbox" class="w-5 h-5"></i>
         </a>
-        <a href="#/dashboard" data-route="dashboard" class="rail-btn"
-           data-i18n-aria-label="rail.dashboard" data-i18n-title="rail.dashboard"
-           aria-label="Tableau de bord" title="Tableau de bord">
-          <i data-lucide="activity" class="w-5 h-5"></i>
-        </a>
         <a href="#/cleanup" data-route="cleanup" class="rail-btn"
            data-i18n-aria-label="rail.cleanup" data-i18n-title="rail.cleanup.title"
            aria-label="Nettoyage" title="Nettoyage de la boîte">
           <i data-lucide="sparkles" class="w-5 h-5"></i>
+        </a>
+        <a href="#/ai" id="ai-toggle" data-route="ai" class="rail-btn" hidden
+           data-i18n-aria-label="rail.ai" data-i18n-title="rail.ai.title"
+           aria-label="Assistant IA" title="Assistant IA">
+          <i data-lucide="wand-sparkles" class="w-5 h-5"></i>
         </a>
         <a href="#/settings" data-route="settings" class="rail-btn"
            data-i18n-aria-label="rail.settings" data-i18n-title="rail.settings"
@@ -56,11 +56,31 @@
         </a>
       </div>
       <div class="rail-bottom">
+        <!-- AI-queue indicator — replaces the old dashboard page, which in
+             practice only answered "is the analysis still running?". Lives
+             with the utility buttons: it's a status control, not a page.
+             The ring spins while a sync/analysis pass runs, the badge
+             counts pending mails, a click launches an analysis pass. -->
+        <button id="queue-ind" class="rail-btn rail-queue" hidden
+                data-i18n-aria-label="rail.queue" data-i18n-title="rail.queue.title"
+                aria-label="File d'analyse IA" title="File d'analyse IA — cliquer pour lancer une analyse">
+          <svg class="rail-queue-ring" viewBox="0 0 40 40" aria-hidden="true">
+            <circle class="ring-track" cx="20" cy="20" r="17"></circle>
+            <circle class="ring-arc" cx="20" cy="20" r="17"></circle>
+          </svg>
+          <i data-lucide="cpu" class="w-5 h-5"></i>
+          <span class="rail-queue-badge" id="queue-ind-badge" hidden></span>
+        </button>
         <button id="theme-toggle" class="rail-btn"
                 data-i18n-aria-label="rail.theme" data-i18n-title="rail.theme.title"
                 aria-label="Basculer thème" title="Basculer clair / sombre">
           <i data-lucide="sun" class="w-5 h-5 only-light"></i>
           <i data-lucide="moon" class="w-5 h-5 only-dark"></i>
+        </button>
+        <button id="palette-toggle" class="rail-btn"
+                data-i18n-aria-label="rail.palette" data-i18n-title="rail.palette.title"
+                aria-label="Palette de commandes" title="Palette de commandes (Ctrl/⌘ + K)">
+          <i data-lucide="command" class="w-5 h-5"></i>
         </button>
         <button id="cheat-toggle" class="rail-btn" aria-label="Raccourcis clavier" title="Raccourcis clavier (?)">
           <i data-lucide="keyboard" class="w-5 h-5"></i>

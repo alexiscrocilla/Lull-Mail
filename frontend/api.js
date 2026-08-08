@@ -101,11 +101,13 @@ export const api = {
   },
 
   // Bounded AI agent over the local mailbox. {text, trace[]}. 409 when AI off.
-  assistantAsk(message) {
+  // `history` = previous turns of the same conversation, oldest first
+  // ([{role, content}]) — lets follow-up questions keep their context.
+  assistantAsk(message, history = []) {
     return j('/api/assistant/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, history }),
       timeoutMs: 120000,  // agent loop can chain several LLM calls
     });
   },
@@ -437,7 +439,6 @@ export const api = {
 
   getSyncStatus()   { return j('/api/sync/status'); },
 
-  getDashboard()    { return j('/api/dashboard/status'); },
   skipQueue()       { return j('/api/queue/skip-all', { method: 'POST' }); },
   getLogsTail(since, lines = 50) {
     const q = new URLSearchParams();
@@ -511,13 +512,19 @@ function rootDomain(domain) {
   return parts.slice(-2).join('.');
 }
 
-export function avatarImgHtml(_email, _size = 40) {
-  // Privacy: this used to fetch each sender's domain favicon from
-  // google.com/s2/favicons, leaking the identity of every correspondent to
-  // Google (and relying on CSP-hostile inline onload/onerror handlers) — at
-  // odds with an app that blocks remote images by default. Avatars now fall
-  // back to the initials + colour bubble already rendered underneath.
-  return '';
+export function avatarImgHtml(email, _size = 40) {
+  // Brand logo for the sender's domain. This once hit google.com/s2/favicons
+  // directly, leaking every correspondent's domain to Google. It now points
+  // at our OWN backend (/api/brand-logo), which fetches the favicon from the
+  // sender's domain and caches it on disk — the browser only ever talks to
+  // localhost. Missing logos 404; a single capture-phase error handler in
+  // app.js drops the broken <img>, revealing the initials bubble underneath.
+  // No inline onerror handler (that was CSP-hostile).
+  const at = (email || '').lastIndexOf('@');
+  const domain = at >= 0 ? email.slice(at + 1).toLowerCase().trim() : '';
+  // Cheap plausibility gate so we don't fire a request for garbage.
+  if (!domain || !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(domain)) return '';
+  return `<img class="av-img" src="/api/brand-logo/${encodeURIComponent(domain)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">`;
 }
 
 export function relativeTime(iso) {

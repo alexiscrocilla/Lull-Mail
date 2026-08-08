@@ -417,6 +417,9 @@ async function checkAiBusy() {
       _syncBusy = next;
       _refreshBusyToast();
     }
+    // Re-broadcast for the rail's AI-queue indicator (app.js) — it rides
+    // this existing 3 s poll instead of running one of its own.
+    window.dispatchEvent(new CustomEvent('sync-status', { detail: s }));
   } catch (_) {
     // Network hiccup or backend down — leave the previous state alone.
   }

@@ -2,8 +2,8 @@
 // Router + theme + global UI for Lull Mail.
 
 import { mountMailbox } from '/static/mailbox.js';
-import { mountDashboard } from '/static/dashboard.js';
 import { mountCleanup } from '/static/cleanup.js';
+import { mountAI } from '/static/ai.js';
 import { mountSettings } from '/static/settings.js';
 import { initCommandPalette } from '/static/command-palette.js';
 
@@ -17,7 +17,10 @@ function refreshIcons() {
 }
 
 // ── Routing ────────────────────────────────────────────────
-const ROUTES = ['inbox', 'dashboard', 'cleanup', 'settings'];
+// The old '#/dashboard' route is gone — its only real job (watching the AI
+// analysis queue) lives in the rail's queue indicator now. Unknown hashes,
+// including stale dashboard bookmarks, normalise to the inbox.
+const ROUTES = ['inbox', 'cleanup', 'ai', 'settings'];
 
 function currentRoute() {
   const h = location.hash || '';
@@ -76,10 +79,10 @@ async function render() {
   setActiveRail(route);
 
   let fn;
-  if (route === 'dashboard') {
-    fn = await mountDashboard(view, { onRouteChange: navigate });
-  } else if (route === 'cleanup') {
+  if (route === 'cleanup') {
     fn = await mountCleanup(view, { onRouteChange: navigate });
+  } else if (route === 'ai') {
+    fn = await mountAI(view, { onRouteChange: navigate });
   } else if (route === 'settings') {
     fn = await mountSettings(view, { onRouteChange: navigate });
   } else {
@@ -343,6 +346,19 @@ document.querySelectorAll('input[name="report-kind"]').forEach((el) => {
   el.addEventListener('change', () => { reportToggleKindFields(); reportRefresh(); });
 });
 
+// ── Brand-logo fallback ────────────────────────────────────
+// Sender-domain logos (<img class="av-img">) 404 when the backend has no
+// favicon for that domain. `error` doesn't bubble, so we catch it in the
+// capture phase globally and drop the broken image — the coloured initials
+// bubble rendered underneath then shows through. One listener covers every
+// avatar in the list, the read pane and dialogs, present and future.
+document.addEventListener('error', (e) => {
+  const el = e.target;
+  if (el && el.tagName === 'IMG' && el.classList && el.classList.contains('av-img')) {
+    el.remove();
+  }
+}, true);
+
 // ── Global keyboard shortcuts ──────────────────────────────
 function isTypingTarget(t) {
   if (!t) return false;
@@ -435,6 +451,7 @@ async function refreshAiFlag() {
 }
 window.addEventListener('ai-config-changed', async () => {
   await refreshAiFlag();
+  syncAiRailButton();
   // Re-render so AI-conditional UI updates without a hard reload — but NOT
   // when the user is sitting in Settings, which is where the event comes from.
   // Saving an API key re-mounted the very page being edited: scrolled back to
@@ -443,12 +460,61 @@ window.addEventListener('ai-config-changed', async () => {
   if (currentRoute() !== 'settings') render();
 });
 
+// ── AI-queue rail indicator ────────────────────────────────
+// Replaces the dashboard page. Rides the 3 s /api/sync/status poll that
+// rail-toast.js already runs (re-broadcast as a 'sync-status' event): the
+// ring spins while a sync/analysis pass runs, the badge shows how many
+// mails still wait for analysis, a click launches a pass.
+const queueInd = document.getElementById('queue-ind');
+window.addEventListener('sync-status', (e) => {
+  if (!queueInd) return;
+  const s = e.detail || {};
+  queueInd.classList.toggle('busy', !!s.running);
+  const badge = document.getElementById('queue-ind-badge');
+  if (badge) {
+    const n = s.queue_pending | 0;
+    badge.hidden = n <= 0;
+    badge.textContent = n > 99 ? '99+' : String(n);
+  }
+});
+queueInd?.addEventListener('click', async () => {
+  try {
+    await fetch('/api/sync', { method: 'POST' });
+    // Force an immediate poll so the ring reacts to the click without
+    // waiting out the 3 s interval.
+    window.railToast?.checkAiBusy?.();
+  } catch (_) { /* backend down — the poll will say so soon enough */ }
+});
+
+// ── Command palette rail button ────────────────────────────
+// Mouse-first entry to the Cmd/Ctrl-K palette. The palette carries non-AI
+// commands too (navigation, sync, theme), so it shows regardless of the AI
+// flag — unlike the AI page entry below.
+document.getElementById('palette-toggle')
+  ?.addEventListener('click', () => window.commandPalette?.open());
+
+// ── AI workspace rail entry ────────────────────────────────
+// Navigates to the AI page (#/ai) — a processing cockpit over what the AI
+// already computed, not a chat window. Cmd/Ctrl-K still opens the quick
+// palette for one-off commands. Hidden while AI is unconfigured: the page
+// would have nothing to show.
+const aiToggle = document.getElementById('ai-toggle');
+function syncAiRailButton() {
+  if (aiToggle) aiToggle.hidden = !window.aiEnabled;
+  // The AI-queue indicator is meaningless without an AI backend.
+  if (queueInd) queueInd.hidden = !window.aiEnabled;
+  // The rail indicator only tracks visible route buttons; when AI is off and
+  // the hash still points at #/ai, send the user somewhere real.
+  if (!window.aiEnabled && currentRoute() === 'ai') navigate('#/inbox');
+}
+
 // ── Boot ───────────────────────────────────────────────────
 if (!location.hash) location.hash = '#/inbox';
 // Resolve the AI flag before the first render so the initial paint is
 // already correct. Awaiting here is fine — /api/setup/status is local,
 // served by the same process.
 await refreshAiFlag();
+syncAiRailButton();
 render();
 refreshIcons();
 initCommandPalette({ navigate });

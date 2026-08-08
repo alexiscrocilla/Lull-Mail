@@ -202,6 +202,59 @@ button { font: inherit; }
   text-decoration: none;
 }
 .rail-btn:hover { background: var(--surface-2); color: var(--text); }
+/* `.rail-btn` sets display:grid, which outranks the UA [hidden] rule — so the
+   AI-assistant button (hidden until AI is configured) would otherwise always
+   show. Restore the hide. */
+.rail-btn[hidden] { display: none; }
+
+/* AI-queue indicator — the dashboard page distilled into one rail button.
+   The ring track is always on (reads as a gauge); the accent arc spins
+   while a sync/analysis pass runs; the badge counts pending mails. */
+.rail-queue { position: relative; }
+.rail-queue-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.rail-queue-ring .ring-track {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 2;
+}
+.rail-queue-ring .ring-arc {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  /* r=17 → circumference ≈ 107; a ~28px arc reads as "in motion". */
+  stroke-dasharray: 28 79;
+  opacity: 0;
+  transform-origin: center;
+  transition: opacity 200ms ease;
+}
+.rail-queue.busy .ring-arc {
+  opacity: 1;
+  animation: rail-ring-spin 1s linear infinite;
+}
+@keyframes rail-ring-spin { to { transform: rotate(360deg); } }
+.rail-queue-badge {
+  position: absolute;
+  top: -3px; right: -3px;
+  min-width: 16px; height: 16px;
+  padding: 0 4px;
+  display: grid; place-items: center;
+  background: var(--accent);
+  color: var(--accent-on);
+  font-size: 9.5px; font-weight: 700;
+  border-radius: 999px;
+  pointer-events: none;
+}
+.rail-queue-badge[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .rail-queue.busy .ring-arc { animation: none; }
+}
 
 /* Only the icon tilts, not the button square */
 .rail-btn > i,
@@ -239,6 +292,10 @@ button { font: inherit; }
 /* ── Mailbox: flex layout so width transition on read pane is always px→px ── */
 .mailbox {
   display: flex;
+  /* Column: the (optional) mail-tab strip rides on top, full width — inside
+     the list column it got clipped whenever the read pane opened. The three
+     panes live in .mb-cols below. */
+  flex-direction: column;
   height: 100vh;
   min-height: 0;
   overflow: hidden;
@@ -254,6 +311,12 @@ button { font: inherit; }
    The window's own minimum is 900x600 (app_gui.py), so that was reachable at
    the smallest allowed size. Let the two fixed columns shrink instead. */
 .mailbox > * { min-height: 0; min-width: 0; }
+.mb-cols {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.mb-cols > * { min-height: 0; min-width: 0; }
 
 .mb-side     { flex: 0 1 var(--mb-side-w); min-width: 200px; }
 .mb-list-wrap { flex: 1 1 0; min-width: 0; }   /* expands to fill remaining space */
@@ -405,22 +468,15 @@ button { font: inherit; }
   position: relative;
 }
 .mb-side-drag-handle:active { cursor: grabbing; }
-.mb-side-drag-handle::before {
-  content: '';
-  width: 14px; height: 14px;
-  flex-shrink: 0;
-  opacity: 0.3;
-  background: linear-gradient(
-    90deg, currentColor 2px, transparent 2px
-  ) 0 2px / 14px 4px,
-  linear-gradient(
-    90deg, currentColor 2px, transparent 2px
-  ) 0 6px / 14px 4px,
-  linear-gradient(
-    90deg, currentColor 2px, transparent 2px
-  ) 0 10px / 14px 4px;
-  background-repeat: no-repeat;
-}
+/* The drag-handle grip used to render as a leading pseudo-element. As a
+   third flex item under justify-content:space-between it stranded the
+   section label in the CENTRE of the row (grip left, chevron/+ right,
+   label floating between) — every header read as centred instead of
+   left-aligned, and inconsistent with the COMPTES header (which never
+   gets wired for drag and so kept its flush-left label). The whole title
+   row is still the drag handle (title.draggable = true); we just drop the
+   grip glyph so the label sits flush-left like the others. */
+.mb-side-drag-handle::before { content: none; }
 .mb-section-title:hover { color: var(--text); }
 
 /* Collapse chevron */
@@ -544,6 +600,65 @@ button { font: inherit; }
   background: var(--bg);
   overflow: hidden; /* clips chips & cards during width transition */
 }
+/* ── Mail tabs (middle-click pins) — full-width strip on top ── */
+.mb-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex-shrink: 0;
+}
+.mb-tabs::-webkit-scrollbar { display: none; }
+.mb-tabs[hidden] { display: none; }
+.mb-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 180px;
+  min-width: 0;
+  padding: 5px 6px 5px 11px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 9px 9px 0 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 130ms ease, background 130ms ease;
+  animation: fade-up 180ms cubic-bezier(.25,.46,.45,.94) both;
+}
+.mb-tab:hover { color: var(--text); background: var(--surface-2); }
+.mb-tab.active {
+  color: var(--text);
+  font-weight: 600;
+  background: var(--surface-2);
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--border));
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.mb-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-tab-close {
+  width: 18px; height: 18px;
+  flex-shrink: 0;
+  display: grid; place-items: center;
+  background: transparent;
+  color: var(--muted);
+  border: none; border-radius: 5px;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.mb-tab-close:hover { color: var(--danger); background: var(--surface); }
+
 .mb-search {
   padding: 14px 16px 10px;
   background: var(--surface);
@@ -966,6 +1081,11 @@ button { font: inherit; }
   animation: mb-sel-bar-in 200ms cubic-bezier(.25,.46,.45,.94) both;
 }
 .mb-sel-bar[hidden] { display: none; }
+/* Selection active → the bar slots DIRECTLY under the (always visible)
+   search row — its markup position. The filter row steps aside meanwhile
+   so the header doesn't stack three bands; it returns the instant the
+   selection clears. */
+.mb-list-wrap.has-selection .mb-filter-bar { display: none; }
 .mb-sel-bar.leaving {
   animation: mb-sel-bar-out 180ms cubic-bezier(.55,0,1,.45) both;
   pointer-events: none;
@@ -974,12 +1094,16 @@ button { font: inherit; }
    ceiling also governs the settled bar. At 60px a wrapped second row was
    clipped by the very animation meant to reveal the bar — raised to clear
    two rows. */
+/* 13px vertical padding ≈ the search row the bar now replaces at the top of
+   the column — keeps the header height steady during the swap. The `both`
+   fill makes these end states the settled values, so they ARE the bar's
+   real padding. */
 @keyframes mb-sel-bar-in {
   from { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; transform: translateY(-6px); }
-  to   { opacity: 1; max-height: 140px; padding-top: 8px; padding-bottom: 8px; transform: translateY(0); }
+  to   { opacity: 1; max-height: 140px; padding-top: 13px; padding-bottom: 13px; transform: translateY(0); }
 }
 @keyframes mb-sel-bar-out {
-  from { opacity: 1; max-height: 140px; padding-top: 8px; padding-bottom: 8px; transform: translateY(0); }
+  from { opacity: 1; max-height: 140px; padding-top: 13px; padding-bottom: 13px; transform: translateY(0); }
   to   { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; transform: translateY(-6px); }
 }
 .mb-sel-bar .sel-left {
@@ -1101,7 +1225,13 @@ button { font: inherit; }
 .mb-card.selected::before {
   content: '';
   position: absolute;
-  left: -1px; top: 14px; bottom: 14px;
+  /* Was left:-1px — but .mb-card carries `contain: layout paint style`
+     (added by the mailbox perf pass), and paint containment clips any
+     descendant painted outside the border-box. The 1px overhang was
+     sliced off and the accent bar rendered as a stray, misaligned green
+     sliver hugging the corner. Anchor it flush inside the card instead so
+     containment leaves it intact. */
+  left: 0; top: 14px; bottom: 14px;
   width: 3px;
   border-radius: 0 3px 3px 0;
   background: var(--accent);
@@ -1110,6 +1240,23 @@ button { font: inherit; }
 }
 .mb-card.unread .mb-sender { font-weight: 700; color: var(--text); }
 .mb-card.unread .mb-subj { color: var(--text); font-weight: 600; }
+
+/* ── Read pane open → the list is a navigation rail, not a data table. ──
+   With half the width gone, the full card payload (AI summary, labels,
+   category icon, thread count, score/star/account column) turned each row
+   into truncated soup. Keep exactly what picking a mail needs: avatar,
+   sender, subject, date, unread state, and the actionable reply/draft/
+   attachment glyphs. Everything else returns when the pane closes. */
+.mailbox:not(.no-selection) .mb-card .mb-summary,
+.mailbox:not(.no-selection) .mb-card .mb-card-labels,
+.mailbox:not(.no-selection) .mb-card .mb-cat-icon,
+.mailbox:not(.no-selection) .mb-card .mb-thread-count,
+.mailbox:not(.no-selection) .mb-card .mb-card-meta {
+  display: none;
+}
+.mailbox:not(.no-selection) .mb-card {
+  grid-template-columns: 40px 1fr;
+}
 .mb-card.unread {
   background: color-mix(in oklab, var(--accent) 4%, var(--surface));
 }
@@ -1276,7 +1423,12 @@ button { font: inherit; }
   font-size: 13px;
   color: #fff;
   letter-spacing: 0.01em;
-  flex: 0 0 40px;
+  /* `auto`, NOT a fixed basis: in a flex row flex-basis beats `width`, so a
+     hardcoded 40px stretched every smaller variant (conversation accordion
+     26px, AI-page cards 30px…) into a 40px-wide oval. With auto, each
+     variant's width is the single source of truth; the default stays 40px
+     via the width above. */
+  flex: 0 0 auto;
   position: relative;
   cursor: pointer;
   outline: 2px solid transparent;
@@ -6634,3 +6786,386 @@ kbd {
 }
 .mb-fdate:focus { outline: none; border-color: var(--accent); }
 
+/* ── AI page (route #/ai) — full-page task launcher ─────────
+   No floating palette card: the page owns its layout like Dashboard and
+   Cleanup. Header, a prominent ask/filter bar, and a stage swapping between
+   the task list and a result view. Swaps animate — the stage height FLIPs
+   (JS), the result slides in from the right, the list slides back in from
+   the left, rows stagger. */
+.aiw {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 20px;
+  padding: 7vh 28px 40px;
+  /* Faint accent wash from the top — the page's identity, kept subtle. */
+  background: radial-gradient(
+    780px 340px at 50% -60px,
+    color-mix(in oklab, var(--accent) 7%, transparent),
+    transparent 70%
+  );
+}
+/* The palette column. Splitting it out lets the reader panel dock to its
+   right without disturbing the centred single-column default. */
+.aiw-main {
+  width: min(680px, 100%);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.aiw-head {
+  text-align: center;
+  animation: fade-up 260ms cubic-bezier(.25,.46,.45,.94) both;
+}
+.aiw-head h1 {
+  font-size: 26px; font-weight: 700; margin: 0;
+  letter-spacing: -0.02em;
+}
+.aiw-sub { margin: 6px 0 0; font-size: 13.5px; color: var(--muted); }
+
+/* Ask / filter bar */
+.aiw-hero {
+  width: 100%;
+  display: flex; align-items: center; gap: 10px;
+  padding: 13px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--muted);
+  flex-shrink: 0;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+  animation: fade-up 260ms cubic-bezier(.25,.46,.45,.94) 60ms both;
+}
+.aiw-hero:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 18%, transparent);
+}
+.aiw-hero input {
+  flex: 1; border: none; outline: none; background: transparent;
+  font: inherit; font-size: 15px; color: var(--text);
+}
+.aiw-hero input:disabled { opacity: 0.6; }
+
+/* Stage (list ⇄ result) */
+.aiw-stage {
+  width: 100%;
+  animation: fade-up 260ms cubic-bezier(.25,.46,.45,.94) 120ms both;
+}
+
+/* View-swap animations */
+@keyframes aiw-slide-in {
+  from { opacity: 0; transform: translateX(18px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes aiw-slide-back {
+  from { opacity: 0; transform: translateX(-14px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* List view — rows sit directly on the page, no box around them. */
+.aiw-list { display: flex; flex-direction: column; gap: 2px; }
+.aiw-group {
+  font-size: 10.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 12px 14px 4px;
+}
+/* History rows: the delete × only surfaces on hover/focus. */
+.aiw-hist-del {
+  width: 26px; height: 26px; flex-shrink: 0;
+  display: grid; place-items: center;
+  background: transparent; color: var(--muted);
+  border: none; border-radius: 7px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 130ms ease, color 130ms ease, background 130ms ease;
+}
+.aiw-row:hover .aiw-hist-del,
+.aiw-row.active .aiw-hist-del,
+.aiw-hist-del:focus-visible { opacity: 1; }
+.aiw-hist-del:hover { color: var(--danger); background: var(--surface-2); }
+.aiw-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 14px; border-radius: 11px; cursor: pointer;
+  color: var(--text); font-size: 14px;
+  border: 1px solid transparent;
+  transition: background 140ms ease, border-color 140ms ease;
+  animation: fade-up 220ms cubic-bezier(.25,.46,.45,.94) both;
+}
+.aiw-list.is-back .aiw-row { animation-name: aiw-slide-back; }
+.aiw-row.active {
+  background: var(--surface);
+  border-color: var(--border);
+}
+.aiw-row > i { color: var(--muted); flex-shrink: 0; }
+.aiw-row-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Task rows: coloured icon chip + label/description on two lines. */
+.aiw-row-task { padding-top: 9px; padding-bottom: 9px; }
+.aiw-task-ic {
+  width: 32px; height: 32px; flex-shrink: 0;
+  display: grid; place-items: center;
+  border-radius: 9px;
+  color: var(--tc);
+  background: color-mix(in oklab, var(--tc) 14%, transparent);
+  border: 1px solid color-mix(in oklab, var(--tc) 28%, transparent);
+  transition: transform 160ms cubic-bezier(.34,1.56,.64,1);
+}
+.aiw-row.active .aiw-task-ic { transform: scale(1.08); }
+.aiw-row-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.aiw-row-col .aiw-row-label { flex: none; font-weight: 600; font-size: 13.5px; }
+.aiw-row-desc {
+  font-size: 12px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.aiw-sep { height: 1px; background: var(--border); margin: 8px 14px; }
+
+/* Result view — a reading panel on the page. */
+.aiw-page {
+  padding: 16px 18px;
+  display: flex; flex-direction: column; gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  animation: aiw-slide-in 220ms cubic-bezier(.25,.46,.45,.94) both;
+}
+.aiw-page-head { display: flex; align-items: center; gap: 10px; }
+.aiw-back {
+  width: 30px; height: 30px; flex-shrink: 0;
+  display: grid; place-items: center;
+  background: var(--surface-2); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 8px;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+.aiw-back:hover { color: var(--accent); border-color: var(--accent); transform: translateX(-2px); }
+.aiw-page-subj {
+  flex: 1; min-width: 0;
+  font-size: 14.5px; font-weight: 700; line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.aiw-page-still { animation: none; }
+.aiw-page .cmdk-trace-step {
+  animation: fade-up 200ms cubic-bezier(.25,.46,.45,.94) both;
+}
+.aiw-thinking {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 13px; color: var(--muted);
+  padding: 8px 0;
+}
+
+/* Conversation thread */
+.aiw-convo { display: flex; flex-direction: column; gap: 12px; }
+.aiw-turn-user {
+  align-self: flex-end;
+  max-width: 85%;
+  padding: 7px 13px;
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 13px; line-height: 1.5;
+  border-radius: 12px 12px 4px 12px;
+  overflow-wrap: anywhere;
+  animation: fade-up 200ms cubic-bezier(.25,.46,.45,.94) both;
+}
+
+/* Markdown answer */
+.aiw-md {
+  font-size: 13.5px; line-height: 1.6; color: var(--text);
+  animation: fade-up 240ms cubic-bezier(.25,.46,.45,.94) 80ms both;
+}
+.aiw-md p { margin: 0 0 8px; }
+.aiw-md p:last-child { margin-bottom: 0; }
+.aiw-md .aiw-md-h { font-weight: 700; font-size: 14px; margin: 10px 0 6px; }
+.aiw-md ul, .aiw-md ol { margin: 0 0 8px; padding-left: 22px; }
+.aiw-md li { margin: 3px 0; }
+.aiw-md strong { font-weight: 650; }
+.aiw-md em { color: var(--muted); }
+.aiw-md code {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+/* Subject pill — a [mail:<id>] marker inside prose. Hydrated with the
+   mail's subject; opens the side reader. */
+.aiw-src {
+  display: inline-flex; align-items: center; gap: 5px;
+  vertical-align: -2px;
+  margin: 0 2px;
+  padding: 2px 9px;
+  max-width: 260px;
+  font: inherit; font-size: 12px; font-weight: 600;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 130ms ease, border-color 130ms ease;
+}
+.aiw-src:hover { color: var(--accent); border-color: var(--accent); }
+.aiw-src > i, .aiw-src > svg { flex-shrink: 0; }
+.aiw-src > span {
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Citation card — a cited email rendered as a real, clickable object
+   (canonical data from the DB, not the model's prose). */
+.aiw-mailcard {
+  display: flex; align-items: center; gap: 11px;
+  margin: 6px 0;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+  animation: fade-up 220ms cubic-bezier(.25,.46,.45,.94) both;
+}
+.aiw-mailcard:hover, .aiw-mailcard:focus-visible {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+.aiw-mailcard:hover .aiw-mc-chev { transform: translateX(2px); color: var(--accent); }
+.aiw-mailcard.is-broken { cursor: default; opacity: 0.7; }
+.aiw-mc-av { width: 30px; height: 30px; font-size: 10px; position: relative; }
+.aiw-mc-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.aiw-mc-subj {
+  font-size: 13.5px; font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.aiw-mc-from {
+  font-size: 12px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.aiw-mc-date { font-size: 11px; color: var(--muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.aiw-mc-chev { color: var(--muted); flex-shrink: 0; transition: transform 140ms ease, color 140ms ease; }
+.aiw-mc-skel {
+  display: block; height: 30px; width: 60%;
+  border-radius: 8px;
+  background: linear-gradient(90deg, var(--border) 25%, var(--border-2) 50%, var(--border) 75%);
+  background-size: 200% 100%;
+  animation: sk-shimmer 1.4s ease-in-out infinite;
+}
+
+/* Side reader — the cited email, docked to the right of the conversation. */
+.aiw-reader {
+  width: min(520px, 40vw);
+  flex-shrink: 0;
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 120px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  animation: aiw-slide-in 240ms cubic-bezier(.25,.46,.45,.94) both;
+}
+.aiw-reader[hidden] { display: none; }
+.aiw-reader-load { display: grid; place-items: center; padding: 40px; }
+.aiw-reader-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.aiw-reader-av { width: 34px; height: 34px; font-size: 11px; position: relative; }
+.aiw-reader-titles { flex: 1; min-width: 0; }
+.aiw-reader-subj {
+  font-size: 14px; font-weight: 700; line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.aiw-reader-meta { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.aiw-reader-body {
+  flex: 1; min-height: 0;
+  overflow-y: auto;
+  display: flex; flex-direction: column;
+}
+.aiw-reader-text {
+  padding: 14px 16px;
+  font-size: 13.5px; line-height: 1.6; color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.aiw-reader-text a { color: var(--accent); }
+.aiw-reader-empty { color: var(--muted); font-style: italic; }
+.aiw-reader-iframe {
+  flex: 1;
+  width: 100%;
+  min-height: 320px;
+  border: none;
+  background: #fff;
+}
+
+/* Follow-up bar — what turns a one-shot answer into a conversation. */
+.aiw-followup {
+  display: flex; gap: 8px; align-items: center;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  animation: fade-up 220ms cubic-bezier(.25,.46,.45,.94) 120ms both;
+}
+.aiw-followup input {
+  flex: 1; min-width: 0;
+  padding: 9px 12px;
+  font: inherit; font-size: 13.5px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  outline: none;
+  transition: border-color 140ms ease;
+}
+.aiw-followup input:focus { border-color: var(--accent); }
+.aiw-followup-send {
+  width: 36px; height: 36px; flex-shrink: 0;
+  display: grid; place-items: center;
+  background: var(--accent); color: var(--accent-on);
+  border: none; border-radius: 10px;
+  cursor: pointer;
+  transition: filter 140ms ease;
+}
+.aiw-followup-send:hover { filter: brightness(1.08); }
+
+/* Empty / disabled */
+.aiw-empty {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 8px; padding: 36px 20px; text-align: center;
+}
+.aiw-empty-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.aiw-empty-sub { font-size: 12.5px; color: var(--muted); max-width: 46ch; line-height: 1.5; }
+.aiw-cta { margin-top: 8px; }
+
+/* Narrow window: the reader stacks under the conversation instead of
+   squeezing beside it. */
+@media (max-width: 1100px) {
+  .aiw { flex-wrap: wrap; }
+  .aiw-reader {
+    width: min(680px, 100%);
+    position: static;
+    max-height: 70vh;
+    /* Stacked below the conversation — the JS top-alignment offset only
+       makes sense in the side-by-side layout. */
+    margin-top: 0 !important;
+  }
+}
+@media (max-width: 700px) {
+  .aiw { padding: 20px 14px 28px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .aiw-head, .aiw-hero, .aiw-stage, .aiw-row, .aiw-page,
+  .aiw-page .cmdk-trace-step, .aiw-md, .aiw-turn-user, .aiw-followup,
+  .aiw-mailcard, .aiw-reader {
+    animation: none;
+  }
+  .aiw-task-ic, .aiw-back, .aiw-mc-chev { transition: none; }
+}

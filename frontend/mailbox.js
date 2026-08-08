@@ -113,14 +113,22 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
     finalHtml = `<head>${INJECT}</head>` + safeHtml;
   }
 
-  // SECURITY: no `allow-scripts`. Email JavaScript never runs.
+  // SECURITY: no `allow-scripts`. Email JavaScript never runs, which is
+  // what makes `allow-same-origin` safe to add here: the dangerous combo
+  // is allow-scripts + allow-same-origin (a frame can then rip its own
+  // sandbox off). With scripts disabled the content is inert; same-origin
+  // only lets the PARENT read the frame's content height so we can size
+  // the iframe to its body (no more cramped 80px scroll-in-a-box — see
+  // autoSizeBodyIframe). Relative URLs already resolved against the parent
+  // origin before this (srcdoc's base URL is the parent doc), so it opens
+  // no new request surface.
   // `allow-popups` keeps `<a target="_blank">` opening in a new tab;
   // `allow-popups-to-escape-sandbox` lets that tab inherit a normal
   // (non-sandboxed) context so the OS browser handler can pick the
   // link up cleanly.
   // title is required: this iframe holds the message body, i.e. the main
   // content of the view, and was announced as an unnamed frame.
-  const iframe = `<iframe sandbox="allow-popups allow-popups-to-escape-sandbox" srcdoc="${escapeHtml(finalHtml)}" class="mb-body-iframe" title="${escapeHtml(em.subject || _t('mb.no_subject'))}"></iframe>`;
+  const iframe = `<iframe sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin" srcdoc="${escapeHtml(finalHtml)}" class="mb-body-iframe" title="${escapeHtml(em.subject || _t('mb.no_subject'))}"></iframe>`;
 
   // Banner only when we actually blocked something. The two buttons
   // are wired up by attachImageBlockerHandlers() right after the
@@ -144,6 +152,65 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
   return banner + iframe;
 }
 
+// Grow a message-body iframe to its content height so the reading pane
+// scrolls the whole email as one document — instead of the iframe staying
+// a fixed `flex:1` viewport and scrolling its content inside an 80px box
+// (unreadable, especially in conversation view where the thread accordion
+// eats the little room there was). Needs the frame to be same-origin
+// (buildHtmlBodyBlock adds `allow-same-origin`, no scripts); if that ever
+// fails we fall back to the flexible viewport so the body stays usable.
+function autoSizeBodyIframe(iframe) {
+  if (!iframe) return;
+  let raf = 0;
+  let lastW = -1;
+  let ro = null;
+  const apply = () => {
+    raf = 0;
+    let doc = null;
+    try { doc = iframe.contentDocument; } catch (_) { doc = null; }
+    if (!doc) {
+      // Opaque origin — keep the CSS flex fallback rather than a 0px frame.
+      iframe.style.flex = '';
+      iframe.style.height = '';
+      return;
+    }
+    iframe.style.flex = 'none';
+    // Collapse first so shrinking content (e.g. after the pane widens) is
+    // measured truthfully — scrollHeight otherwise floors at the frame's
+    // own current client height.
+    iframe.style.height = '0px';
+    const h = Math.max(
+      doc.documentElement ? doc.documentElement.scrollHeight : 0,
+      doc.body ? doc.body.scrollHeight : 0,
+    );
+    iframe.style.height = (h > 0 ? h : 80) + 'px';
+  };
+  const schedule = () => { if (!raf) raf = requestAnimationFrame(apply); };
+  const onload = () => {
+    schedule();
+    // Fonts, blocked-image placeholders and tables settle a frame or two
+    // late; re-measure so we don't lock in a too-short height.
+    setTimeout(schedule, 120);
+    setTimeout(schedule, 400);
+    // Re-fit when the reading pane changes WIDTH (open/close list, window
+    // resize) — the body reflows and its height with it. Observe the iframe
+    // element and gate on width only: our own height writes must not
+    // re-trigger a measure, or apply()'s 0px→h flip would loop forever.
+    if ('ResizeObserver' in window && !ro) {
+      ro = new ResizeObserver((entries) => {
+        const w = entries[0] && entries[0].contentRect ? entries[0].contentRect.width : 0;
+        if (Math.abs(w - lastW) > 1) { lastW = w; schedule(); }
+      });
+      ro.observe(iframe);
+    }
+  };
+  iframe.addEventListener('load', onload);
+  // srcdoc can finish before the listener attaches; catch that case.
+  try {
+    if (iframe.contentDocument && iframe.contentDocument.readyState !== 'loading') onload();
+  } catch (_) { /* not ready / cross-origin — the load event will fire */ }
+}
+
 
 // Wire up the banner buttons after the iframe has been mounted. Called
 // from the same place that mounts the read pane. The closure keeps a
@@ -160,10 +227,19 @@ function attachImageBlockerHandlers(em) {
     // visible reflow.
     const oldIframe = banner.nextElementSibling;
     banner.insertAdjacentHTML('beforebegin', buildHtmlBodyBlock(em, forceShow));
+    // The block was inserted directly before the banner, so the new iframe
+    // is the banner's previous sibling (targeting it directly avoids
+    // grabbing a thread-accordion iframe by a broad query).
+    const newIframe = banner.previousElementSibling;
     if (oldIframe) oldIframe.remove();
     banner.remove();
     const pane = document.querySelector('#read-pane');
     if (pane) window.lucide?.createIcons({ el: pane });
+    // The freshly built iframe (now showing images) has a new content
+    // height — re-fit it to avoid a stale scroll box.
+    if (newIframe && newIframe.classList.contains('mb-body-iframe')) {
+      autoSizeBodyIframe(newIframe);
+    }
     // Re-attach handlers on the new banner (if any). When forceShow
     // is true the new build has no banner, so this no-ops.
     attachImageBlockerHandlers(em);
@@ -526,6 +602,12 @@ export async function mountMailbox(host, _opts) {
   const FOLDERS_L = FOLDERS.map((f) => ({ ...f, label: t(f.labelKey) }));
   host.innerHTML = `
     <section class="mailbox no-selection" aria-label="${t('mb.aria.mailbox')}">
+      <!-- Mail tabs — middle-click a card to pin it here (browser-style).
+           Persisted in localStorage, restored on app restart. Full-width
+           first row of the mailbox: living inside the list column clipped
+           it whenever the read pane opened. Hidden while empty. -->
+      <div class="mb-tabs" id="mb-tabs" hidden role="tablist" aria-label="${t('mb.tabs.aria')}"></div>
+      <div class="mb-cols">
       <aside class="mb-side mb-stagger" aria-label="${t('mb.aria.sidebar')}">
         <div class="mb-side-head">
           <h1>${t('mb.title')}</h1>
@@ -621,21 +703,9 @@ export async function mountMailbox(host, _opts) {
             <div class="sort-select" id="sort-select-wrap"></div>
           </div>
         </div>
-        <div class="mb-filter-bar" id="search-filters">
-          <span class="mb-filter-lead"><i data-lucide="sliders-horizontal" class="w-3.5 h-3.5"></i></span>
-          <button class="mb-fbtn" type="button" data-op="has:attachment" aria-pressed="false">
-            <i data-lucide="paperclip" class="w-3.5 h-3.5"></i><span>${t('mb.filter.attachment')}</span>
-          </button>
-          <button class="mb-fbtn" type="button" data-op="is:starred" aria-pressed="false">
-            <i data-lucide="star" class="w-3.5 h-3.5"></i><span>${t('mb.filter.starred')}</span>
-          </button>
-          <select class="mb-fdate" id="search-date" aria-label="${t('mb.filter.date')}">
-            <option value="">${t('mb.filter.date_any')}</option>
-            <option value="7">${t('mb.filter.date_7')}</option>
-            <option value="30">${t('mb.filter.date_30')}</option>
-            <option value="365">${t('mb.filter.date_year')}</option>
-          </select>
-        </div>
+        <!-- The selection bar sits DIRECTLY under the search row — it used
+             to come after the filter bar, which read as a stray band in the
+             middle of the header stack. -->
         <div class="mb-sel-bar" id="sel-bar" hidden>
           <div class="sel-left">
             <button class="sel-btn" data-act="clear" title="${t('mb.sel.clear')}" aria-label="${t('mb.sel.clear')}">
@@ -662,12 +732,28 @@ export async function mountMailbox(host, _opts) {
             </button>
           </div>
         </div>
+        <div class="mb-filter-bar" id="search-filters">
+          <span class="mb-filter-lead"><i data-lucide="sliders-horizontal" class="w-3.5 h-3.5"></i></span>
+          <button class="mb-fbtn" type="button" data-op="has:attachment" aria-pressed="false">
+            <i data-lucide="paperclip" class="w-3.5 h-3.5"></i><span>${t('mb.filter.attachment')}</span>
+          </button>
+          <button class="mb-fbtn" type="button" data-op="is:starred" aria-pressed="false">
+            <i data-lucide="star" class="w-3.5 h-3.5"></i><span>${t('mb.filter.starred')}</span>
+          </button>
+          <select class="mb-fdate" id="search-date" aria-label="${t('mb.filter.date')}">
+            <option value="">${t('mb.filter.date_any')}</option>
+            <option value="7">${t('mb.filter.date_7')}</option>
+            <option value="30">${t('mb.filter.date_30')}</option>
+            <option value="365">${t('mb.filter.date_year')}</option>
+          </select>
+        </div>
         <div class="mb-list" id="email-list" role="listbox" aria-multiselectable="true"
              aria-label="${t('mb.aria.list')}" tabindex="0"></div>
         <div id="mb-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
       </div>
 
       <div class="mb-read" id="read-pane"></div>
+      </div><!-- /.mb-cols -->
     </section>
   `;
 
@@ -677,6 +763,11 @@ export async function mountMailbox(host, _opts) {
     { value: 'score',     label: t('mb.sort.score'),      short: t('mb.sort.score_short') },
     { value: 'sender',    label: t('mb.sort.sender'),     short: t('mb.sort.sender_short') },
   ];
+
+  // Mail-tab persistence constants — must precede `state` (see the note at
+  // the tab helpers: loadTabs runs during state init).
+  const _TABS_KEY = 'mb-tabs';
+  const _TABS_MAX = 12;
 
   const state = {
     folder: 'inbox',
@@ -691,6 +782,9 @@ export async function mountMailbox(host, _opts) {
     accounts: [],
     accountStats: {},           // email → { unread, needs_reply, total }
     emails: [],
+    // Pinned mail tabs (middle-click on a card) — persisted, restored at
+    // mount. loadTabs is hoisted, so calling it here is safe.
+    tabs: loadTabs(),
     selectedId: null,
     selectedIds: new Set(),  // ids currently checked (avatar-click)
     filteredIds: [],  // current visible ids in order
@@ -2279,12 +2373,14 @@ export async function mountMailbox(host, _opts) {
     const isSelected = state.selectedId === em.int_id;
     const isChecked = state.selectedIds.has(em.int_id);
 
-    // Recipient account mini-avatar
+    // Recipient account mini-avatar — only meaningful when several accounts
+    // feed the list. With a single account it stamped the same badge on
+    // every card: pure noise.
     const accEmail = em.account_email || '';
     const accObj = state.accounts.find((a) => a.email === accEmail);
     const accIni = initials(accObj?.name || accEmail);
     const accCol = avatarColor(accEmail);
-    const accAvatar = accEmail
+    const accAvatar = accEmail && state.accounts.length > 1
       ? `<span class="mb-acc-av mb-card-acc-av" style="background:${accCol}" title="${escapeHtml(accEmail)}">${escapeHtml(accIni)}</span>`
       : '';
 
@@ -2336,7 +2432,7 @@ export async function mountMailbox(host, _opts) {
           ${showSummary ? `<div class="mb-summary">${escapeHtml(em.summary)}</div>` : ''}
         </div>
         <div class="mb-card-meta">
-          ${score > 0 ? `<span class="score-pill ${scoreClass(score)}" title="${t('mb.score.title', { n: score })}">${score}</span>` : '<span></span>'}
+          ${score >= 7 ? `<span class="score-pill ${scoreClass(score)}" title="${t('mb.score.title', { n: score })}">${score}</span>` : '<span></span>'}
           ${em.is_favourite ? `<span class="mb-fav-star" title="${t('mb.favorite')}"><i data-lucide="star" class="w-3.5 h-3.5"></i></span>` : ''}
           ${accAvatar}
         </div>
@@ -2350,6 +2446,67 @@ export async function mountMailbox(host, _opts) {
     if (prev) prev.classList.remove('selected');
     const next = host.querySelector(`.mb-card[data-id="${intId}"]`);
     if (next) next.classList.add('selected');
+    // Keep the tab strip's active highlight in sync with the open mail.
+    renderTabs();
+  }
+
+  // ── Mail tabs ─────────────────────────────────────────────
+  // Browser-style: middle-click a card pins the mail as a tab; tabs persist
+  // in localStorage and come back on the next app launch. Clicking a tab
+  // opens its mail in the read pane; middle-click or × closes it.
+  // NOTE: the key/cap constants live ABOVE the state declaration — loadTabs
+  // is hoisted and called during state init, and a `const` down here would
+  // still be in its temporal dead zone at that point (the ReferenceError
+  // was swallowed by the try/catch, silently dropping the restore).
+
+  function loadTabs() {
+    try {
+      const a = JSON.parse(localStorage.getItem(_TABS_KEY) || '[]');
+      return Array.isArray(a) ? a.filter((x) => Number.isFinite(x.id)) : [];
+    } catch (_) { return []; }
+  }
+
+  function saveTabs() {
+    try { localStorage.setItem(_TABS_KEY, JSON.stringify(state.tabs.slice(0, _TABS_MAX))); } catch (_) {}
+  }
+
+  function renderTabs() {
+    const strip = $('#mb-tabs');
+    if (!strip) return;
+    const tabs = state.tabs || [];
+    strip.hidden = tabs.length === 0;
+    if (!tabs.length) { strip.innerHTML = ''; return; }
+    strip.innerHTML = tabs.map((tab) => `
+      <div class="mb-tab ${state.selectedId === tab.id ? 'active' : ''}" role="tab"
+           tabindex="0" aria-selected="${state.selectedId === tab.id}"
+           data-tab-id="${tab.id}" title="${escapeHtml(tab.sender || '')}">
+        <span class="mb-tab-label">${escapeHtml(tab.subject || t('mb.no_subject'))}</span>
+        <button type="button" class="mb-tab-close" data-close="${tab.id}"
+                title="${t('mb.tabs.close')}" aria-label="${t('mb.tabs.close')}">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>`).join('');
+  }
+
+  function addTab(em, { activate = false } = {}) {
+    if (!em || !Number.isFinite(em.int_id)) return;
+    if (!state.tabs.some((x) => x.id === em.int_id)) {
+      state.tabs.push({
+        id: em.int_id,
+        subject: em.subject || '',
+        sender: senderName(em.sender) || senderEmail(em.sender) || '',
+      });
+      if (state.tabs.length > _TABS_MAX) state.tabs.shift();
+      saveTabs();
+    }
+    if (activate) openEmail(em.int_id);
+    else renderTabs();
+  }
+
+  function closeTab(id) {
+    state.tabs = state.tabs.filter((x) => x.id !== id);
+    saveTabs();
+    renderTabs();
   }
 
   function selectAll() {
@@ -2453,17 +2610,28 @@ export async function mountMailbox(host, _opts) {
   function renderSelectionBar() {
     const bar = $('#sel-bar');
     if (!bar) return;
+    // .has-selection promotes the bar to the TOP of the list column (the
+    // search + filter rows step aside) — it used to appear sandwiched
+    // BELOW the filter bar, reading as a stray band in the middle.
+    const wrap = host.querySelector('.mb-list-wrap');
     const n = state.selectedIds.size;
     if (n === 0) {
       if (!bar.hidden) {
         bar.classList.add('leaving');
-        setTimeout(() => { bar.hidden = true; bar.classList.remove('leaving'); }, 180);
+        setTimeout(() => {
+          bar.hidden = true;
+          bar.classList.remove('leaving');
+          wrap?.classList.remove('has-selection');
+        }, 180);
+      } else {
+        wrap?.classList.remove('has-selection');
       }
       closePopover();
       return;
     }
     bar.classList.remove('leaving');
     bar.hidden = false;
+    wrap?.classList.add('has-selection');
     const num = $('#sel-count-num');
     if (num) num.textContent = String(n);
     // Inside the trash, "delete" mapped to a PATCH {folder:'deleted'} on mail
@@ -3414,8 +3582,9 @@ export async function mountMailbox(host, _opts) {
               <div class="name">${escapeHtml(sName || t('mb.unknown_sender'))}${authBadgeHtml(em.auth_results)}</div>
               <div class="meta meta-route">
                 <i data-lucide="send" class="w-3 h-3 meta-icon"></i><span class="meta-addr">${escapeHtml(sEmail)}</span>
+                ${state.accounts.length > 1 ? `
                 <i data-lucide="arrow-right" class="w-3 h-3 meta-arrow"></i>
-                <i data-lucide="inbox" class="w-3 h-3 meta-icon"></i><span class="meta-addr meta-to">${escapeHtml(em.account_email || '')}</span>
+                <i data-lucide="inbox" class="w-3 h-3 meta-icon"></i><span class="meta-addr meta-to">${escapeHtml(em.account_email || '')}</span>` : ''}
               </div>
             </div>
             <div class="mb-thread-actions">
@@ -3517,6 +3686,10 @@ export async function mountMailbox(host, _opts) {
     // banner buttons after the iframe has been mounted. No-op when the
     // sender is already trusted (no banner present).
     attachImageBlockerHandlers(em);
+
+    // Grow the HTML body to its full height so the reading pane scrolls the
+    // whole message instead of trapping it in a cramped internal scrollbar.
+    autoSizeBodyIframe($('#read-pane .mb-body-iframe'));
 
     // Top-level "Étiqueter" — opens the multi-select label popover
     // anchored on the button. Pre-fills with whatever labels the email
@@ -4562,6 +4735,9 @@ export async function mountMailbox(host, _opts) {
               : `<div style="color:var(--muted);font-style:italic">${t('mb.read.empty_body')}</div>`);
         bodyEl.dataset.lazy = '0';
         window.lucide?.createIcons({ el: bodyEl });
+        // Fit the (rare) HTML thread message to its content so it isn't a
+        // tiny scroll box inside the expanded accordion row.
+        autoSizeBodyIframe(bodyEl.querySelector('.mb-body-iframe'));
       });
     });
   }
@@ -5838,6 +6014,7 @@ export async function mountMailbox(host, _opts) {
                   { defaultCollapsed: true });
 
   setupSidebarReorder();
+  renderTabs();   // restore persisted mail tabs
 
   $('#btn-sync').addEventListener('click', triggerSync);
   $('#sel-bar').addEventListener('click', onSelBarClick);
@@ -5867,6 +6044,48 @@ export async function mountMailbox(host, _opts) {
   // Event delegation for card clicks (avoids per-card listeners).
   // Keyboard activation, delegated alongside the click handler below.
   $('#email-list').addEventListener('keydown', _onListKeydown);
+
+  // Middle-click a card → pin it as a tab (browser convention). The
+  // mousedown guard suppresses the middle-click autoscroll cursor, which
+  // would otherwise fire before auxclick and eat the gesture.
+  $('#email-list').addEventListener('mousedown', (e) => {
+    if (e.button === 1 && e.target.closest('.mb-card')) e.preventDefault();
+  });
+  $('#email-list').addEventListener('auxclick', (e) => {
+    if (e.button !== 1) return;
+    const card = e.target.closest('.mb-card');
+    if (!card) return;
+    e.preventDefault();
+    const id = parseInt(card.dataset.id, 10);
+    const em = state.emails.find((x) => x.int_id === id);
+    if (em) addTab(em);
+  });
+
+  // Tab strip: click opens, × or middle-click closes.
+  $('#mb-tabs').addEventListener('mousedown', (e) => {
+    if (e.button === 1 && e.target.closest('.mb-tab')) e.preventDefault();
+  });
+  $('#mb-tabs').addEventListener('auxclick', (e) => {
+    if (e.button !== 1) return;
+    const tab = e.target.closest('.mb-tab');
+    if (tab) { e.preventDefault(); closeTab(parseInt(tab.dataset.tabId, 10)); }
+  });
+  $('#mb-tabs').addEventListener('click', (e) => {
+    const close = e.target.closest('.mb-tab-close');
+    if (close) {
+      e.stopPropagation();
+      closeTab(parseInt(close.dataset.close, 10));
+      return;
+    }
+    const tab = e.target.closest('.mb-tab');
+    if (tab) openEmail(parseInt(tab.dataset.tabId, 10));
+  });
+  $('#mb-tabs').addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.classList?.contains('mb-tab')) {
+      e.preventDefault();
+      openEmail(parseInt(e.target.dataset.tabId, 10));
+    }
+  });
 
   $('#email-list').addEventListener('click', (e) => {
     const card = e.target.closest('.mb-card');
