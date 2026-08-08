@@ -316,10 +316,117 @@ def release_app_mutex():
         _APP_MUTEX_HANDLE = None
 
 
+# ── Background mode (close → tray, single instance) ─────────────────────────
+
+# Set by the tray's "Quitter" — the only path that turns a window close
+# back into a real application exit.
+_QUIT_REQUESTED = threading.Event()
+
+
+def _wake_existing_instance() -> bool:
+    """If another Lull Mail already runs, bring ITS window back and report
+    True so this process can exit instead of racing it.
+
+    Matters once closing the window backgrounds the app: the natural user
+    gesture to "reopen" is launching the app again, which used to spawn a
+    second instance on a fresh ephemeral port — two schedulers polling the
+    same accounts, two ntfy streams. Detection is over the same loopback
+    HTTP the app already runs: read the remembered port, verify the thing
+    answering is really Lull Mail (a foreign app could have grabbed the
+    port), then ask it to show its window."""
+    port_file = paths.APP_DATA_DIR / ".last_port"
+    try:
+        port = int(port_file.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    if not (1024 <= port <= 65535):
+        return False
+    import json
+    import urllib.request
+    base = f"http://127.0.0.1:{port}"
+    try:
+        with urllib.request.urlopen(f"{base}/api/app/ping", timeout=1.5) as r:
+            if json.loads(r.read().decode("utf-8")).get("app") != "lullmail":
+                return False
+        req = urllib.request.Request(f"{base}/api/app/show-window", method="POST")
+        with urllib.request.urlopen(req, timeout=1.5):
+            pass
+        return True
+    except Exception:  # noqa: BLE001 — connection refused = no instance
+        return False
+
+
+def _tray_locale() -> str:
+    """fr / en for the tray labels, from the OS locale (there is no browser
+    Accept-Language out here)."""
+    try:
+        import locale as _locale
+        lang = (_locale.getlocale()[0] or os.environ.get("LANG") or "fr")
+        return "en" if str(lang).lower().startswith("en") else "fr"
+    except Exception:  # noqa: BLE001
+        return "fr"
+
+
+def _setup_tray(show_window, request_quit):
+    """Create the status-area icon (Windows notification area / macOS menu
+    bar). Returns the pystray Icon, or None when unavailable — in which
+    case the caller must NOT intercept window close, or the user would
+    have no way left to quit.
+
+    Windows: pystray runs happily on its own thread. macOS: AppKit owns
+    the main loop (pywebview), so run_detached() attaches the icon to that
+    loop — the documented integration path. Everything is best-effort:
+    any failure degrades to the historical close-= -quit behaviour."""
+    try:
+        import pystray
+        from PIL import Image
+
+        base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        img = Image.open(base / "frontend" / "assets" / "lullmail-icon.png")
+
+        from src.i18n import tr
+        loc = _tray_locale()
+
+        def _on_open(icon, item):  # noqa: ARG001 — pystray signature
+            show_window()
+
+        def _on_quit(icon, item):  # noqa: ARG001
+            request_quit()
+            try:
+                icon.stop()
+            except Exception:  # noqa: BLE001
+                pass
+
+        tray = pystray.Icon(
+            "lullmail", img, "Lull Mail",
+            menu=pystray.Menu(
+                # default=True → double-clicking the icon opens the window.
+                pystray.MenuItem(tr("app.tray.open", loc), _on_open, default=True),
+                pystray.MenuItem(tr("app.tray.quit", loc), _on_quit),
+            ),
+        )
+        if sys.platform == "darwin":
+            tray.run_detached()
+        else:
+            threading.Thread(target=tray.run, daemon=True, name="tray").start()
+        return tray
+    except Exception:  # noqa: BLE001
+        logger.exception("Icône de zone de notification indisponible — "
+                         "fermer la fenêtre quittera l'application")
+        return None
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
 def main() -> int:
+    # Single instance: launching the app while one is already running (very
+    # likely now that closing backgrounds it) wakes the existing window and
+    # bows out, instead of spawning a rival on a fresh port.
+    if _wake_existing_instance():
+        logger.info("Instance déjà active — fenêtre réveillée, sortie.")
+        return 0
+
     _create_app_mutex()
     logger.info("═══════════════════════════════")
     logger.info("       Lull Mail (desktop)      ")
@@ -451,10 +558,58 @@ def main() -> int:
 
     window.events.loaded += _inject_native_feel
 
-    # Closing the window quits the whole app — like every other normal
-    # Windows app. webview.start() returns when the last window dies, the
-    # finally block tears the server + scheduler down cleanly.
+    # ── Background mode ──────────────────────────────────────────────
+    # Closing the window HIDES it (sync + notifications keep running);
+    # the tray icon reopens or truly quits, and relaunching the app wakes
+    # the hidden window (single-instance probe at startup). On macOS,
+    # Cmd+Q still quits the app outright — that shortcut terminates the
+    # NSApplication, not the window, so it never enters the closing
+    # interception below. Exactly the platform convention: red button =
+    # keep running, Cmd+Q = quit.
     #
+    # If the tray cannot start (exotic Linux setups, packaging issue),
+    # closing keeps its historical quit behaviour — a background app the
+    # user cannot reach or kill would be worse than no background mode.
+    def _show_window():
+        try:
+            window.show()
+            window.restore()
+        except Exception:  # noqa: BLE001
+            logger.exception("Réaffichage de la fenêtre a échoué")
+
+    def _request_quit():
+        _QUIT_REQUESTED.set()
+        try:
+            window.destroy()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Second instances (and anything local) can wake us via the API.
+    fastapi_app.state.show_window = _show_window
+
+    tray = _setup_tray(_show_window, _request_quit)
+    _bg_note_shown = threading.Event()
+
+    def _on_closing():
+        if _QUIT_REQUESTED.is_set() or tray is None:
+            return True   # real close: teardown proceeds below
+        try:
+            window.hide()
+        except Exception:  # noqa: BLE001
+            return True   # cannot hide → let the close happen
+        # One discreet heads-up the first time, so close-to-background is
+        # discovered rather than mistaken for "the app ate my window".
+        if not _bg_note_shown.is_set():
+            _bg_note_shown.set()
+            try:
+                from src.i18n import tr
+                tray.notify(tr("app.tray.background_note", _tray_locale()), "Lull Mail")
+            except Exception:  # noqa: BLE001
+                pass  # notify() is unsupported on some backends — fine
+        return False      # cancel the close
+
+    window.events.closing += _on_closing
+
     # private_mode=False + an explicit storage_path = persistent localStorage
     # (sidebar collapsed sections, sort prefs, …) across restarts. pywebview
     # defaults to private_mode=True which uses an ephemeral WebView2 profile,
@@ -467,6 +622,11 @@ def main() -> int:
         webview.start(private_mode=False, storage_path=str(webview_storage))
     finally:
         logger.info("Fermeture en cours")
+        if tray is not None:
+            try:
+                tray.stop()   # else the icon can linger in the tray after exit
+            except Exception:  # noqa: BLE001
+                pass
         server.stop()
         lifecycle.stop_email_services()
         server.join(timeout=3.0)

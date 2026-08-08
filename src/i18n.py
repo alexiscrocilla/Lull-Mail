@@ -76,6 +76,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "sync.already_running":         "Sync déjà en cours",
 
         # ── Setup / accounts ─────────────────────────────────────────────────
+        "app.tray.open":                "Ouvrir Lull Mail",
+        "app.tray.quit":                "Quitter",
+        "app.tray.background_note":     "Lull Mail continue en arrière-plan — vos mails restent surveillés.",
         "setup.openai.bad_format":      "Format de clé OpenAI inattendu (devrait commencer par sk-).",
         "setup.anthropic.bad_format":   "Format de clé Anthropic inattendu (devrait commencer par sk-ant-).",
         "setup.openrouter.bad_format":  "Format de clé OpenRouter inattendu (devrait commencer par sk-or-).",
@@ -225,6 +228,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "sync.already_running":         "Sync already running",
 
         # ── Setup / accounts ─────────────────────────────────────────────────
+        "app.tray.open":                "Open Lull Mail",
+        "app.tray.quit":                "Quit",
+        "app.tray.background_note":     "Lull Mail keeps running in the background — your mail stays watched.",
         "setup.openai.bad_format":      "Unexpected OpenAI key format (should start with sk-).",
         "setup.anthropic.bad_format":   "Unexpected Anthropic key format (should start with sk-ant-).",
         "setup.openrouter.bad_format":  "Unexpected OpenRouter key format (should start with sk-or-).",

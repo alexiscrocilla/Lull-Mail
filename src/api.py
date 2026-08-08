@@ -2046,6 +2046,34 @@ def trigger_sync(request: Request, bg: BackgroundTasks, locale: str = Depends(ge
     return {"ok": True, "message": tr("sync.started", locale)}
 
 
+@app.get("/api/app/ping")
+def app_ping():
+    """Identify this server as a running Lull Mail instance. The desktop
+    entry point probes this on startup: if another instance already answers
+    on the remembered port, the new process wakes its window (below) and
+    exits instead of spawning a second app — the common path once closing
+    the window backgrounds the app instead of quitting it."""
+    from src.updater import get_current_version
+    return {"app": "lullmail", "version": get_current_version()}
+
+
+@app.post("/api/app/show-window")
+def app_show_window():
+    """Bring the (possibly hidden) desktop window back to front. The GUI
+    entry point registers the callback on app.state; headless runs (dev
+    server, tests) simply report not-shown. Loopback-only like everything
+    else, and it exposes nothing but 'make my own window visible'."""
+    fn = getattr(app.state, "show_window", None)
+    if not fn:
+        return {"shown": False}
+    try:
+        fn()
+        return {"shown": True}
+    except Exception as e:  # noqa: BLE001 — a wake failure must not 500
+        logger.warning(f"show-window callback failed: {e}")
+        return {"shown": False}
+
+
 @app.get("/api/sync/status")
 def sync_status():
     """Polled every 3 s by the rail (rail-toast.js). `queue_pending` feeds
