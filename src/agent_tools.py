@@ -28,6 +28,9 @@ def _meta(row: dict) -> dict:
         "subject": row.get("subject"),
         "sender": row.get("sender"),
         "recipient": row.get("recipient"),
+        # Which of the user's accounts received it — the "source" mailbox,
+        # useful in multi-account answers.
+        "account": row.get("account_email"),
         "date": row.get("date_received_iso") or row.get("date_received"),
         "is_read": bool(row.get("is_read")),
         "category": row.get("category"),
@@ -81,6 +84,117 @@ def search_emails(query: str, account: Optional[str] = None) -> dict:
     return {"parsed": parsed, "results": [_meta(r) for r in rows]}
 
 
+def top_senders(limit: int = 10, account: Optional[str] = None,
+                category: Optional[str] = None) -> dict:
+    """Aggregated sender ranking — the cleanup view's SQL, exposed to the
+    agent so "which newsletters do I get most" is one call, not a guess.
+
+    `category` narrows the ranking to senders with at least one email in
+    that category, re-sorted by that category's count. Added after watching
+    the model guess this exact parameter — it is the natural way to ask
+    "top newsletter senders"."""
+    lim = min(int(limit), 25)
+    if category:
+        cat = str(category).strip().lower()
+        valid = {"important", "newsletter", "transactional", "spam", "other", "pending"}
+        if cat not in valid:
+            return {"error": f"Catégorie inconnue : {category}. Valides : {sorted(valid)}"}
+        # Rank over the full sender set, then narrow — asking db for `lim`
+        # first would truncate before the category sort.
+        rows = db.top_senders(limit=1000, account=account)
+        rows = [r for r in rows if (r.get(cat) or 0) > 0]
+        rows.sort(key=lambda r: (r.get(cat) or 0), reverse=True)
+        rows = rows[:lim]
+    else:
+        rows = db.top_senders(limit=lim, account=account)
+    return {"senders": [
+        {
+            "email": r.get("email"),
+            "name": r.get("name"),
+            "total": r.get("total"),
+            "unread": r.get("unread"),
+            "newsletter": r.get("newsletter"),
+            "important": r.get("important"),
+            "transactional": r.get("transactional"),
+            "spam": r.get("spam"),
+            "avg_score": r.get("avg_score"),
+            "last_seen": r.get("last_seen"),
+        }
+        for r in rows
+    ]}
+
+
+def mailbox_stats() -> dict:
+    """Global counters: totals, unread, needs_reply, per-category."""
+    return db.get_stats()
+
+
+def unsubscribe_candidates(limit: int = 10, account: Optional[str] = None) -> dict:
+    """Senders with a captured unsubscribe link — the cleanup Unsubscribe
+    tab's data. Read-only: the agent can point at candidates, the user
+    unsubscribes from the Cleanup page."""
+    rows = db.unsubscribe_senders(account=account)
+    out = []
+    for r in rows[: min(int(limit), 25)]:
+        out.append({
+            "email": r.get("email"),
+            "name": r.get("name"),
+            "total": r.get("total") or r.get("count"),
+            "last_seen": r.get("last_seen"),
+            "one_click": bool(r.get("one_click")),
+            "already_unsubscribed": bool(r.get("unsubscribed_at")),
+        })
+    return {"senders": out}
+
+
+def list_labels() -> dict:
+    """The user's personal labels (name + colour)."""
+    return {"labels": [
+        {"id": l.get("id"), "name": l.get("name"), "color": l.get("color")}
+        for l in db.list_labels()
+    ]}
+
+
+def list_folders() -> dict:
+    """Every folder an email can live in or be moved to."""
+    return {"folders": sorted(_BUILTIN_FOLDERS | db.custom_folder_names())}
+
+
+def list_accounts() -> dict:
+    """The mail accounts present in the mailbox (for scoping searches)."""
+    return {"accounts": db.distinct_account_emails()}
+
+
+def set_favourite(int_id: int, favourite: bool = True) -> dict:
+    row = db.get_email_by_id(int(int_id))
+    if not row:
+        return {"error": "Email introuvable"}
+    db.set_favourite(row["message_id"], bool(favourite))
+    return {"status": "updated", "int_id": int(int_id), "favourite": bool(favourite)}
+
+
+def label_email(int_id: int, label: str, add: bool = True) -> dict:
+    """Attach/detach an EXISTING personal label (by name) on an email. The
+    agent cannot create labels — that stays a deliberate user action."""
+    row = db.get_email_by_id(int(int_id))
+    if not row:
+        return {"error": "Email introuvable"}
+    wanted = (label or "").strip().lower()
+    match = next((l for l in db.list_labels()
+                  if (l.get("name") or "").strip().lower() == wanted), None)
+    if not match:
+        names = [l.get("name") for l in db.list_labels()]
+        return {"error": f"Étiquette inconnue : {label}. Existantes : {names}"}
+    current = {l["id"] for l in db.get_labels_for_email(int(int_id))}
+    if add:
+        current.add(match["id"])
+    else:
+        current.discard(match["id"])
+    db.set_email_labels(int(int_id), sorted(current))
+    return {"status": "updated", "int_id": int(int_id),
+            "label": match.get("name"), "attached": bool(add)}
+
+
 def draft_reply(int_id: int, body: str) -> dict:
     """Save a reply draft on the email. Does NOT send."""
     row = db.get_email_by_id(int(int_id))
@@ -120,10 +234,35 @@ TOOL_FUNCS = {
     "get_email": get_email,
     "get_thread": get_thread,
     "search_emails": search_emails,
+    "top_senders": top_senders,
+    "mailbox_stats": mailbox_stats,
+    "unsubscribe_candidates": unsubscribe_candidates,
+    "list_labels": list_labels,
+    "list_folders": list_folders,
+    "list_accounts": list_accounts,
     "draft_reply": draft_reply,
     "mark_email_read": mark_email_read,
     "move_email": move_email,
+    "set_favourite": set_favourite,
+    "label_email": label_email,
 }
+
+# Exhaustive operator reference for search_emails. Injected in the tool
+# description (cloud) AND the local system prompt — the agent can only use
+# operators it has been TOLD exist; before this doc it guessed (and invented
+# filters like a free-text "attend une réponse" search).
+SEARCH_OPERATORS_DOC = (
+    "Opérateurs (combinables, le reste = texte libre cherché dans "
+    "sujet/corps/expéditeur) : "
+    "from:<expéditeur> · to:<destinataire> · subject:<texte> · "
+    "in:<inbox|sent|draft|nom-de-dossier> · "
+    "is:<unread|read|starred|unstarred|needs_reply> "
+    "(is:needs_reply = mails attendant une réponse de l'utilisateur) · "
+    "has:attachment · "
+    "category:<important|newsletter|transactional|spam|other|pending> · "
+    "min_score:<1-10> (importance minimale) · "
+    "label:<nom d'étiquette> · before:AAAA-MM-JJ · after:AAAA-MM-JJ"
+)
 
 # OpenAI function-calling schema (1:1 with TOOL_FUNCS). The MCP server
 # reuses the same parameter shapes.
@@ -171,15 +310,85 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "search_emails",
-            "description": "Rechercher des emails (opérateurs from:/to:/subject:/is:/has:/before:/after:).",
+            "description": "Rechercher des emails. " + SEARCH_OPERATORS_DOC
+                           + " Exemple : \"is:needs_reply after:2026-08-01\".",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string"},
-                    "account": {"type": "string"},
+                    "query": {"type": "string", "description": "Requête avec opérateurs"},
+                    "account": {"type": "string", "description": "Limiter à un compte (adresse)"},
                 },
                 "required": ["query"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "top_senders",
+            "description": "Classement agrégé des expéditeurs (total, non-lus, répartition par "
+                           "catégorie, score moyen, dernière réception). LE bon outil pour "
+                           "« quelles newsletters je reçois le plus », « qui m'écrit le plus », etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "default": 10, "description": "Max 25"},
+                    "account": {"type": "string"},
+                    "category": {
+                        "type": "string",
+                        "description": "Restreindre et trier par cette catégorie "
+                                       "(important|newsletter|transactional|spam|other|pending)",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mailbox_stats",
+            "description": "Compteurs globaux de la boîte : total, non-lus, mails à répondre, "
+                           "répartition par catégorie.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "unsubscribe_candidates",
+            "description": "Expéditeurs avec lien de désabonnement capturé (newsletters). "
+                           "Lecture seule — le désabonnement se fait depuis la page Nettoyage.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "default": 10, "description": "Max 25"},
+                    "account": {"type": "string"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_labels",
+            "description": "Lister les étiquettes personnelles de l'utilisateur.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_folders",
+            "description": "Lister tous les dossiers (intégrés + personnalisés) valides pour move_email.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_accounts",
+            "description": "Lister les comptes mail présents dans la boîte (pour limiter une recherche).",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -216,7 +425,7 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "move_email",
-            "description": "Déplacer un email vers un dossier (inbox|deleted|...).",
+            "description": "Déplacer un email vers un dossier (voir list_folders pour les noms valides).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -224,6 +433,38 @@ TOOL_SPECS = [
                     "folder": {"type": "string"},
                 },
                 "required": ["int_id", "folder"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_favourite",
+            "description": "Ajouter ou retirer un email des favoris (étoile).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "int_id": {"type": "integer"},
+                    "favourite": {"type": "boolean", "default": True},
+                },
+                "required": ["int_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "label_email",
+            "description": "Attacher (add=true) ou détacher (add=false) une étiquette personnelle "
+                           "EXISTANTE sur un email, par son nom (voir list_labels).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "int_id": {"type": "integer"},
+                    "label": {"type": "string", "description": "Nom exact de l'étiquette"},
+                    "add": {"type": "boolean", "default": True},
+                },
+                "required": ["int_id", "label"],
             },
         },
     },
@@ -246,11 +487,17 @@ def dispatch(name: str, args: dict) -> dict:
 def tools_for_prompt() -> str:
     """One-line-per-tool description for the local-model system prompt.
 
-    The previous version dumped the full JSON Schema of every tool — ~2500
+    The original version dumped the full JSON Schema of every tool — ~2500
     tokens out of the 4096 context budget, which left almost no room for the
     actual conversation + tool results. This version emits compact textual
-    signatures (~250 tokens for the same 7 tools) that tool-trained 7B models
-    parse just as well, leaving real context budget for real work."""
+    signatures that tool-trained 7B models parse just as well, leaving real
+    context budget for real work.
+
+    Only the FIRST SENTENCE of each description is kept. Growing the toolset
+    from 7 to 15 pushed the block back over budget, and the verbose tails are
+    redundant here: the search operators are injected separately by the local
+    prompt, and the rest is guidance the cloud schema still carries in full.
+    """
     lines = []
     for spec in TOOL_SPECS:
         fn = spec["function"]
@@ -269,5 +516,8 @@ def tools_for_prompt() -> str:
             else:
                 sig_parts.append(f"{pname}?: {ptype}")
         sig = ", ".join(sig_parts)
-        lines.append(f"- {name}({sig}) — {fn.get('description', '').strip()}")
+        desc = (fn.get("description", "") or "").strip()
+        # First sentence only. Split on ". " so decimals/ellipses survive.
+        head = desc.split(". ", 1)[0].rstrip(".")
+        lines.append(f"- {name}({sig}) — {head}.")
     return "\n".join(lines)

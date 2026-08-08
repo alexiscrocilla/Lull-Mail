@@ -63,8 +63,14 @@ def test_tools_for_prompt_is_compact_textual_not_json_schema():
     # The verbose JSON Schema shape MUST be gone.
     assert '"parameters"' not in text
     assert '"properties"' not in text
-    # And the whole thing is short enough to fit comfortably.
-    assert len(text) < 1500       # was ~3500 chars before the lean refactor
+    # And the whole thing stays short enough to fit comfortably. Budgeted
+    # PER TOOL rather than as a flat ceiling: the toolset grew from 7 to 15,
+    # and a fixed cap would either fail on honest growth or stop catching a
+    # schema-dump regression once the list is long. ~115 chars/tool today;
+    # a JSON-Schema relapse lands near 500/tool, so 200 still trips it.
+    per_tool = len(text) / max(1, len(agent_tools.TOOL_SPECS))
+    assert per_tool < 200, f"{per_tool:.0f} chars/tool — tool prompt is bloating"
+    assert len(text) < 2500       # absolute backstop for the 4k local context
 
 
 def test_agent_falls_back_to_chat_endpoint_for_cloud_providers(monkeypatch):

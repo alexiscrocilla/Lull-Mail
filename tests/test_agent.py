@@ -22,9 +22,14 @@ def _int_id(db, mid="<a@t>"):
 # ── shared tool layer ───────────────────────────────────────────────
 
 def test_no_send_tool_exposed():
+    import re
+
     from src import agent_tools
     names = set(agent_tools.TOOL_FUNCS)
-    assert not any("send" in n for n in names)
+    # Guard the no-send invariant: no tool whose NAME is about sending.
+    # Match "send" as a word segment — the old plain-substring check
+    # flagged read-only aggregation tools like top_senders ("senders").
+    assert not any(re.search(r"(^|_)send($|_)", n) for n in names)
     spec_names = {s["function"]["name"] for s in agent_tools.TOOL_SPECS}
     assert spec_names == names  # specs and funcs are 1:1
 

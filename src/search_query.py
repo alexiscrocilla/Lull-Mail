@@ -10,12 +10,20 @@ Supported operators::
     in:inbox / in:sent        filter by folder
     is:unread / is:read       filter by read status
     is:starred / is:unstarred filter by starred status
+    is:needs_reply            emails flagged as awaiting the user's reply
     has:attachment            filter by attachment presence
+    category:newsletter       filter by AI category
+                              (important|newsletter|transactional|spam|other|pending)
+    min_score:7               importance score >= N (1-10)
+    label:perso               filter by personal label name
     before:2025-01-01         emails on/before a date
     after:2025-01-01          emails on/after a date
 
 Quoted values are supported: ``from:"John Doe" subject:"Re: Hello"``.
 Everything that isn't an operator becomes the free-text ``query``.
+
+Consumed by BOTH the mailbox search bar (/api/emails/search) and the AI
+agent's search_emails tool — extending an operator here upgrades both.
 """
 
 import re
@@ -24,9 +32,11 @@ from typing import Optional
 
 # operator:value  OR  operator:"quoted value"
 _OP = re.compile(
-    r'\b(from|to|subject|in|is|has|before|after):(?:"([^"]*)"|(\S+))',
+    r'\b(from|to|subject|in|is|has|category|min_score|label|before|after):(?:"([^"]*)"|(\S+))',
     re.IGNORECASE,
 )
+
+_VALID_CATEGORIES = {"important", "newsletter", "transactional", "spam", "other", "pending"}
 
 
 def parse_search_query(text: str) -> dict:
@@ -38,7 +48,11 @@ def parse_search_query(text: str) -> dict:
         "folder": None,
         "is_read": None,
         "is_starred": None,
+        "needs_reply": None,
         "has_attachment": None,
+        "category": None,
+        "min_score": None,
+        "label": None,
         "date_start": None,
         "date_end": None,
     }
@@ -64,9 +78,24 @@ def parse_search_query(text: str) -> dict:
                 out["is_read"] = (v == "read")
             elif v in ("starred", "unstarred"):
                 out["is_starred"] = (v == "starred")
+            elif v in ("needs_reply", "needs-reply", "needsreply"):
+                out["needs_reply"] = True
         elif op == "has":
             if val.lower() == "attachment":
                 out["has_attachment"] = True
+        elif op == "category":
+            v = val.lower()
+            if v in _VALID_CATEGORIES:
+                out["category"] = v
+        elif op == "min_score":
+            try:
+                n = int(val)
+            except ValueError:
+                n = None
+            if n is not None and 1 <= n <= 10:
+                out["min_score"] = n
+        elif op == "label":
+            out["label"] = val
         elif op == "before":
             out["date_end"] = _norm_date(val)
         elif op == "after":

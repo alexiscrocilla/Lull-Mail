@@ -740,6 +740,20 @@ def search_emails(parsed: Dict, account: Optional[str] = None,
     if parsed.get("is_starred") is not None:
         q += " AND is_favourite = ?"
         p.append(1 if parsed["is_starred"] else 0)
+    if parsed.get("needs_reply") is not None:
+        q += " AND needs_reply = ?"
+        p.append(1 if parsed["needs_reply"] else 0)
+    if parsed.get("category"):
+        q += " AND category = ?"
+        p.append(parsed["category"])
+    if parsed.get("min_score"):
+        q += " AND importance_score >= ?"
+        p.append(int(parsed["min_score"]))
+    if parsed.get("label"):
+        # Label names are unique-ish and user-typed — match case-insensitively.
+        q += (" AND int_id IN (SELECT el.email_int_id FROM email_labels el"
+              " JOIN labels l ON l.id = el.label_id WHERE lower(l.name) = ?)")
+        p.append(str(parsed["label"]).strip().lower())
     if parsed.get("has_attachment"):
         q += " AND message_id IN (SELECT message_id FROM attachments)"
     if parsed.get("date_start"):
@@ -964,6 +978,16 @@ def count_pending() -> int:
         return con.execute(
             "SELECT COUNT(*) FROM emails WHERE category = 'pending'"
         ).fetchone()[0]
+
+
+def distinct_account_emails() -> List[str]:
+    """Every account address that has at least one stored email. Used by the
+    agent's list_accounts tool for search scoping."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT DISTINCT account_email FROM emails ORDER BY account_email"
+        ).fetchall()
+        return [r["account_email"] for r in rows]
 
 
 def per_account_stats() -> List[Dict]:

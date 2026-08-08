@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from src import config as cfg
 from src import database as db
 from src import attachment_security as att_sec
+from src import brand_logos as _brand_logos
 from src import paths as _paths
 from src.i18n import tr, get_locale
 from src.search_query import parse_search_query
@@ -301,6 +302,34 @@ def _attach_counts_and_labels(rows: list) -> list:
     return rows
 
 
+@app.get("/api/brand-logo/{domain}")
+def brand_logo(domain: str):
+    """Sender-domain favicon, fetched and cached **locally** by
+    src/brand_logos.py — the client never contacts a third-party favicon
+    service. Returns the image bytes, or 404 when the domain has no usable
+    logo (the UI then falls back to the coloured initials bubble).
+
+    Sync `def` on purpose: the fetch is blocking I/O, so FastAPI runs it in
+    the threadpool instead of stalling the event loop.
+    """
+    got = _brand_logos.get_logo(domain)
+    if not got:
+        # Cache the negative in the browser too so an inbox repaint doesn't
+        # re-ask; real network fetches are already throttled by the on-disk
+        # `.miss` markers.
+        return Response(status_code=404, headers={"Cache-Control": "public, max-age=86400"})
+    data, content_type = got
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "public, max-age=604800, immutable",
+            "X-Content-Type-Options": "nosniff",
+            "Cross-Origin-Resource-Policy": "same-origin",
+        },
+    )
+
+
 @app.get("/api/emails/search")
 def search_emails_ep(q: str, account: Optional[str] = None,
                      folder: Optional[str] = None,
@@ -481,6 +510,28 @@ def generate_draft(int_id: int, locale: str = Depends(get_locale)):
 
 class AssistantAsk(BaseModel):
     message: str
+    # Previous turns of the SAME conversation, oldest first:
+    # [{"role": "user"|"assistant", "content": "..."}]. Optional — a fresh
+    # question sends none. The frontend owns the thread; the backend stays
+    # stateless and just replays what it is given (bounded below).
+    history: Optional[List[Dict[str, str]]] = None
+
+
+def _sanitize_history(raw: Optional[List[Dict[str, str]]]) -> List[Dict[str, str]]:
+    """Whitelist roles, force str content, and bound the replay: the last 12
+    turns, 4 000 chars each. Keeps a runaway client from stuffing the model
+    context (and the local backend's 4-8k window) with arbitrary payloads."""
+    out: List[Dict[str, str]] = []
+    for entry in (raw or []):
+        role = str(entry.get("role", ""))
+        content = entry.get("content", "")
+        if role not in ("user", "assistant") or not isinstance(content, str):
+            continue
+        content = content.strip()
+        if not content:
+            continue
+        out.append({"role": role, "content": content[:4000]})
+    return out[-12:]
 
 
 @app.post("/api/assistant/ask")
@@ -502,7 +553,7 @@ def assistant_ask(request: Request, body: AssistantAsk,
     if (conf.get("llm") or {}).get("provider", "openai") == "openai":
         init_client(conf.get("openai", {}).get("api_key", ""))
     try:
-        return agent.run_agent(body.message)
+        return agent.run_agent(body.message, history=_sanitize_history(body.history))
     except RuntimeError:
         # No LLM backend ready (e.g. local analyzer not started) → unavailable.
         raise HTTPException(409, tr("assistant.ai_disabled", locale))
@@ -1997,8 +2048,14 @@ def trigger_sync(request: Request, bg: BackgroundTasks, locale: str = Depends(ge
 
 @app.get("/api/sync/status")
 def sync_status():
+    """Polled every 3 s by the rail (rail-toast.js). `queue_pending` feeds
+    the rail's AI-queue indicator — one COUNT query, cheap at this rate."""
     from src.scheduler import get_last_sync, is_running
-    return {"running": is_running(), "last_sync": get_last_sync()}
+    return {
+        "running": is_running(),
+        "last_sync": get_last_sync(),
+        "queue_pending": db.count_pending(),
+    }
 
 
 # ── Local LLM management ─────────────────────────────────────────────────────
