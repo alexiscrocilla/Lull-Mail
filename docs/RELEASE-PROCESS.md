@@ -48,15 +48,66 @@ The public mirror lives at `alexiscrocilla/Lull-Mail`. We run a
 sanitised `git filter-repo` pass before push so dev-only commits never
 appear in public history.
 
-- [ ] `git fetch public && git reset --hard public/main`. Make sure
-      the local clone reflects the latest public state before
-      rewriting history (sync local to remote BEFORE filter-repo,
-      otherwise a stale local clone overwrites newer remote state).
-- [ ] Run the existing `git filter-repo` sanitisation pipeline
-      (project-specific; document in your own notes if not yet
-      automated).
-- [ ] `git push public main --force-with-lease`. Never plain
-      `--force` on `main`.
+The public repo is a **sanitised mirror** of dev `main`, not a shared
+history: filter-repo rewrites every hash, so the two histories run in
+parallel and the push replaces public `main` wholesale. Old commits stay
+reachable through the existing release tags, which the push leaves alone.
+
+**Never run filter-repo inside `Lull-Mail-dev`.** It rewrites the repo in
+place and would destroy the dev history. Always work in a throwaway
+clone, as below.
+
+#### Dev-only paths (the sanitisation list)
+
+These never go public. Keep this list in sync with reality — an earlier
+release leaked `BACKLOG.md` precisely because the rules lived in nobody's
+notes:
+
+| Path | Why it stays private |
+|---|---|
+| `BACKLOG.md` | Unshipped feature list; sets expectations we haven't committed to. |
+| `docs/AUDIT-UX-BOITE-MAIL.md` | Catalogue of 81 internal UX/a11y defects with line numbers. |
+| `docs/PLAN-CORRECTIFS-BOITE-MAIL.md` | Remediation plan naming what is still deliberately unfixed. |
+
+Everything else ships. In particular `MARKETING.md` (voice guide),
+`SECURITY-ROADMAP.md` (deliberate scope cuts, no exploitable detail) and
+this file are public on purpose — a privacy-first app benefits from
+showing its reasoning.
+
+#### The pipeline
+
+```bash
+# 1. Throwaway clone of dev main (never filter-repo the dev repo itself)
+git clone --no-local --branch main /path/to/Lull-Mail-dev /tmp/public-sync
+cd /tmp/public-sync
+
+# 2. Strip the dev-only paths from ALL history
+git filter-repo --force --invert-paths \
+  --path BACKLOG.md \
+  --path docs/AUDIT-UX-BOITE-MAIL.md \
+  --path docs/PLAN-CORRECTIFS-BOITE-MAIL.md
+
+# 3. Verify before pushing anything
+#    - the three paths return 0 commits:
+for f in BACKLOG.md docs/AUDIT-UX-BOITE-MAIL.md docs/PLAN-CORRECTIFS-BOITE-MAIL.md; do
+  git log --all --oneline -- "$f" | wc -l
+done
+#    - every remaining file is byte-identical to dev main (empty diff):
+diff <(git -C /path/to/Lull-Mail-dev ls-tree -r main \
+        | grep -vE 'BACKLOG|AUDIT-UX-BOITE-MAIL|PLAN-CORRECTIFS-BOITE-MAIL' \
+        | awk '{print $3, $4}' | sort) \
+     <(git ls-tree -r HEAD | awk '{print $3, $4}' | sort)
+#    - preflight passes on the sanitised tree:
+pwsh scripts/preflight-public-push.ps1 -All
+
+# 4. Push (commits that only touched excluded paths vanish — expected)
+git remote add public https://github.com/alexiscrocilla/Lull-Mail.git
+git fetch public
+git push public main --force-with-lease
+```
+
+`--force-with-lease` (never plain `--force`) so a push that landed on
+public since the last fetch aborts instead of being silently erased.
 
 ### 5. Tag and trigger the build
 
