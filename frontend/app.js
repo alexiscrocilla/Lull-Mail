@@ -354,7 +354,8 @@ document.querySelectorAll('input[name="report-kind"]').forEach((el) => {
 // avatar in the list, the read pane and dialogs, present and future.
 document.addEventListener('error', (e) => {
   const el = e.target;
-  if (el && el.tagName === 'IMG' && el.classList && el.classList.contains('av-img')) {
+  if (el && el.tagName === 'IMG' && el.classList
+      && (el.classList.contains('av-img') || el.classList.contains('set-svc-img'))) {
     el.remove();
   }
 }, true);

@@ -28,10 +28,10 @@ function escapeHtml(s) {
 }
 function escapeAttr(s) { return String(s ?? '').replace(/['"\\]/g, '\\$&'); }
 
-// Map an account `type` (and email fallback) to a public domain whose
-// favicon we can display via Google's s2 service. Custom-domain mailboxes
-// (e.g. you@yourdomain.com hosted on Proton) still get their *service* logo
-// instead of their custom-domain favicon, which is what users expect.
+// Map an account `type` (and email fallback) to a public domain whose logo
+// we display. Custom-domain mailboxes (e.g. you@yourdomain.com hosted on
+// Proton) still get their *service* logo instead of their custom-domain
+// favicon, which is what users expect.
 const SERVICE_DOMAINS = {
   gmail:    'google.com',
   outlook:  'outlook.com',
@@ -42,10 +42,30 @@ const SERVICE_DOMAINS = {
   icloud:   'icloud.com',
   free:     'free.fr',
 };
-function serviceLogoHtml(_account) {
-  // Privacy + offline: don't fetch provider favicons from google.com. A
-  // generic mail glyph (rendered locally by lucide) stands in.
-  return `<i data-lucide="mail" class="set-svc-logo"></i>`;
+function serviceLogoHtml(account) {
+  // Provider logos come from OUR backend (/api/brand-logo — fetched from
+  // the provider's own domain and cached on disk), so the client never
+  // talks to a third-party favicon service. The privacy pass had reduced
+  // this to a bare glyph because the old implementation hit google.com.
+  //
+  // The lucide glyph renders underneath; the logo <img> stacks on top and
+  // is dropped by app.js's delegated error handler when the backend has no
+  // logo (404), letting the glyph show through. No inline onerror.
+  const glyph = `<i data-lucide="mail" class="set-svc-logo"></i>`;
+  const type = (account?.type || '').toLowerCase();
+  let domain = SERVICE_DOMAINS[type] || '';
+  if (!domain && account?.email) {
+    const at = account.email.lastIndexOf('@');
+    const d = at >= 0 ? account.email.slice(at + 1).toLowerCase().trim() : '';
+    if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d)) domain = d;
+  }
+  if (!domain) return glyph;
+  // Eager on purpose: a dozen tiny favicons at most (account rows + the
+  // provider grid in the modal) — lazy-loading buys nothing here and its
+  // IntersectionObserver gate can delay images that are already on screen.
+  // The mailbox list, with hundreds of rows, is where lazy belongs.
+  return glyph + `<img class="set-svc-img" src="/api/brand-logo/${encodeURIComponent(domain)}"
+    alt="" decoding="async" referrerpolicy="no-referrer">`;
 }
 
 function refreshIcons() {
@@ -469,19 +489,36 @@ export async function mountSettings(host, opts = {}) {
           </div>
         </details>
 
+        <!-- Per-account AI: three self-explanatory option rows instead of the
+             old loose stack (bare checkbox / stray narrow field / bare
+             checkbox). The two dependent rows dim while the master toggle
+             is off — they mean nothing without it. -->
         <div class="set-subhead">${t('set.account.ai_section')}</div>
-        <div class="set-checks">
-          <label><input id="m-ai-enabled" type="checkbox" checked /> ${t('set.account.ai_enabled')}</label>
-        </div>
-        <div class="set-grid set-grid-3">
-          <label class="set-field">
-            <span class="set-label">${t('set.account.ai_threshold')}</span>
-            <input id="m-ai-threshold" type="number" min="0" max="10" class="set-input" placeholder="${t('set.account.ai_threshold_ph')}" style="max-width:120px" />
-            <span class="set-hint">${t('set.account.ai_threshold_hint')}</span>
+        <div class="set-ai-opts" id="m-ai-opts">
+          <label class="set-opt">
+            <input id="m-ai-enabled" type="checkbox" checked />
+            <span class="set-opt-body">
+              <span class="set-opt-label">${t('set.account.ai_enabled')}</span>
+              <span class="set-opt-hint">${t('set.account.ai_enabled_hint')}</span>
+            </span>
           </label>
-        </div>
-        <div class="set-checks">
-          <label><input id="m-auto-draft" type="checkbox" /> ${t('set.account.auto_draft')}</label>
+          <label class="set-opt" data-ai-dep>
+            <input id="m-auto-draft" type="checkbox" />
+            <span class="set-opt-body">
+              <span class="set-opt-label">${t('set.account.auto_draft')}</span>
+              <span class="set-opt-hint">${t('set.account.auto_draft_hint')}</span>
+            </span>
+          </label>
+          <div class="set-opt set-opt-static" data-ai-dep>
+            <span class="set-opt-body">
+              <span class="set-opt-label">${t('set.account.ai_threshold')}</span>
+              <span class="set-opt-hint">${t('set.account.ai_threshold_hint')}</span>
+            </span>
+            <input id="m-ai-threshold" type="number" min="0" max="10"
+                   class="set-input set-opt-input"
+                   placeholder="${t('set.account.ai_threshold_ph')}"
+                   aria-label="${t('set.account.ai_threshold')}" />
+          </div>
         </div>
 
         <div id="m-test-result" class="set-test-result"></div>
@@ -1355,6 +1392,18 @@ export async function mountSettings(host, opts = {}) {
     imap:    { email: t('provider.imap.email_ph'),    password: t('provider.imap.password_ph') },
   };
 
+  // Dim + disable the AI rows that depend on the master "analyse this
+  // account" toggle: threshold and auto-draft mean nothing while it is
+  // off. Called on toggle AND on both modal-open paths, because a
+  // programmatic `.checked =` never fires 'change'.
+  function syncAiOptRows() {
+    const on = !els.mAiEnabled || els.mAiEnabled.checked;
+    host.querySelectorAll('#m-ai-opts [data-ai-dep]').forEach((row) => {
+      row.classList.toggle('is-disabled', !on);
+      row.querySelectorAll('input').forEach((inp) => { inp.disabled = !on; });
+    });
+  }
+
   function openModal() {
     state.editingEmail = null;
     els.mTitle.textContent = t('set.modal.add_title');
@@ -1370,6 +1419,7 @@ export async function mountSettings(host, opts = {}) {
     if (els.mAiEnabled)   els.mAiEnabled.checked = true;
     if (els.mAiThreshold) els.mAiThreshold.value = '';
     if (els.mAutoDraft)   els.mAutoDraft.checked = false;
+    syncAiOptRows();
     state.selectedProviderId = null;
     if (state.providers.length) {
       selectProvider(state.providers[0].id);
@@ -1414,6 +1464,7 @@ export async function mountSettings(host, opts = {}) {
     if (els.mAiEnabled)   els.mAiEnabled.checked = acc.ai_account_enabled !== false;
     if (els.mAiThreshold) els.mAiThreshold.value = acc.ai_importance_threshold || '';
     if (els.mAutoDraft)   els.mAutoDraft.checked = !!acc.auto_draft;
+    syncAiOptRows();
 
     els.mName.focus();
     els.mName.select();
@@ -1842,6 +1893,7 @@ export async function mountSettings(host, opts = {}) {
   // Provider tiles wire their own click handlers in render()
   els.mClose.addEventListener('click', closeModal);
   els.mCancel.addEventListener('click', closeModal);
+  els.mAiEnabled?.addEventListener('change', syncAiOptRows);
   els.mTest.addEventListener('click', modalTest);
   els.mAdd.addEventListener('click', modalAdd);
   els.modal.addEventListener('click', e => { if (e.target === els.modal) closeModal(); });
@@ -1906,6 +1958,47 @@ function injectStyles() {
       object-fit: contain;
       padding: 5px;
     }
+    /* Provider logo from /api/brand-logo, stacked over the lucide glyph.
+       On 404 the delegated error handler removes the img and the glyph
+       shows through. .set-svc must be a positioning context for it. */
+    .set-svc { position: relative; }
+    .set-svc-img {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: contain;
+      padding: 5px;
+      background: #fff;
+      pointer-events: none;
+    }
+
+    /* Per-account AI options — structured rows: checkbox, label, hint,
+       and the threshold input pinned right. Dependent rows dim while the
+       master toggle is off. */
+    .set-ai-opts { display: flex; flex-direction: column; gap: 8px; }
+    .set-opt {
+      display: flex; align-items: flex-start; gap: 11px;
+      padding: 10px 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      cursor: pointer;
+      transition: border-color 140ms ease, opacity 140ms ease;
+    }
+    .set-opt:hover { border-color: var(--accent); }
+    .set-opt input[type="checkbox"] {
+      margin-top: 2px;
+      width: 15px; height: 15px;
+      flex-shrink: 0;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .set-opt-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .set-opt-label { font-size: 13px; font-weight: 600; color: var(--text); }
+    .set-opt-hint { font-size: 12px; color: var(--muted); line-height: 1.45; }
+    .set-opt-static { cursor: default; align-items: center; }
+    .set-opt-static:hover { border-color: var(--border); }
+    .set-opt-input { max-width: 84px; text-align: center; flex-shrink: 0; }
+    .set-opt.is-disabled { opacity: 0.45; pointer-events: none; }
 
     /* Path display in the Stockage card. Mono font, subtle background,
        wraps long Windows paths cleanly. */

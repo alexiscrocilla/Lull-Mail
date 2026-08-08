@@ -34,11 +34,30 @@ const SERVICE_DOMAINS = {
   free:     'free.fr',
 };
 
-function providerLogoHtml(_provider) {
-  // Privacy + offline: don't fetch provider favicons from google.com. A
-  // generic mail glyph (rendered locally by lucide) stands in.
-  return `<i data-lucide="mail"></i>`;
+function providerLogoHtml(provider) {
+  // Provider logos come from OUR backend (/api/brand-logo — fetched from
+  // the provider's own domain, cached on disk), so the wizard never talks
+  // to a third-party favicon service. The glyph renders underneath; the
+  // logo stacks on top and is dropped on 404 by the delegated error
+  // handler below, letting the glyph show through.
+  const glyph = `<i data-lucide="mail"></i>`;
+  const domain = SERVICE_DOMAINS[(provider?.type || '').toLowerCase()] || '';
+  if (!domain) return glyph;
+  // Eager: eight favicons in a wizard grid — nothing to lazy-load.
+  return glyph + `<img class="provider-logo-img" src="/api/brand-logo/${encodeURIComponent(domain)}"
+    alt="" decoding="async" referrerpolicy="no-referrer">`;
 }
+
+// `error` doesn't bubble — capture phase catches every broken provider
+// logo with one listener (this page doesn't load app.js, which does the
+// same for the mailbox).
+document.addEventListener('error', (e) => {
+  const el = e.target;
+  if (el && el.tagName === 'IMG' && el.classList
+      && el.classList.contains('provider-logo-img')) {
+    el.remove();
+  }
+}, true);
 
 function refreshIcons() {
   if (window.lucide && typeof window.lucide.createIcons === 'function') {

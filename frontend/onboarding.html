@@ -334,6 +334,16 @@
     display: grid; place-items: center;
     flex-shrink: 0;
     overflow: hidden;
+    /* Positioning context: the brand logo stacks over the fallback glyph. */
+    position: relative;
+  }
+  .provider-logo-img {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: contain;
+    padding: 6px;
+    background: #fff;
+    pointer-events: none;
   }
   .provider-logo img {
     width: 100%; height: 100%;
