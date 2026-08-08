@@ -355,7 +355,18 @@ def main() -> int:
     host = "127.0.0.1"
     forced = os.environ.get("LULLMAIL_PORT")
     port = int(forced) if forced and forced.isdigit() else _pick_stable_port()
-    url = f"http://127.0.0.1:{port}"
+    # `?v=<version>` is the cross-platform half of the stale-UI fix. Clearing
+    # the embedded browser's cache directory only works when you know where
+    # it is — that is WebView2 on Windows, WKWebView on macOS and WebKitGTK
+    # on Linux, three different layouts, and macOS keeps its HTTP cache
+    # somewhere we cannot reliably reach from Python.
+    #
+    # A version-stamped URL sidesteps all of it: the cache key changes on
+    # every upgrade, so no engine can serve the previous release's shell,
+    # whatever it kept. The query string is NOT part of the origin, so
+    # localStorage (pinned tabs, sidebar order, prefs) is untouched.
+    from src.updater import get_current_version
+    url = f"http://127.0.0.1:{port}/?v={get_current_version()}"
 
     # Publish the bound port so the origin-check middleware can build
     # its allowlist (see src/security/origin.py).

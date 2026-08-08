@@ -2640,6 +2640,28 @@ if FRONTEND.exists():
         "Expires": "0",
     }
 
+    _STATIC_REF = re.compile(r'(["\'])(/static/[^"\'?#]+)\1')
+
+    def _shell(filename: str) -> HTMLResponse:
+        """Serve an HTML shell with version-stamped asset URLs.
+
+        no-store stops the embedded browser creating NEW stale entries, but
+        it cannot evict what an older build already banked — and those
+        entries can be served without ever asking us. Clearing the cache
+        directory only helps where we know its layout (WebView2 on Windows);
+        macOS/WKWebView and Linux/WebKitGTK keep theirs elsewhere.
+
+        Stamping every /static reference with the app version changes the
+        cache key on each upgrade, so no engine can hand back the previous
+        release's JS or CSS regardless of what it stored. Cheap: these files
+        are a few KB and this runs once per window load.
+        """
+        from src.updater import get_current_version
+        html = (FRONTEND / filename).read_text(encoding="utf-8")
+        ver = get_current_version()
+        html = _STATIC_REF.sub(rf'\1\2?v={ver}\1', html)
+        return HTMLResponse(html, headers=_HTML_NO_CACHE)
+
     @app.get("/")
     def root():
         # First-run UX: send users straight to the wizard instead of
@@ -2647,8 +2669,8 @@ if FRONTEND.exists():
         from src import config as _cfg
         if not _cfg.is_configured():
             return RedirectResponse(url="/onboarding", status_code=302)
-        return FileResponse(str(FRONTEND / "index.html"), headers=_HTML_NO_CACHE)
+        return _shell("index.html")
 
     @app.get("/onboarding", response_class=HTMLResponse)
     def onboarding():
-        return FileResponse(str(FRONTEND / "onboarding.html"), headers=_HTML_NO_CACHE)
+        return _shell("onboarding.html")
