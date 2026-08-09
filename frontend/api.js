@@ -338,6 +338,12 @@ export const api = {
 
   getStats()    { return j('/api/stats'); },
   getAccounts() { return j('/api/accounts'); },
+  // NOT dead code: the dashboard PAGE is gone, but the mailbox sidebar's
+  // COMPTES section reads per-account counters (unread / needs_reply /
+  // favourite / total) from this endpoint in loadAccounts(). Removing it
+  // "as unused" during the dashboard cleanup silently killed that whole
+  // section — the call threw before its .catch(() => null) could attach.
+  getDashboard() { return j('/api/dashboard/status'); },
 
   getTopSenders(params = {}) {
     const q = new URLSearchParams();
