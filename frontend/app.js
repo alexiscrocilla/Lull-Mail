@@ -521,7 +521,23 @@ refreshIcons();
 initCommandPalette({ navigate });
 
 // ── Auto-update banner ─────────────────────────────────────
+// Re-checked on a timer for the lifetime of the window. Closing the window
+// only hides the app, so a session now spans days or weeks — with a single
+// check at page load, an instance that started before a release would never
+// learn about it until the user happened to quit and relaunch.
+// One hour between checks: /api/update/check is local, and the backend only
+// reaches GitHub when its own 6h cache has expired, so the real network cost
+// is unchanged.
+const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+let _lastUpdateCheckAt = 0;
+
 async function checkForUpdate() {
+  // The timer can fire while a banner is already up — never stack a second one.
+  if (document.getElementById('update-banner')) return;
+  // Stamped before the request, so a network outage doesn't turn into a retry
+  // on every tick.
+  _lastUpdateCheckAt = Date.now();
+
   // Skip if the user already dismissed the banner for this version in this session.
   let dismissedVersion = null;
   try { dismissedVersion = sessionStorage.getItem('update-banner-dismissed'); } catch (_) {}
@@ -571,9 +587,25 @@ async function checkForUpdate() {
   });
 
   document.getElementById('update-banner-dismiss').addEventListener('click', () => {
-    banner.classList.add('hidden');
+    // Removed, not hidden: the periodic check skips while a banner is in the
+    // DOM, so leaving a dismissed one behind would silence every later check.
+    // sessionStorage is what remembers the refusal, and it is keyed by version
+    // — so a newer release than the one dismissed still gets to announce
+    // itself. (.hidden here is only display:none, nothing to animate out.)
+    banner.remove();
     try { sessionStorage.setItem('update-banner-dismissed', info.latest_version); } catch (_) {}
   });
 }
 
 checkForUpdate();
+setInterval(checkForUpdate, UPDATE_CHECK_INTERVAL_MS);
+
+// Reopening from the tray is the other moment worth checking: a machine that
+// slept through the interval fires no timer while suspended, so the window can
+// come back hours stale. Rate-limited by the same interval, so a user toggling
+// the window does not trigger a burst.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (Date.now() - _lastUpdateCheckAt < UPDATE_CHECK_INTERVAL_MS) return;
+  checkForUpdate();
+});
