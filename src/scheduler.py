@@ -57,6 +57,75 @@ def _is_too_old(date_str: str, max_age_days: int) -> bool:
     except Exception:
         return False
 
+def _persist_account(acc, last_uid, emails, fetch_error, att_policy) -> int:
+    """Store one account's freshly fetched emails and advance its UID cursor.
+
+    Always called from the sync thread — never from a fetch worker — so every
+    SQLite write stays serialised on a single thread. Returns the number of
+    emails newly inserted (already-known message-ids don't count).
+    """
+    logger.info(f"→ Sync {acc['email']} ...")
+
+    if fetch_error:
+        db.set_sync_error(acc["email"], fetch_error)
+        logger.warning(f"[{acc['email']}] Erreur enregistrée : {fetch_error}")
+        return 0
+
+    new, max_uid = [], last_uid
+
+    # Detect UID regression: server reset UIDs (mailbox migration).
+    # When ALL fetched UIDs are below our stored last_uid, the old
+    # value would never be updated, causing new emails to be missed
+    # forever. Reset max_uid so we track the actual server max.
+    if emails and last_uid:
+        try:
+            max_fetched = max(int(em["uid"]) for em in emails)
+            if max_fetched < int(last_uid):
+                logger.warning(
+                    f"[{acc['email']}] Régression d'UID détectée "
+                    f"(server max={max_fetched} < last_uid={last_uid}), "
+                    "réinitialisation du curseur."
+                )
+                max_uid = None
+        except (ValueError, TypeError):
+            pass
+
+    for em in emails:
+        if not db.email_exists(em["message_id"]):
+            db.insert_email(em)
+            new.append(em)
+            # Attachments are persisted only the FIRST time we see
+            # the message — re-syncs of an existing UID never write
+            # duplicate files. Failures are logged but never fatal:
+            # the email still lands in the inbox even if PJ
+            # extraction explodes.
+            parts = em.get("_attachment_parts") or []
+            if parts and att_policy.enabled:
+                try:
+                    persist_attachments(
+                        message_id=em["message_id"],
+                        account_email=em["account"],
+                        parts=parts,
+                        policy=att_policy,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[{em['account']}] persist_attachments "
+                        f"crashed for {em['message_id']}: {e}"
+                    )
+        try:
+            uid_int = int(em["uid"])
+            max_int = int(max_uid) if max_uid else 0
+            if uid_int > max_int:
+                max_uid = em["uid"]
+        except (ValueError, TypeError):
+            pass
+
+    db.update_sync_state(acc["email"], last_uid=max_uid)
+    logger.info(f"   {len(new)} nouveau(x)")
+    return len(new)
+
+
 _running = False
 _last_sync: Optional[str] = None
 
@@ -108,97 +177,42 @@ def run_sync():
         ntfy_ok = bool(ntfy.get("topic") and not str(ntfy.get("topic", "")).startswith("TODO"))
         att_policy = policy_from_config(conf)
 
-        # ── Phase réseau : fetch IMAP de tous les comptes EN PARALLÈLE ────
+        # ── Fetch IMAP en parallèle, écriture dès qu'un compte répond ─────
         # fetch_emails() ouvre sa propre connexion IMAP et ne touche pas la DB
         # (il renvoie une liste) → parallélisable sans risque. On ne parallélise
-        # QUE le réseau ; toutes les écritures DB restent sur le thread principal
-        # (phase suivante) pour éviter toute contention SQLite.
+        # QUE le réseau ; toutes les écritures DB se font dans le corps de la
+        # boucle as_completed, qui s'exécute sur CE thread — donc toujours
+        # sérialisées, aucune contention SQLite.
+        #
+        # Chaque compte est persisté dès que SON fetch revient, au lieu
+        # d'attendre que tous soient rentrés. C'est ce qui rend l'affichage au
+        # fil de l'eau possible : les mails d'un compte rapide sont en base — et
+        # donc dans la liste, que le front rafraîchit pendant la sync — pendant
+        # qu'un compte lent est encore en train de télécharger.
         fetch_workers = int(conf.get("polling", {}).get("fetch_workers", 4))
         jobs = []  # (acc, last_uid)
         for acc in accounts:
             state = db.get_sync_state(acc["email"])
             jobs.append((acc, state["last_uid"] if state else None))
 
-        # Keyed by job INDEX, not email: two accounts that share an email
-        # address (hand-edited config) must not collapse into one result.
-        fetched = {}  # index -> (emails, error)
+        total_new = 0
         if jobs:
             with ThreadPoolExecutor(max_workers=min(fetch_workers, len(jobs))) as ex:
+                # Keyed by job INDEX, not email: two accounts that share an
+                # email address (hand-edited config) must not collapse.
                 futs = {
                     ex.submit(fetch_emails, acc, last_uid=luid, limit=limit): idx
                     for idx, (acc, luid) in enumerate(jobs)
                 }
                 for fut in as_completed(futs):
-                    idx = futs[fut]
+                    acc, last_uid = jobs[futs[fut]]
                     try:
-                        fetched[idx] = fut.result()
+                        emails, fetch_error = fut.result()
                     except Exception as e:  # noqa: BLE001 — isolate per-account
-                        fetched[idx] = ([], f"{type(e).__name__}: {e}")
-
-        # ── Phase DB : traitement séquentiel (toutes les écritures ici) ───
-        total_new = 0
-        for idx, (acc, last_uid) in enumerate(jobs):
-            logger.info(f"→ Sync {acc['email']} ...")
-            emails, fetch_error = fetched.get(idx, ([], "aucun résultat"))
-
-            if fetch_error:
-                db.set_sync_error(acc["email"], fetch_error)
-                logger.warning(f"[{acc['email']}] Erreur enregistrée : {fetch_error}")
-                continue
-
-            new, max_uid = [], last_uid
-
-            # Detect UID regression: server reset UIDs (mailbox migration).
-            # When ALL fetched UIDs are below our stored last_uid, the old
-            # value would never be updated, causing new emails to be missed
-            # forever. Reset max_uid so we track the actual server max.
-            if emails and last_uid:
-                try:
-                    max_fetched = max(int(em["uid"]) for em in emails)
-                    if max_fetched < int(last_uid):
-                        logger.warning(
-                            f"[{acc['email']}] Régression d'UID détectée "
-                            f"(server max={max_fetched} < last_uid={last_uid}), "
-                            "réinitialisation du curseur."
-                        )
-                        max_uid = None
-                except (ValueError, TypeError):
-                    pass
-
-            for em in emails:
-                if not db.email_exists(em["message_id"]):
-                    db.insert_email(em)
-                    new.append(em)
-                    # Attachments are persisted only the FIRST time we see
-                    # the message — re-syncs of an existing UID never write
-                    # duplicate files. Failures are logged but never fatal:
-                    # the email still lands in the inbox even if PJ
-                    # extraction explodes.
-                    parts = em.get("_attachment_parts") or []
-                    if parts and att_policy.enabled:
-                        try:
-                            persist_attachments(
-                                message_id=em["message_id"],
-                                account_email=em["account"],
-                                parts=parts,
-                                policy=att_policy,
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                f"[{em['account']}] persist_attachments "
-                                f"crashed for {em['message_id']}: {e}"
-                            )
-                try:
-                    uid_int = int(em["uid"])
-                    max_int = int(max_uid) if max_uid else 0
-                    if uid_int > max_int:
-                        max_uid = em["uid"]
-                except (ValueError, TypeError):
-                    pass
-
-            db.update_sync_state(acc["email"], last_uid=max_uid)
-            logger.info(f"   {len(new)} nouveau(x)")
-            total_new += len(new)
+                        emails, fetch_error = [], f"{type(e).__name__}: {e}"
+                    total_new += _persist_account(
+                        acc, last_uid, emails, fetch_error, att_policy
+                    )
 
         # Traitement AI des emails en attente
         max_age_days = conf.get("polling", {}).get("max_age_days", 30)

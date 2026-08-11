@@ -5365,6 +5365,21 @@ export async function mountMailbox(host, _opts) {
         if (s.running) {
           _syncWasRunning = true;
           setSyncSpinner(true);
+          // Stream the results instead of waiting for the whole sync: the
+          // scheduler commits each account as soon as its IMAP fetch returns,
+          // and fills in the AI summary/score one email at a time after that,
+          // so there is fresh mail to show on most ticks. A slow account no
+          // longer holds back the ones that already answered.
+          //
+          // Same two guards as the 60s background refresh — an unwatched
+          // window costs nothing, and a refresh mid-selection would fight the
+          // user. Never a navigation, so the search stays and the skeleton
+          // does not flash; renderList patches in place or splices the new
+          // cards at the top, keeping the reading position.
+          if (!document.hidden && !_userIsBusy()) {
+            loadEmails({ background: true }).catch(() => {});
+            loadAccounts().catch(() => {});
+          }
         } else {
           setSyncSpinner(false);
           if (_syncWasRunning) {
@@ -5957,6 +5972,16 @@ export async function mountMailbox(host, _opts) {
 
   const refreshTimer = setInterval(_backgroundRefresh, 60_000);
 
+  // A sync fired by the server scheduler (every 10 min) is the common case,
+  // and nothing here armed the fast poll for it: only a manual sync or the
+  // minute-timer above did, so the streaming refresh could start up to a
+  // minute after the mail had already landed. rail-toast.js polls
+  // /api/sync/status every 3s for its busy indicator and re-broadcasts the
+  // payload — ride that instead of opening a third poll. pollSync() is a
+  // no-op while already armed, so firing on every broadcast costs nothing.
+  const onSyncStatus = (e) => { if (e.detail?.running) pollSync(); };
+  window.addEventListener('sync-status', onSyncStatus);
+
   // Refresh when the user comes back to the tab, but debounce: a quick
   // tab-switch must not trigger a second reload on top of the periodic
   // refresh that just fired.
@@ -6194,6 +6219,7 @@ export async function mountMailbox(host, _opts) {
     if (syncTimer) clearInterval(syncTimer);
     if (refreshTimer) clearInterval(refreshTimer);
     document.removeEventListener('visibilitychange', onVisibility);
+    window.removeEventListener('sync-status', onSyncStatus);
     window.removeEventListener('app:key', onKey);
     document.removeEventListener('keydown', onEscape);
     // `host` (= #view) persists across navigations, so its dnd listeners
