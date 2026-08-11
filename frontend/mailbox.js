@@ -2233,11 +2233,23 @@ export async function mountMailbox(host, _opts) {
     const filterSwap = _filterDidChange;
     _filterDidChange = false;
 
-    // Detect IDs that weren't in the previous render (new arrivals)
-    const prevIds = new Set(_listAllItems.map((e) => e.int_id));
-    const newIds  = animate ? null : new Set(
+    // Detect IDs that weren't in the previous render (new arrivals). The
+    // accent border they get is a claim — "this just landed" — so only make
+    // it when the previous dataset for the SAME view is actually in hand:
+    //   - mount plays the stagger entrance instead;
+    //   - across a filter/folder swap the list is a different subset, where
+    //     "absent from the previous one" means "was filtered out";
+    //   - a foreground reload paints the skeleton first, and that resets
+    //     _listAllItems to []. Every card then read as new, so switching
+    //     folders or reloading flashed the border on mail the user had been
+    //     staring at for a week.
+    // Mail arriving while the user watches still highlights: those refreshes
+    // are background ones, which keep _listAllItems intact.
+    const prevIds  = new Set(_listAllItems.map((e) => e.int_id));
+    const knowPrev = !animate && !filterSwap && prevIds.size > 0;
+    const newIds   = knowPrev ? new Set(
       items.filter((e) => !prevIds.has(e.int_id)).map((e) => e.int_id)
-    );
+    ) : null;
 
     // For non-mount, non-filter rebuilds (deletions, reorders, sort
     // change from outside the user's hand…) capture the scroll anchor

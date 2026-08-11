@@ -176,6 +176,15 @@ button { font: inherit; }
   align-items: center;
   gap: 8px;
 }
+/* Reserve the RailToast slot at the foot of the rail. #rail-toast-host was
+   pulled out of .rail-bottom to escape the rail's stacking context and is
+   now position:fixed over that spot — but nothing gave its 36px back to the
+   flow, so the last button (the bug-report icon) sat underneath the teal
+   placeholder circle: hidden, and unclickable since the circle won the hit
+   test. 36px slot + the column's own 8px gap. */
+.rail-bottom {
+  padding-bottom: 44px;
+}
 .rail-logo {
   width: 40px;
   height: 40px;
