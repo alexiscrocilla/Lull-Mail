@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import logging
+import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, List, Dict
 
 from dateutil import parser as dateparser
 
@@ -57,7 +58,15 @@ def _is_too_old(date_str: str, max_age_days: int) -> bool:
     except Exception:
         return False
 
-def _persist_account(acc, last_uid, emails, fetch_error, att_policy) -> int:
+def _persist_account(
+    acc,
+    last_uid,
+    emails,
+    fetch_error,
+    att_policy,
+    server_uidvalidity=None,
+    uidvalidity_changed=False,
+) -> int:
     """Store one account's freshly fetched emails and advance its UID cursor.
 
     Always called from the sync thread — never from a fetch worker — so every
@@ -67,9 +76,24 @@ def _persist_account(acc, last_uid, emails, fetch_error, att_policy) -> int:
     logger.info(f"→ Sync {acc['email']} ...")
 
     if fetch_error:
-        db.set_sync_error(acc["email"], fetch_error)
-        logger.warning(f"[{acc['email']}] Erreur enregistrée : {fetch_error}")
+        state = db.get_sync_state(acc["email"]) or {}
+        fails = state.get("consecutive_failures", 0) + 1
+        base_delay = 30  # seconds
+        max_delay = 1800  # 30 min
+        delay = min(max_delay, base_delay * (2 ** min(fails - 1, 6)))
+        jittered = int(delay * random.uniform(0.5, 1.5))
+        db.set_sync_error(acc["email"], fetch_error, backoff_seconds=jittered)
+        logger.warning(
+            f"[{acc['email']}] Erreur enregistrée ({fails}e échec, backoff {jittered}s) : {fetch_error}"
+        )
         return 0
+
+    if uidvalidity_changed and server_uidvalidity:
+        logger.warning(
+            f"[{acc['email']}] Réinitialisation UIDVALIDITY vers {server_uidvalidity}"
+        )
+        db.remap_account_uids_on_uidvalidity_change(acc["email"], server_uidvalidity)
+        last_uid = None
 
     new, max_uid = [], last_uid
 
@@ -77,9 +101,9 @@ def _persist_account(acc, last_uid, emails, fetch_error, att_policy) -> int:
     # When ALL fetched UIDs are below our stored last_uid, the old
     # value would never be updated, causing new emails to be missed
     # forever. Reset max_uid so we track the actual server max.
-    if emails and last_uid:
+    if emails and last_uid and not uidvalidity_changed:
         try:
-            max_fetched = max(int(em["uid"]) for em in emails)
+            max_fetched = max(int(em["uid"]) for em in emails if em.get("uid"))
             if max_fetched < int(last_uid):
                 logger.warning(
                     f"[{acc['email']}] Régression d'UID détectée "
@@ -113,17 +137,72 @@ def _persist_account(acc, last_uid, emails, fetch_error, att_policy) -> int:
                         f"[{em['account']}] persist_attachments "
                         f"crashed for {em['message_id']}: {e}"
                     )
+        else:
+            if em.get("uid"):
+                db.update_email_uid(em["message_id"], acc["email"], em["uid"])
+
         try:
-            uid_int = int(em["uid"])
-            max_int = int(max_uid) if max_uid else 0
-            if uid_int > max_int:
-                max_uid = em["uid"]
+            if em.get("uid"):
+                uid_int = int(em["uid"])
+                max_int = int(max_uid) if max_uid else 0
+                if uid_int > max_int:
+                    max_uid = em["uid"]
         except (ValueError, TypeError):
             pass
 
-    db.update_sync_state(acc["email"], last_uid=max_uid)
+    db.update_sync_state(acc["email"], last_uid=max_uid, uidvalidity=server_uidvalidity)
     logger.info(f"   {len(new)} nouveau(x)")
     return len(new)
+
+
+def _drain_pending_ops(accounts: List[Dict]):
+    """Replay offline mutations (seen, flagged, trash) queued in pending_ops."""
+    from src.email_fetcher import (
+        mark_seen_on_server,
+        mark_unseen_on_server,
+        set_flagged_on_server,
+        move_to_trash_on_server,
+    )
+    acc_by_email = {a["email"]: a for a in accounts}
+    claimed = db.claim_pending_ops(limit=50)
+    for op in claimed:
+        acc = acc_by_email.get(op["account_email"])
+        if not acc:
+            continue
+        uid = op.get("uid")
+        if not uid:
+            db.fail_pending_op(op["id"], op["revision"], "UID non disponible", retry_delay_seconds=30)
+            continue
+
+        operation = op["operation"]
+        val = op.get("desired_value", "")
+        ok = False
+        err = ""
+        try:
+            if operation == "seen":
+                if val == "1":
+                    ok = mark_seen_on_server(acc, uid)
+                else:
+                    ok = mark_unseen_on_server(acc, uid)
+            elif operation == "flagged":
+                ok = set_flagged_on_server(acc, uid, val == "1")
+            elif operation == "trash":
+                ok = move_to_trash_on_server(acc, uid)
+            else:
+                ok = True
+        except Exception as e:
+            ok = False
+            err = str(e)
+
+        if ok:
+            db.complete_pending_op(op["id"], op["revision"])
+        else:
+            db.fail_pending_op(
+                op["id"],
+                op["revision"],
+                error=err or "Échec opération IMAP",
+                retry_delay_seconds=30,
+            )
 
 
 _running = False
@@ -132,6 +211,15 @@ _last_sync: Optional[str] = None
 
 def get_last_sync() -> Optional[str]:
     return _last_sync
+
+
+def _invoke_fetch(acc, luid, kuid, limit):
+    try:
+        return fetch_emails(acc, last_uid=luid, known_uidvalidity=kuid, limit=limit)
+    except TypeError as e:
+        if "known_uidvalidity" in str(e):
+            return fetch_emails(acc, last_uid=luid, limit=limit)
+        raise
 
 
 def run_sync():
@@ -190,10 +278,20 @@ def run_sync():
         # donc dans la liste, que le front rafraîchit pendant la sync — pendant
         # qu'un compte lent est encore en train de télécharger.
         fetch_workers = int(conf.get("polling", {}).get("fetch_workers", 4))
-        jobs = []  # (acc, last_uid)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        jobs = []  # (acc, last_uid, known_uidvalidity)
         for acc in accounts:
             state = db.get_sync_state(acc["email"])
-            jobs.append((acc, state["last_uid"] if state else None))
+            if state and state.get("backoff_until") and state["backoff_until"] > now_iso:
+                logger.info(
+                    f"[{acc['email']}] En backoff jusqu'à {state['backoff_until']}, fetch différé"
+                )
+                continue
+            jobs.append((
+                acc,
+                state["last_uid"] if state else None,
+                state.get("uidvalidity") if state else None,
+            ))
 
         total_new = 0
         if jobs:
@@ -201,18 +299,45 @@ def run_sync():
                 # Keyed by job INDEX, not email: two accounts that share an
                 # email address (hand-edited config) must not collapse.
                 futs = {
-                    ex.submit(fetch_emails, acc, last_uid=luid, limit=limit): idx
-                    for idx, (acc, luid) in enumerate(jobs)
+                    ex.submit(_invoke_fetch, acc, luid, kuid, limit): idx
+                    for idx, (acc, luid, kuid) in enumerate(jobs)
                 }
                 for fut in as_completed(futs):
-                    acc, last_uid = jobs[futs[fut]]
+                    acc, last_uid, _ = jobs[futs[fut]]
                     try:
-                        emails, fetch_error = fut.result()
+                        res = fut.result()
+                        if isinstance(res, tuple) and len(res) == 4:
+                            emails, fetch_error, s_uidval, uidval_changed = res
+                        elif isinstance(res, tuple) and len(res) == 2:
+                            emails, fetch_error = res
+                            s_uidval, uidval_changed = None, False
+                        else:
+                            emails, fetch_error = [], f"Unexpected fetch result: {res}"
+                            s_uidval, uidval_changed = None, False
                     except Exception as e:  # noqa: BLE001 — isolate per-account
                         emails, fetch_error = [], f"{type(e).__name__}: {e}"
+                        s_uidval, uidval_changed = None, False
                     total_new += _persist_account(
-                        acc, last_uid, emails, fetch_error, att_policy
+                        acc, last_uid, emails, fetch_error, att_policy,
+                        server_uidvalidity=s_uidval,
+                        uidvalidity_changed=uidval_changed,
                     )
+
+        # ── Drain offline mutations queue (seen, flagged, trash) ──────────
+        try:
+            _drain_pending_ops(accounts)
+        except Exception as e:
+            logger.warning(f"Échec drain pending_ops : {e}")
+
+        # ── Hydrate envelopes in background ──────────────────────────────
+        from src.email_fetcher import hydrate_email_bodies
+        for acc in accounts:
+            pending_hyd = db.claim_emails_for_body_hydration(limit=30, account=acc["email"])
+            if pending_hyd:
+                try:
+                    hydrate_email_bodies(acc, pending_hyd, att_policy)
+                except Exception as e:
+                    logger.warning(f"[{acc['email']}] Hydration error: {e}")
 
         # Traitement AI des emails en attente
         max_age_days = conf.get("polling", {}).get("max_age_days", 30)
@@ -238,122 +363,135 @@ def run_sync():
         local_hits = 0
         cache_hits = 0
         ai_calls   = 0
+        consecutive_ai_errors = 0
 
         for em in to_process:
-            result = None
-            acc_profile = profiles.get(em.get("account_email")) or {}
-            # Injection verdict from the classification phase — reused by the
-            # auto-draft gate so the same body is never scanned twice.
-            injection_verdict = None
+            try:
+                result = None
+                acc_profile = profiles.get(em.get("account_email")) or {}
+                # Injection verdict from the classification phase — reused by the
+                # auto-draft gate so the same body is never scanned twice.
+                injection_verdict = None
 
-            # ── Niveau 1 : règles locales (0 token) ───────────────────────────
-            result = local_classify(em)
-            if result:
-                local_hits += 1
-
-            # ── Niveau 2 : mémoisation domaine expéditeur (0 token) ───────────
-            if result is None:
-                domain = extract_domain(em.get("sender", "") or "")
-                if domain:
-                    cached_cat = db.get_sender_category(domain)
-                    if cached_cat and cached_cat not in ("important", "other"):
-                        # Only trust cached category for low-value types;
-                        # "important" / "other" are too broad to skip AI.
-                        result = _neutral_result(
-                            cached_cat,
-                            2 if cached_cat == "newsletter" else 3,
-                            f"Domaine {domain} connu ({cached_cat})",
-                        )
-                        cache_hits += 1
-
-            # ── Niveau 2.6 : IA désactivée pour CE compte (P1.2) ──────────────
-            # Garde les règles locales gratuites mais n'appelle jamais le LLM.
-            if result is None and acc_profile.get("ai_account_enabled") is False:
-                result = _neutral_result("other", 5, "IA désactivée pour ce compte")
-
-            # ── Niveau 2.5 : scan anti-injection avant tout appel LLM ─────────
-            # Un corps hostile ne doit jamais atteindre le modèle. Fail-OPEN :
-            # un scan non vérifiable (LLM indispo) ne signale PAS — on classe.
-            if result is None and ai_on and injection_mode != "off":
-                injection_verdict = injection_guard.scan(
-                    em.get("body_text", "") or "", injection_mode)
-                if injection_verdict["injection"]:
-                    db.flag_injection(em["message_id"], injection_verdict["reason"])
-                    result = _neutral_result(
-                        "other", 4, "Contenu suspect — analyse IA ignorée",
-                        "⚠ Email potentiellement malveillant (injection détectée).")
-
-            # ── Niveau 3 : IA classification (body réduit à 800 cars.) ─────────
-            # In no-AI mode we fabricate a neutral result so the email still
-            # lands in the inbox with a predictable category/score. The user
-            # has explicitly opted out — no LLM call must happen here.
-            if result is None and not ai_on:
-                result = _neutral_result("other", 5, NO_AI_FALLBACK_REASON)
-
-            if result is None:
-                result = process_email(em, model=model)
+                # ── Niveau 1 : règles locales (0 token) ───────────────────────────
+                result = local_classify(em)
                 if result:
-                    ai_calls += 1
-                    # Apprendre le domaine pour les prochains emails
+                    local_hits += 1
+
+                # ── Niveau 2 : mémoisation domaine expéditeur (0 token) ───────────
+                if result is None:
                     domain = extract_domain(em.get("sender", "") or "")
-                    if domain and result.get("category") not in ("important", "other", None):
-                        db.set_sender_category(domain, result["category"])
-                else:
-                    # AI call failed — track attempts; after 3 give up to unblock the queue.
-                    attempts = db.increment_ai_attempts(em["message_id"])
-                    if attempts >= 3:
-                        db.mark_ai_failed(em["message_id"])
-                        skipped += 1
+                    if domain:
+                        cached_cat = db.get_sender_category(domain)
+                        if cached_cat and cached_cat not in ("important", "other"):
+                            # Only trust cached category for low-value types;
+                            # "important" / "other" are too broad to skip AI.
+                            result = _neutral_result(
+                                cached_cat,
+                                2 if cached_cat == "newsletter" else 3,
+                                f"Domaine {domain} connu ({cached_cat})",
+                            )
+                            cache_hits += 1
+
+                # ── Niveau 2.6 : IA désactivée pour CE compte (P1.2) ──────────────
+                # Garde les règles locales gratuites mais n'appelle jamais le LLM.
+                if result is None and acc_profile.get("ai_account_enabled") is False:
+                    result = _neutral_result("other", 5, "IA désactivée pour ce compte")
+
+                # ── Niveau 2.5 : scan anti-injection avant tout appel LLM ─────────
+                # Un corps hostile ne doit jamais atteindre le modèle. Fail-OPEN :
+                # un scan non vérifiable (LLM indispo) ne signale PAS — on classe.
+                if result is None and ai_on and injection_mode != "off":
+                    injection_verdict = injection_guard.scan(
+                        em.get("body_text", "") or "", injection_mode)
+                    if injection_verdict["injection"]:
+                        db.flag_injection(em["message_id"], injection_verdict["reason"])
+                        result = _neutral_result(
+                            "other", 4, "Contenu suspect — analyse IA ignorée",
+                            "⚠ Email potentiellement malveillant (injection détectée).")
+
+                # ── Niveau 3 : IA classification (body réduit à 800 cars.) ─────────
+                # In no-AI mode we fabricate a neutral result so the email still
+                # lands in the inbox with a predictable category/score. The user
+                # has explicitly opted out — no LLM call must happen here.
+                if result is None and not ai_on:
+                    result = _neutral_result("other", 5, NO_AI_FALLBACK_REASON)
+
+                # Circuit breaker: if too many consecutive AI errors, stop calling LLM in this run
+                if result is None and consecutive_ai_errors >= 5:
                     continue
 
-            if not result:
-                continue
+                if result is None:
+                    try:
+                        result = process_email(em, model=model)
+                    except Exception as e:
+                        logger.warning(f"process_email exception for {em['message_id']}: {e}")
+                        result = None
 
-            # ── Auto-draft opt-in par compte (P1.3) ───────────────────────────
-            # Pré-rédige une réponse pour les mails qui attendent une réponse et
-            # dépassent le seuil du compte. JAMAIS envoyé. Enrichit `result`
-            # AVANT update_email_ai pour persister brouillon + tokens en une
-            # passe. Seuil 0/absent hérite du global.
-            acc_threshold = acc_profile.get("ai_importance_threshold") or min_score
-            auto_drafted = False
-            if (
-                acc_profile.get("auto_draft")
-                and ai_on
-                and result.get("needs_reply")
-                and result.get("importance_score", 0) >= acc_threshold
-            ):
-                # Reuse the classification-phase verdict; only scan here if the
-                # email skipped that phase. Fail-CLOSED: never draft on a flagged
-                # OR unverified body.
-                v = injection_verdict
-                if v is None:
-                    v = injection_guard.scan(em.get("body_text", "") or "", injection_mode)
-                if not v["injection"] and not v.get("unverified"):
-                    enrich_draft(em, result, model=model)  # fills result + tokens
-                    if result.get("draft_response"):
-                        result["draft_response"] = draft_verify.verify_draft(
-                            result["draft_response"], model=model)
-                        auto_drafted = True
+                    if result:
+                        ai_calls += 1
+                        consecutive_ai_errors = 0
+                        # Apprendre le domaine pour les prochains emails
+                        domain = extract_domain(em.get("sender", "") or "")
+                        if domain and result.get("category") not in ("important", "other", None):
+                            db.set_sender_category(domain, result["category"])
+                    else:
+                        consecutive_ai_errors += 1
+                        attempts = db.increment_ai_attempts(em["message_id"])
+                        if attempts >= 3:
+                            db.mark_ai_failed(em["message_id"])
+                            skipped += 1
+                        continue
 
-            db.update_email_ai(em["message_id"], result)
-            if auto_drafted:
-                db.mark_auto_draft(em["message_id"])
+                if not result:
+                    continue
 
-            if (
-                ntfy_ok
-                and result.get("importance_score", 0) >= acc_threshold
-                and not em.get("is_notified")
-            ):
-                payload = {**em, **result, "account_email": em["account_email"]}
-                if send(payload, server=ntfy["server"], topic=ntfy["topic"]):
-                    db.mark_notified(em["message_id"])
+                # ── Auto-draft opt-in par compte (P1.3) ───────────────────────────
+                # Pré-rédige une réponse pour les mails qui attendent une réponse et
+                # dépassent le seuil du compte. JAMAIS envoyé. Enrichit `result`
+                # AVANT update_email_ai pour persister brouillon + tokens en une
+                # passe. Seuil 0/absent hérite du global.
+                acc_threshold = acc_profile.get("ai_importance_threshold") or min_score
+                auto_drafted = False
+                if (
+                    acc_profile.get("auto_draft")
+                    and ai_on
+                    and result.get("needs_reply")
+                    and result.get("importance_score", 0) >= acc_threshold
+                ):
+                    v = injection_verdict
+                    if v is None:
+                        v = injection_guard.scan(em.get("body_text", "") or "", injection_mode)
+                    if not v["injection"] and not v.get("unverified"):
+                        try:
+                            enrich_draft(em, result, model=model)
+                            if result.get("draft_response"):
+                                result["draft_response"] = draft_verify.verify_draft(
+                                    result["draft_response"], model=model)
+                                auto_drafted = True
+                        except Exception as e:
+                            logger.warning(f"enrich_draft error: {e}")
+
+                db.update_email_ai(em["message_id"], result)
+                if auto_drafted:
+                    db.mark_auto_draft(em["message_id"])
+
+                if (
+                    ntfy_ok
+                    and result.get("importance_score", 0) >= acc_threshold
+                    and not em.get("is_notified")
+                ):
+                    payload = {**em, **result, "account_email": em["account_email"]}
+                    if send(payload, server=ntfy["server"], topic=ntfy["topic"]):
+                        db.mark_notified(em["message_id"])
+            except Exception as e:
+                logger.warning(f"Error processing email {em.get('message_id')}: {e}")
 
         logger.info(
             f"   Classification : {local_hits} règles locales, "
             f"{cache_hits} cache domaine, {ai_calls} appels IA"
         )
 
-        from datetime import datetime
         _last_sync = datetime.now().strftime("%H:%M:%S")
         logger.info(f"Sync terminée. {total_new} nouveau(x) email(s).")
 

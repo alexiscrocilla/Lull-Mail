@@ -8,6 +8,7 @@ import {
 } from '/static/api.js';
 import { rewriteRemoteImages, senderDomain } from '/static/image-blocker.js';
 import { confirmAsync } from '/static/confirm.js';
+import { LatestRequest } from '/static/request-latest.js';
 
 // Build the HTML <body> block for an email — sandboxed iframe with the
 // remote-image blocker applied unless the sender is trusted. Includes a
@@ -811,6 +812,7 @@ export async function mountMailbox(host, _opts) {
   // so the unmount cleanup can push the last keystrokes out before the view
   // is torn down. Null whenever no email is open.
   let _flushReplyDraft = null;
+  let _flushComposeDraft = null;
 
   // In-flight SSE draft streams, aborted on unmount (see _streamDraftInto).
   const _streamAborts = new Set();
@@ -1971,6 +1973,18 @@ export async function mountMailbox(host, _opts) {
   // Same guard for openEmail: navigating fast (j/j/j) can resolve a slow
   // detail fetch after a newer one, painting the wrong email over the pane.
   let _openEmailToken = 0;
+  // Abort obsolete work as soon as a newer request in the same UI slot
+  // starts. Tokens above still guard state; these slots additionally spare
+  // FastAPI/SQLite from finishing results the UI can no longer use.
+  const _emailLoads = new LatestRequest();
+  const _emailOpens = new LatestRequest();
+  const _searches = new LatestRequest();
+  const _threads = new LatestRequest();
+  const _draftLookups = new LatestRequest();
+  // Invalidates async helpers created by the previous reading-pane render.
+  // The pane DOM node itself is reused, so checking only `isConnected` is not
+  // enough to prevent an old draft lookup from repainting the new email.
+  let _readPaneVersion = 0;
   // Stamped at the head of loadEmails / loadAccounts. Read by the
   // visibilitychange handler to debounce: a quick tab-switch must
   // not trigger a second reload on top of the periodic refresh.
@@ -3474,6 +3488,7 @@ export async function mountMailbox(host, _opts) {
   }
 
   function renderEmail(em) {
+    const readPaneVersion = ++_readPaneVersion;
     const cat = em.category || 'pending';
     const sName = senderName(em.sender);
     const sEmail = senderEmail(em.sender);
@@ -3544,13 +3559,32 @@ export async function mountMailbox(host, _opts) {
     // est trusted, l'iframe rend le HTML original. Sinon rewriteRemoteImages
     // strippe + banner avec deux boutons (one-shot ou toujours pour ce
     // domaine).
+    const isHydrating = (em.body_state === 'envelope' || em.body_state === 'hydrating');
     const hasHtml = em.body_html && em.body_html.trim().length;
     const hasText = em.body_text && em.body_text.trim().length;
-    const body = hasHtml
-      ? buildHtmlBodyBlock(em)
-      : (hasText
-         ? `<div class="mb-body-text">${linkify(em.body_text)}</div>`
-         : `<div style="color:var(--muted);font-style:italic">${t('mb.read.empty_body')}</div>`);
+    const body = isHydrating
+      ? `<div class="mb-body-loading" style="padding: 1.5rem 0;">
+           <div class="skeleton" style="height: 16px; width: 85%; margin-bottom: 12px; border-radius: 4px;"></div>
+           <div class="skeleton" style="height: 16px; width: 95%; margin-bottom: 12px; border-radius: 4px;"></div>
+           <div class="skeleton" style="height: 16px; width: 60%; margin-bottom: 12px; border-radius: 4px;"></div>
+         </div>`
+      : (hasHtml
+         ? buildHtmlBodyBlock(em)
+         : (hasText
+            ? `<div class="mb-body-text">${linkify(em.body_text)}</div>`
+            : `<div style="color:var(--muted);font-style:italic">${t('mb.read.empty_body')}</div>`));
+
+    if (isHydrating) {
+      setTimeout(async () => {
+        if (_readPaneVersion !== readPaneVersion) return;
+        try {
+          const fresh = await api.getEmail(em.int_id);
+          if (_readPaneVersion === readPaneVersion && fresh && fresh.body_state === 'full') {
+            renderEmail(fresh);
+          }
+        } catch (_) {}
+      }, 1200);
+    }
 
     $('#read-pane').innerHTML = `
       <div class="mb-read-inner">
@@ -3931,8 +3965,16 @@ export async function mountMailbox(host, _opts) {
     // early, and the last keystrokes were dropped with no error anywhere.
     // Holding the node keeps the query working on the detached tree, which is
     // what renderComposeNew() has always done.
-    const paneEl = $('#read-pane');
+    // Capture the rendered subtree, not the reusable #read-pane shell. When
+    // another email replaces pane.innerHTML this node becomes detached but
+    // still contains the text the user just typed, so a pending autosave can
+    // flush it safely. Visible-only feedback uses qVisible and is generation
+    // guarded so that late work never paints the next email.
+    const paneEl = $('#read-pane')?.firstElementChild || null;
     const q = (sel) => (paneEl ? paneEl.querySelector(sel) : null);
+    const qVisible = (sel) => (
+      readPaneVersion === _readPaneVersion ? q(sel) : null
+    );
 
     const replyDraft = {
       id: null,
@@ -3953,11 +3995,11 @@ export async function mountMailbox(host, _opts) {
     // truthful. Source priority: user draft (drafts table) > AI
     // suggestion (em.draft_response). Hides itself when neither.
     function refreshDraftBox() {
-      const box = $('#mb-draft');
+      const box = qVisible('#mb-draft');
       if (!box) return;
-      const txtEl = $('#mb-draft-text');
-      const labEl = $('#mb-draft-source-label');
-      const iconEl = $('#mb-draft-icon');
+      const txtEl = qVisible('#mb-draft-text');
+      const labEl = qVisible('#mb-draft-source-label');
+      const iconEl = qVisible('#mb-draft-icon');
       const userBody = (em._user_reply_draft && em._user_reply_draft.body_text) || '';
       const aiBody = em.draft_response || '';
       let source, body;
@@ -4004,7 +4046,13 @@ export async function mountMailbox(host, _opts) {
     // refreshDraftBox() once the row arrives.
     (async () => {
       try {
-        const rows = await api.getDrafts(em.account_email, { inReplyToInt: em.int_id });
+        const signal = _draftLookups.next();
+        const rows = await api.getDrafts(
+          em.account_email,
+          { inReplyToInt: em.int_id },
+          { signal },
+        );
+        if (readPaneVersion !== _readPaneVersion || state.selectedId !== em.int_id) return;
         if (rows && rows.length) {
           replyDraft.id = rows[0].id;
           replyDraft.lastSnapshot = JSON.stringify({
@@ -4027,7 +4075,7 @@ export async function mountMailbox(host, _opts) {
     // `replyDraft.id == null` both fire createDraft in parallel and
     // produce duplicate rows.
     const flagSavingReply = (txt) => {
-      const tag = $('#mb-compose-savetag-reply');
+      const tag = qVisible('#mb-compose-savetag-reply');
       if (tag) tag.textContent = txt;
     };
 
@@ -4684,7 +4732,7 @@ export async function mountMailbox(host, _opts) {
     if (!em || em.int_id < 0) return;
     let data;
     try {
-      data = await api.getThread(em.int_id);
+      data = await api.getThread(em.int_id, { signal: _threads.next() });
     } catch (_) { return; }
     // The user may have navigated to another email while we fetched.
     if (state.selectedId !== em.int_id) return;
@@ -4769,6 +4817,11 @@ export async function mountMailbox(host, _opts) {
       }
     }
     state.selectedId = intId;
+    // Invalidate draft/thread helpers belonging to the pane immediately,
+    // rather than waiting for the next detail response to finish rendering.
+    _readPaneVersion++;
+    _draftLookups.cancel('email-changed');
+    _threads.cancel('email-changed');
     setSelectionMode(true);
     // Reflect selection in list (targeted, not full iteration)
     _selectCard(intId);
@@ -4790,7 +4843,7 @@ export async function mountMailbox(host, _opts) {
     }
 
     try {
-      const em = await api.getEmail(intId);
+      const em = await api.getEmail(intId, { signal: _emailOpens.next() });
       // A newer openEmail started while this fetch was in flight — drop the
       // stale response so it can't paint over the email the user is now on.
       if (myTok !== _openEmailToken) return;
@@ -4954,9 +5007,11 @@ export async function mountMailbox(host, _opts) {
     }
     if (resp.status === 409) {
       // Provider doesn't support streaming — let caller fall back.
+      _streamAborts.delete(ctrl);
       return { ok: false, fallback: true };
     }
     if (!resp.ok || !resp.body) {
+      _streamAborts.delete(ctrl);
       return { ok: false };
     }
     const reader = resp.body.getReader();
@@ -5203,7 +5258,7 @@ export async function mountMailbox(host, _opts) {
       // negative int_id so they never collide with real emails; the
       // open path detects this and re-routes to renderDraftEditor.
       if ((state.folder || 'inbox') === 'draft') {
-        const drafts = await api.getDrafts(singleAcc);
+        const drafts = await api.getDrafts(singleAcc, {}, { signal: _emailLoads.next() });
         if (myToken !== _loadEmailsToken) return;  // stale → drop
         state.emails = drafts.map((d) => ({
           int_id: -Math.abs(d.id),
@@ -5250,7 +5305,7 @@ export async function mountMailbox(host, _opts) {
         // Conversation view collapses the list to one row per thread.
         view: state.threadView ? 'threads' : undefined,
       };
-      const fresh = await api.getEmails(params);
+      const fresh = await api.getEmails(params, { signal: _emailLoads.next() });
       if (myToken !== _loadEmailsToken) return;  // stale → drop
       state.emails = fresh;
       // Drop selections that are no longer present in the loaded set.
@@ -5418,26 +5473,52 @@ export async function mountMailbox(host, _opts) {
 
   // ── Search ────────────────────────────────────────────────
   // Server-side search (Gmail-style operators) when a query is active;
-  // debounced + token-guarded so out-of-order responses can't overwrite a
+  // debounced + token-guarded + LRU cached so out-of-order responses can't overwrite a
   // newer search. Empty query restores the local view over the loaded set.
   let _searchTimer;
   let _searchToken = 0;
+  const _searchCache = new Map();
+  const SEARCH_CACHE_TTL_MS = 30000;
+  const SEARCH_CACHE_MAX_SIZE = 25;
+
+  function _invalidateSearchCache() {
+    _searchCache.clear();
+  }
 
   // Run one server-side search for the current query, scoped to the active
   // folder + account. The Drafts folder lives in a separate table, so there
   // we skip the server and let applyFilter() filter the loaded drafts locally.
   async function runServerSearch() {
     const q = state.query.trim();
-    if (!q) { _searchToken++; state.searchResults = null; applyFilter(); return; }
+    if (!q) {
+      _searchToken++;
+      _searches.cancel('search-cleared');
+      state.searchResults = null;
+      applyFilter();
+      return;
+    }
     const folder = state.folder || 'inbox';
     if (folder === 'draft') { state.searchResults = null; applyFilter(); return; }
     const myToken = ++_searchToken;
     const params = { folder };
     if (state.accountFilters.size === 1) params.account = [...state.accountFilters][0];
+    const cacheKey = `${folder}|${params.account || ''}|${q.toLowerCase()}`;
+    const cached = _searchCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < SEARCH_CACHE_TTL_MS)) {
+      state.searchResults = cached.results;
+      applyFilter();
+      return;
+    }
     try {
-      const res = await api.searchEmails(q, params);
+      const res = await api.searchEmails(q, params, { signal: _searches.next() });
       if (myToken !== _searchToken) return;   // superseded by a newer search
-      state.searchResults = res.results || [];
+      const results = res.results || [];
+      state.searchResults = results;
+      if (_searchCache.size >= SEARCH_CACHE_MAX_SIZE) {
+        const oldestKey = _searchCache.keys().next().value;
+        if (oldestKey) _searchCache.delete(oldestKey);
+      }
+      _searchCache.set(cacheKey, { results, timestamp: Date.now() });
     } catch (_) {
       if (myToken !== _searchToken) return;
       state.searchResults = null;             // fall back to local filtering
@@ -5453,7 +5534,13 @@ export async function mountMailbox(host, _opts) {
     _filterDidChange = true;
     renderSearchFilters();  // reflect operators typed by hand on the buttons
     if (_searchTimer) clearTimeout(_searchTimer);
-    if (!state.query.trim()) { _searchToken++; state.searchResults = null; applyFilter(); return; }
+    if (!state.query.trim()) {
+      _searchToken++;
+      _searches.cancel('search-cleared');
+      state.searchResults = null;
+      applyFilter();
+      return;
+    }
     _searchTimer = setTimeout(runServerSearch, 250);
   });
 
@@ -5784,6 +5871,14 @@ export async function mountMailbox(host, _opts) {
         savePromise = saveNow();
       }, 1500);  // 1.5s of inactivity before persisting
     }
+
+    _flushComposeDraft = () => {
+      if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+        saveNow();
+      }
+    };
 
     // Wire keystrokes on every editable field. The To/Subject/From
     // controls are the inputs inside the meta strip + the textarea +
@@ -6216,6 +6311,11 @@ export async function mountMailbox(host, _opts) {
     // still works once #view has been refilled.
     try { _flushReplyDraft?.(); } catch (_) {}
     _flushReplyDraft = null;
+    try { _flushComposeDraft?.(); } catch (_) {}
+    _flushComposeDraft = null;
+    _invalidateSearchCache();
+    if (_selModeTimer) { clearTimeout(_selModeTimer); _selModeTimer = null; }
+    if (_announceTimer) { clearTimeout(_announceTimer); _announceTimer = null; }
     // Snapshot the view so coming back lands where the user left.
     try {
       _persistedView = _captureView(state, $('#email-list')?.scrollTop || 0);
@@ -6227,6 +6327,11 @@ export async function mountMailbox(host, _opts) {
     // writing into a textarea that no longer exists.
     _streamAborts.forEach((c) => { try { c.abort(); } catch (_) {} });
     _streamAborts.clear();
+    _emailLoads.cancel('unmounted');
+    _emailOpens.cancel('unmounted');
+    _searches.cancel('unmounted');
+    _threads.cancel('unmounted');
+    _draftLookups.cancel('unmounted');
     clearTimeout(_searchTimer);
     if (syncTimer) clearInterval(syncTimer);
     if (refreshTimer) clearInterval(refreshTimer);

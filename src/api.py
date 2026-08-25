@@ -352,20 +352,19 @@ def get_email(int_id: int, bg: BackgroundTasks, locale: str = Depends(get_locale
     em = db.get_email_by_id(int_id)
     if not em:
         raise HTTPException(404, tr("email.not_found", locale))
-    # Lazy attachment scan: if this row was ingested before the PJ
-    # extraction was added, kick off a single-message IMAP fetch in the
-    # background. The first read returns no attachments; on a refresh a
-    # few seconds later they'll be there. This avoids forcing the user to
-    # run a full backfill before they can ever see PJ on legacy mail.
+    # Lazy body/attachment hydration: if body is not full or attachments not yet scanned,
+    # trigger prioritized hydration in background.
     if (
-        not em.get("attachments_scanned_at")
+        (em.get("body_state") != "full" or not em.get("attachments_scanned_at"))
         and em.get("uid")
         and em.get("folder") != "deleted"
     ):
-        bg.add_task(_lazy_scan_one, em["int_id"], em["account_email"], em["uid"], em["message_id"])
+        bg.add_task(_lazy_hydrate_one, em["int_id"], em["account_email"], em["uid"], em["message_id"])
     rows = db.get_attachments_for_message(em["message_id"])
     em["attachments"] = [_attachment_summary(r) for r in rows]
-    em["attachments_pending_scan"] = not bool(em.get("attachments_scanned_at"))
+    em["attachments_pending_scan"] = (
+        not bool(em.get("attachments_scanned_at")) or em.get("body_state") != "full"
+    )
     # Remote-image blocker: tell the frontend whether to render remote
     # images directly or behind a placeholder. Defaults to False — only
     # senders the user has explicitly trusted via the in-mail banner.
@@ -402,22 +401,36 @@ def get_email_thread(int_id: int, locale: str = Depends(get_locale)):
     return {"thread_id": thread_key, "messages": rows}
 
 
-def _lazy_scan_one(int_id: int, account_email: str, uid: str, message_id: str):
-    """Single-message IMAP fetch + attachment persist. Used for the
-    on-demand scan path triggered by the read pane."""
-    from src.email_fetcher import batch_scan_attachments
+def _lazy_hydrate_one(int_id: int, account_email: str, uid: str, message_id: str):
+    """Single-message IMAP fetch + body hydration + attachment persist."""
+    from src.email_fetcher import hydrate_single_email
     acc = _account_for(account_email)
     if not acc:
         return
     policy = att_sec.policy_from_config(cfg.get())
     try:
-        batch_scan_attachments(
+        hydrate_single_email(
             acc,
-            [{"uid": uid, "message_id": message_id}],
+            {"int_id": int_id, "account_email": account_email, "uid": uid, "message_id": message_id},
             policy,
         )
     except Exception as e:
-        logger.warning(f"lazy attachment scan failed for {message_id}: {e}")
+        logger.warning(f"lazy hydration failed for {message_id}: {e}")
+
+
+def _lazy_scan_one(int_id: int, account_email: str, uid: str, message_id: str):
+    """Backwards-compatible alias for lazy attachment scan."""
+    _lazy_hydrate_one(int_id, account_email, uid, message_id)
+
+
+def _drain_pending_ops_bg():
+    try:
+        conf = cfg.get()
+        accounts = [a for a in conf.get("accounts", []) if a.get("enabled", True)]
+        from src.scheduler import _drain_pending_ops
+        _drain_pending_ops(accounts)
+    except Exception as e:
+        logger.warning(f"Background pending ops drain error: {e}")
 
 
 @app.patch("/api/emails/{int_id}")
@@ -426,12 +439,9 @@ def patch_email(int_id: int, patch: EmailPatch, bg: BackgroundTasks, locale: str
     if not em:
         raise HTTPException(404, tr("email.not_found", locale))
 
-    if patch.is_read is True and not em.get("is_read"):
-        db.mark_read(em["message_id"])
-        bg.add_task(_imap_mark_seen, em["account_email"], em["uid"])
-    elif patch.is_read is False and em.get("is_read"):
-        db.mark_unread(em["message_id"])
-        bg.add_task(_imap_mark_unseen, em["account_email"], em["uid"])
+    if patch.is_read is not None and patch.is_read != bool(em.get("is_read")):
+        db.set_email_read_state_tx(int_id, patch.is_read)
+        bg.add_task(_drain_pending_ops_bg)
 
     if patch.category is not None:
         if patch.category not in _VALID_CATEGORIES:
@@ -443,13 +453,13 @@ def patch_email(int_id: int, patch: EmailPatch, bg: BackgroundTasks, locale: str
         if patch.folder not in _valid_folders():
             raise HTTPException(400, tr("email.folder_invalid", locale, folder=patch.folder))
         if patch.folder != em.get("folder"):
-            db.update_email_folder(em["message_id"], patch.folder)
-            bg.add_task(_imap_apply_folder, em["account_email"], em["uid"], patch.folder)
+            db.set_email_folder_tx(int_id, patch.folder)
+            bg.add_task(_drain_pending_ops_bg)
 
     if patch.is_favourite is not None:
         if bool(em.get("is_favourite")) != patch.is_favourite:
-            db.set_favourite(em["message_id"], patch.is_favourite)
-            bg.add_task(_imap_set_favourite, em["account_email"], em["uid"], patch.is_favourite)
+            db.set_email_favourite_tx(int_id, patch.is_favourite)
+            bg.add_task(_drain_pending_ops_bg)
 
     if patch.draft_response is not None:
         # Allow clearing (empty string) or replacing the AI draft. The
@@ -461,6 +471,8 @@ def patch_email(int_id: int, patch: EmailPatch, bg: BackgroundTasks, locale: str
             # needs_reply off so the list-card icon stops nagging.
             if not patch.draft_response.strip():
                 db.set_needs_reply(em["message_id"], False)
+
+    return {"ok": True}
 
     return {"ok": True}
 
@@ -2020,12 +2032,16 @@ def get_accounts():
         if not acc.get("enabled", True):
             continue
         state = db.get_sync_state(acc["email"])
+        pending_ops_cnt = db.count_pending_ops(acc["email"])
         result.append({
             "email": acc["email"],
             "name": acc.get("name", acc["email"]),
             "type": acc.get("type", "other"),
             "last_sync": state["last_sync"] if state else None,
             "sync_error": state["last_error"] if state else None,
+            "backoff_until": state["backoff_until"] if state else None,
+            "consecutive_failures": state["consecutive_failures"] if state else 0,
+            "pending_ops": pending_ops_cnt,
             # Auto-test status (separate from sync lifecycle). Drives the
             # green/red/grey badge in the Settings account list.
             "last_test_at": state["last_test_at"] if state else None,
@@ -2083,6 +2099,7 @@ def sync_status():
         "running": is_running(),
         "last_sync": get_last_sync(),
         "queue_pending": db.count_pending(),
+        "pending_ops": db.count_pending_ops(),
     }
 
 

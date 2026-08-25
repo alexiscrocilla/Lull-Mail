@@ -496,7 +496,7 @@ export async function mountAI(host, opts = {}) {
     } catch (e) {
       state.thread.push({
         prompt: msg, text: '', trace: [],
-        error: e.status === 409 ? t('aiw.task.ai_off') : (e.message || String(e)),
+        error: api.isAiDisabledError(e) ? t('aiw.task.ai_off') : (e.message || String(e)),
       });
     } finally {
       state.taskRunning = false;

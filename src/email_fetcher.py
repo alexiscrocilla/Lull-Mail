@@ -11,7 +11,7 @@ import ssl
 import uuid
 from email.header import decode_header
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.attachment_security import (
     AttachmentPolicy,
@@ -46,6 +46,24 @@ def _decode_header(value: str) -> str:
         return "".join(result)
     except Exception:
         return str(value)
+
+
+def _safe_decode_payload(payload: Optional[bytes], declared_charset: Optional[str]) -> str:
+    if payload is None or not payload:
+        return ""
+    if declared_charset:
+        try:
+            return payload.decode(declared_charset, errors="replace")
+        except (LookupError, UnicodeDecodeError):
+            pass
+    try:
+        return payload.decode("utf-8", errors="replace")
+    except (LookupError, UnicodeDecodeError):
+        pass
+    try:
+        return payload.decode("latin-1", errors="replace")
+    except Exception:
+        return ""
 
 
 def _extract_body(msg) -> Tuple[str, str, List[Dict]]:
@@ -124,14 +142,12 @@ def _extract_body(msg) -> Tuple[str, str, List[Dict]]:
 
             # Body parts.
             if ct in ("text/plain", "text/html"):
-                charset = part.get_content_charset() or "utf-8"
+                charset = part.get_content_charset()
                 try:
                     payload = part.get_payload(decode=True)
-                    if payload is None:
-                        continue
-                    decoded = payload.decode(charset, errors="replace")
+                    decoded = _safe_decode_payload(payload, charset)
                 except Exception:
-                    continue
+                    decoded = ""
                 if ct == "text/plain" and not text:
                     text = decoded
                 elif ct == "text/html" and not html:
@@ -143,15 +159,14 @@ def _extract_body(msg) -> Tuple[str, str, List[Dict]]:
             # a Content-Disposition header (some ESPs forget it).
             _collect(part)
     else:
-        charset = msg.get_content_charset() or "utf-8"
+        charset = msg.get_content_charset()
         try:
             payload = msg.get_payload(decode=True)
-            if payload:
-                decoded = payload.decode(charset, errors="replace")
-                if msg.get_content_type() == "text/plain":
-                    text = decoded
-                else:
-                    html = decoded
+            decoded = _safe_decode_payload(payload, charset)
+            if msg.get_content_type() == "text/plain":
+                text = decoded
+            else:
+                html = decoded
         except Exception:
             pass
 
@@ -777,38 +792,199 @@ def batch_move_to_trash(account: Dict, uids: List[str], on_each=None) -> List[bo
     return results
 
 
+def _extract_uidvalidity(conn: imaplib.IMAP4) -> Optional[str]:
+    """Read RFC 3501 UIDVALIDITY from untagged SELECT response or STATUS command."""
+    try:
+        typ, data = conn.response("UIDVALIDITY")
+        if typ == "OK" and data and data[0]:
+            val = data[0]
+            if isinstance(val, bytes):
+                return val.decode().strip()
+            return str(val).strip()
+    except Exception:
+        pass
+    try:
+        if hasattr(conn, "untagged_responses") and "UIDVALIDITY" in conn.untagged_responses:
+            val = conn.untagged_responses["UIDVALIDITY"]
+            if val and val[0]:
+                item = val[0]
+                if isinstance(item, bytes):
+                    return item.decode().strip()
+                return str(item).strip()
+    except Exception:
+        pass
+    try:
+        typ, data = conn.status("INBOX", "(UIDVALIDITY)")
+        if typ == "OK" and data and data[0]:
+            raw = data[0].decode() if isinstance(data[0], bytes) else str(data[0])
+            m = re.search(r"UIDVALIDITY\s+(\d+)", raw, re.IGNORECASE)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def _parse_flags(raw_resp: Any) -> Tuple[bool, bool]:
+    """Parse (is_read, is_favourite) from IMAP FETCH response metadata."""
+    txt = str(raw_resp)
+    is_seen = "\\Seen" in txt or "\\seen" in txt.lower()
+    is_flagged = "\\Flagged" in txt or "\\flagged" in txt.lower()
+    return is_seen, is_flagged
+
+
+def hydrate_email_bodies(
+    account: Dict,
+    targets: List[Dict],
+    policy: AttachmentPolicy,
+    on_each=None,
+) -> int:
+    """Hydrate full body (text + html) and attachments for emails in envelope state."""
+    if not targets:
+        return 0
+    from src import database as db
+    from src import threader
+    from src.auth_results import parse_email as _parse_auth
+    from json import dumps as _json_dumps
+    from src.database import parse_list_unsubscribe
+
+    processed = 0
+    try:
+        conn = _make_connection(account)
+        try:
+            conn.select("INBOX", readonly=True)
+            for tgt in targets:
+                uid = tgt.get("uid") or ""
+                msg_id = tgt.get("message_id") or ""
+                if not uid or not msg_id:
+                    continue
+                try:
+                    status, data = conn.uid("fetch", uid.encode(), "(BODY.PEEK[])")
+                    if status != "OK" or not data or not data[0]:
+                        db.mark_email_body_failed(msg_id, "IMAP fetch empty response")
+                        continue
+                    raw = data[0][1] if isinstance(data[0], tuple) else None
+                    if not isinstance(raw, (bytes, bytearray)):
+                        db.mark_email_body_failed(msg_id, "IMAP fetch invalid raw bytes")
+                        continue
+
+                    try:
+                        msg = email.message_from_bytes(bytes(raw))
+                    except Exception as e:
+                        db.mark_email_body_failed(msg_id, f"MIME parse failed: {e}")
+                        continue
+
+                    body_text, body_html, parts = _extract_body(msg)
+
+                    if parts and policy.enabled:
+                        try:
+                            persist_attachments(
+                                message_id=msg_id,
+                                account_email=account["email"],
+                                parts=parts,
+                                policy=policy,
+                            )
+                        except Exception as e:
+                            logger.warning(f"[{account['email']}] persist_attachments crashed for {msg_id}: {e}")
+
+                    lu_raw = msg.get("List-Unsubscribe")
+                    lu_post = msg.get("List-Unsubscribe-Post")
+                    parsed_lu = parse_list_unsubscribe(lu_raw, lu_post)
+
+                    auth_dict = _parse_auth(msg)
+                    auth_json = _json_dumps(auth_dict) if any(auth_dict.values()) else None
+
+                    in_reply_to = "".join((msg.get("In-Reply-To") or "").split()) or None
+                    references = (msg.get("References") or "").strip() or None
+                    norm_subject = threader.normalize_subject(_decode_header(msg.get("Subject", "")))
+                    thread_id = None
+                    with db._conn() as con:
+                        thread_id = threader.resolve_thread_id(
+                            con,
+                            message_id=msg_id,
+                            in_reply_to=in_reply_to,
+                            references=references,
+                            norm_subject=norm_subject,
+                            account=account["email"],
+                            date_iso=tgt.get("date_received_iso"),
+                        )
+
+                    db.update_email_body_hydrated(
+                        message_id=msg_id,
+                        body_text=body_text,
+                        body_html=body_html,
+                        list_unsubscribe=parsed_lu.get("list_unsubscribe"),
+                        list_unsubscribe_post=parsed_lu.get("list_unsubscribe_post"),
+                        unsubscribe_url=parsed_lu.get("unsubscribe_url"),
+                        unsubscribe_mailto=parsed_lu.get("unsubscribe_mailto"),
+                        auth_results=auth_json,
+                        in_reply_to=in_reply_to,
+                        references=references,
+                        normalized_subject=norm_subject,
+                        thread_id=thread_id,
+                    )
+                    processed += 1
+                    if on_each:
+                        try:
+                            on_each(uid, True, len(parts))
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.warning(f"[{account['email']}] hydrate UID {uid} ({msg_id}): {e}")
+                    db.mark_email_body_failed(msg_id, str(e))
+        finally:
+            try:
+                conn.logout()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error(f"[{account['email']}] hydrate_email_bodies connection failed: {e}")
+    return processed
+
+
+def hydrate_single_email(
+    account: Dict,
+    email_row: Dict,
+    policy: AttachmentPolicy,
+) -> bool:
+    """Synchronously hydrate a single email row when opened by the user."""
+    return hydrate_email_bodies(account, [email_row], policy) > 0
+
+
 def fetch_emails(
     account: Dict,
     last_uid: Optional[str] = None,
+    known_uidvalidity: Optional[str] = None,
     limit: int = 50,
     attachment_policy: Optional[AttachmentPolicy] = None,
-) -> Tuple[List[Dict], Optional[str]]:
+    envelope_only: bool = True,
+) -> Tuple[List[Dict], Optional[str], Optional[str], bool]:
     """Fetch emails for *account*.
 
-    Returns ``(results, error)`` where *error* is ``None`` on success and a
-    short human-readable string when a connection-level failure occurred.
-    Per-UID failures are silently skipped and never affect *error*.
-
-    When ``attachment_policy`` is provided AND enabled, every fetched
-    message has its attachments classified and persisted as a side effect
-    (DB rows + on-disk files under ``data/attachments``). The function
-    waits to call ``persist_attachments`` until AFTER the parent email row
-    exists in the DB, so we keep the message_id ↔ attachment FK consistent.
+    Returns ``(results, error, server_uidvalidity, uidvalidity_changed)`` where
+    *error* is ``None`` on success and a short human-readable string when a
+    connection-level failure occurred.
     """
-    results = []
+    results: List[Dict] = []
+    server_uidvalidity: Optional[str] = None
+    uidvalidity_changed = False
     try:
         conn = _make_connection(account)
         conn.select("INBOX", readonly=True)
+
+        server_uidvalidity = _extract_uidvalidity(conn)
+        if known_uidvalidity and server_uidvalidity and known_uidvalidity != server_uidvalidity:
+            logger.warning(
+                f"[{account['email']}] UIDVALIDITY changé ({known_uidvalidity} -> {server_uidvalidity}), "
+                "réinitialisation du curseur"
+            )
+            uidvalidity_changed = True
+            last_uid = None
 
         if last_uid:
             try:
                 next_uid = int(last_uid) + 1
                 status, data = conn.uid("search", None, f"UID {next_uid}:*")
-                # Some servers (e.g. Proton Bridge) return empty when
-                # next_uid > max_uid rather than returning the last message
-                # as RFC 3501 requires. Distinguish two cases:
-                #   1. No new mail   → last_uid still exists on server  → do nothing
-                #   2. UID reset     → last_uid no longer exists         → fall back to ALL
                 if not (data and data[0] and data[0].strip()):
                     s2, d2 = conn.uid("search", None, f"UID {last_uid}:{last_uid}")
                     uid_still_exists = bool(d2 and d2[0] and d2[0].strip())
@@ -818,7 +994,6 @@ def fetch_emails(
                             "réinitialisation des UIDs détectée, fallback sur ALL"
                         )
                         status, data = conn.uid("search", None, "ALL")
-                    # else: last_uid exists but nothing newer → simply no new mail
             except ValueError:
                 status, data = conn.uid("search", None, "ALL")
         else:
@@ -826,26 +1001,48 @@ def fetch_emails(
 
         if status != "OK" or not data or not data[0]:
             conn.logout()
-            return results, None
+            return results, None, server_uidvalidity, uidvalidity_changed
 
         uids = [u for u in data[0].split() if u]
         if not uids:
             conn.logout()
-            return results, None
+            return results, None, server_uidvalidity, uidvalidity_changed
 
         if len(uids) > limit:
             uids = uids[-limit:]
 
         for uid in uids:
             try:
-                status, msg_data = conn.uid("fetch", uid, "(RFC822)")
+                is_read, is_fav = False, False
+                if envelope_only:
+                    status, msg_data = conn.uid("fetch", uid, "(FLAGS BODY.PEEK[HEADER])")
+                    if status != "OK" or not msg_data or not msg_data[0]:
+                        # Fallback to full fetch if server rejects partial fetch
+                        status, msg_data = conn.uid("fetch", uid, "(RFC822)")
+                else:
+                    status, msg_data = conn.uid("fetch", uid, "(RFC822)")
+
                 if status != "OK" or not msg_data or not msg_data[0]:
                     continue
-                raw = msg_data[0][1]
-                if not isinstance(raw, bytes):
+
+                raw = None
+                for part in msg_data:
+                    if isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], (bytes, bytearray)):
+                        raw = bytes(part[1])
+                        is_read, is_fav = _parse_flags(part[0])
+                        break
+                    elif isinstance(part, bytes):
+                        is_read, is_fav = _parse_flags(part)
+
+                if raw is None:
                     continue
 
-                msg = email.message_from_bytes(raw)
+                try:
+                    msg = email.message_from_bytes(raw)
+                except Exception as e:
+                    logger.warning(f"[{account['email']}] Header parse failed for UID {uid}: {e}")
+                    continue
+
                 subject = _decode_header(msg.get("Subject", "(Sans objet)"))
                 sender = _decode_header(msg.get("From", ""))
                 recipient = _decode_header(msg.get("To", ""))
@@ -854,29 +1051,25 @@ def fetch_emails(
                 if not message_id:
                     message_id = _fallback_id(uid.decode(), account["email"], subject)
 
-                # RFC 2822 threading headers (src/threader.py). A Message-ID has
-                # no internal spaces, so collapsing whitespace unfolds a header
-                # the MTA wrapped mid-token (else it never exact-matches).
                 in_reply_to = "".join((msg.get("In-Reply-To") or "").split()) or None
                 references = (msg.get("References") or "").strip() or None
 
-                body_text, body_html, attachment_parts = _extract_body(msg)
-
-                # RFC 2369 / 8058 unsubscribe info — captured at ingest time
-                # so the new mail lands ready for the Désabonnement tab.
                 from src.database import parse_list_unsubscribe
                 lu_raw = msg.get("List-Unsubscribe")
                 lu_post = msg.get("List-Unsubscribe-Post")
                 parsed_lu = parse_list_unsubscribe(lu_raw, lu_post)
 
-                # Authentication-Results (RFC 8601) — SPF/DKIM/DMARC
-                # verdicts stamped by the receiving MTA. Stored as
-                # compact JSON so the read pane can render the badge
-                # without re-parsing headers. See src/auth_results.py.
                 from src.auth_results import parse_email as _parse_auth
                 from json import dumps as _json_dumps
                 auth_dict = _parse_auth(msg)
                 auth_json = _json_dumps(auth_dict) if any(auth_dict.values()) else None
+
+                if envelope_only:
+                    body_text, body_html, attachment_parts = "", "", []
+                    body_state = "envelope"
+                else:
+                    body_text, body_html, attachment_parts = _extract_body(msg)
+                    body_state = "full"
 
                 results.append({
                     "uid": uid.decode(),
@@ -888,6 +1081,9 @@ def fetch_emails(
                     "date_str": date_str,
                     "body_text": body_text,
                     "body_html": body_html,
+                    "body_state": body_state,
+                    "is_read": is_read,
+                    "is_favourite": is_fav,
                     "list_unsubscribe": parsed_lu["list_unsubscribe"],
                     "list_unsubscribe_post": parsed_lu["list_unsubscribe_post"],
                     "unsubscribe_url": parsed_lu["unsubscribe_url"],
@@ -895,23 +1091,23 @@ def fetch_emails(
                     "auth_results": auth_json,
                     "in_reply_to": in_reply_to,
                     "references": references,
-                    "_attachment_parts": attachment_parts,  # consumed by scheduler
+                    "_attachment_parts": attachment_parts,
                 })
             except Exception as e:
                 logger.warning(f"[{account['email']}] UID {uid} skipped: {e}")
 
         conn.logout()
-        return results, None
+        return results, None, server_uidvalidity, uidvalidity_changed
 
     except imaplib.IMAP4.error as e:
         msg = f"IMAP error: {e}"
         logger.error(f"[{account['email']}] {msg}")
-        return results, msg
+        return results, msg, server_uidvalidity, uidvalidity_changed
     except OSError as e:
         msg = f"Connection error: {e}"
         logger.error(f"[{account['email']}] {msg}")
-        return results, msg
+        return results, msg, server_uidvalidity, uidvalidity_changed
     except Exception as e:
         msg = f"{type(e).__name__}: {e}"
         logger.error(f"[{account['email']}] Unexpected error: {msg}")
-        return results, msg
+        return results, msg, server_uidvalidity, uidvalidity_changed

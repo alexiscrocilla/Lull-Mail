@@ -182,7 +182,7 @@ export function initCommandPalette({ navigate }) {
       const r = await api.assistantAsk(message);
       _renderResult({ text: r?.text || '', trace: r?.trace || [], error: r?.error || '' });
     } catch (e) {
-      const msg = e.status === 409 ? t('cmdk.ai_off') : (e.message || String(e));
+      const msg = api.isAiDisabledError(e) ? t('cmdk.ai_off') : (e.message || String(e));
       _renderResult({ text: '', trace: [], error: msg });
     }
   }

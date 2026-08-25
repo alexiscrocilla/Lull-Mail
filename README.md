@@ -257,6 +257,11 @@ See [`docs/DEVELOPING.md`](docs/DEVELOPING.md) for local setup,
 developer mode (console + browser), build instructions for all platforms,
 architecture, environment variables.
 
+The engineering-quality roadmap inspired by Proton's public clients is in
+[`docs/PROTON-HARDENING-ROADMAP.md`](docs/PROTON-HARDENING-ROADMAP.md). It is
+strictly about UX/UI consistency, stability, performance and testing—not new
+user-facing features or a framework rewrite.
+
 The product tone and positioning is documented in
 [`docs/MARKETING.md`](docs/MARKETING.md).
 

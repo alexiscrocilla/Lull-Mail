@@ -166,10 +166,9 @@ def list_accounts() -> dict:
 
 
 def set_favourite(int_id: int, favourite: bool = True) -> dict:
-    row = db.get_email_by_id(int(int_id))
-    if not row:
+    updated = db.set_email_favourite_tx(int(int_id), bool(favourite))
+    if not updated:
         return {"error": "Email introuvable"}
-    db.set_favourite(row["message_id"], bool(favourite))
     return {"status": "updated", "int_id": int(int_id), "favourite": bool(favourite)}
 
 
@@ -207,10 +206,9 @@ def draft_reply(int_id: int, body: str) -> dict:
 
 
 def mark_email_read(int_id: int, read: bool = True) -> dict:
-    row = db.get_email_by_id(int(int_id))
-    if not row:
+    updated = db.set_email_read_state_tx(int(int_id), bool(read))
+    if not updated:
         return {"error": "Email introuvable"}
-    (db.mark_read if read else db.mark_unread)(row["message_id"])
     return {"status": "updated", "int_id": int(int_id), "read": bool(read)}
 
 
@@ -223,7 +221,7 @@ def move_email(int_id: int, folder: str) -> dict:
     valid = _BUILTIN_FOLDERS | db.custom_folder_names()
     if folder not in valid:
         return {"error": f"Dossier inconnu : {folder}. Valides : {sorted(valid)}"}
-    db.update_email_folder(row["message_id"], folder)
+    db.set_email_folder_tx(int(int_id), folder)
     return {"status": "moved", "int_id": int(int_id), "folder": folder}
 
 

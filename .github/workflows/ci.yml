@@ -29,6 +29,11 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Install dev dependencies
         shell: cmd
         run: |
@@ -38,3 +43,11 @@ jobs:
       - name: Run pytest
         shell: cmd
         run: pytest -q --tb=short
+
+      - name: Check frontend syntax
+        shell: cmd
+        run: for %%f in (frontend\*.js) do node --check "%%f"
+
+      - name: Run frontend regression tests
+        shell: cmd
+        run: node --test frontend/tests/*.test.mjs

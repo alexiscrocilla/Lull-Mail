@@ -6,27 +6,34 @@
 // 10-30s. Without any bound a hung backend would spin the UI forever.
 const DEFAULT_TIMEOUT_MS = 30000;
 
-async function j(url, opts = {}) {
+export async function requestJson(url, opts = {}) {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, signal: extSignal, ...rest } = opts;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let abortKind = null;
+  const onExternalAbort = () => {
+    if (!abortKind) abortKind = 'cancelled';
+    ctrl.abort(extSignal?.reason);
+  };
+  const timer = setTimeout(() => {
+    if (!abortKind) abortKind = 'timeout';
+    ctrl.abort();
+  }, timeoutMs);
   // Honour a caller-provided AbortSignal alongside the timeout.
   if (extSignal) {
-    if (extSignal.aborted) ctrl.abort();
-    else extSignal.addEventListener('abort', () => ctrl.abort(), { once: true });
+    if (extSignal.aborted) onExternalAbort();
+    else extSignal.addEventListener('abort', onExternalAbort, { once: true });
   }
-  let r;
-  try {
-    r = await fetch(url, { ...rest, signal: ctrl.signal });
-  } catch (e) {
+  const transportError = (e) => {
     // Normalise abort/network failures so callers always get `.status`.
     // Three distinct outcomes: the caller aborted on purpose (extSignal
     // fired), our own timeout fired, or the fetch genuinely failed. Only
     // the last is a network error — a deliberate cancellation must not
     // masquerade as "server unreachable".
-    const isAbort = !!(e && e.name === 'AbortError');
-    const cancelled = isAbort && !!extSignal?.aborted;
-    const timedOut = isAbort && !cancelled;
+    // Some webviews report an aborted fetch as TypeError rather than
+    // AbortError, hence the controller state is the authoritative signal.
+    const isAbort = !!(e && e.name === 'AbortError') || ctrl.signal.aborted;
+    const cancelled = isAbort && abortKind === 'cancelled';
+    const timedOut = isAbort && abortKind === 'timeout';
     const err = new Error(
       cancelled ? 'Requête annulée.'
       : timedOut ? 'La requête a expiré. Vérifiez votre connexion et réessayez.'
@@ -36,68 +43,106 @@ async function j(url, opts = {}) {
     err.timeout = !!timedOut;
     err.cancelled = !!cancelled;
     err.network = !isAbort;
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
-  if (!r.ok) {
+    err.cause = e;
+    return err;
+  };
+
+  try {
+    let r;
+    try {
+      r = await fetch(url, { ...rest, signal: ctrl.signal });
+    } catch (e) {
+      throw transportError(e);
+    }
+
+    // Consume the body once. A few FastAPI endpoints legitimately answer with
+    // an empty 200/204; treating that as malformed JSON made successful
+    // mutations look like failures. Conversely, a truncated/non-JSON success
+    // is a protocol error and should not leak a raw SyntaxError to the UI.
+    let body = null;
+    let parseError = null;
+    try {
+      const raw = await r.text();
+      if (raw.trim()) {
+        try { body = JSON.parse(raw); }
+        catch (e) { body = raw; parseError = e; }
+      }
+    } catch (e) {
+      // fetch() resolves as soon as response headers arrive; the body may
+      // still be streaming. Keep timeout/cancellation active until text() is
+      // complete and preserve the same normalised transport error shape.
+      if (ctrl.signal.aborted) throw transportError(e);
+      parseError = e;
+    }
+
+    if (!r.ok) {
     // The backend speaks French in its `detail` field for FastAPI
     // HTTPException, in `body.detail` for the rate-limit handler, and
     // sometimes nests `{error, message, stage}` under `detail` (the
     // /api/emails/send endpoint). Walk those shapes so callers get a
     // human-readable message instead of "429 Too Many Requests on …".
-    let body = null;
-    try {
-      const ct = r.headers.get('content-type') || '';
-      if (ct.includes('application/json')) body = await r.json();
-    } catch (_) { /* ignore parse errors */ }
-    const d = body && body.detail !== undefined ? body.detail : body;
-    let msg;
-    if (typeof d === 'string')              msg = d;
-    else if (d && typeof d.message === 'string') msg = d.message;
-    else if (d && typeof d.error   === 'string') msg = d.error;
-    else if (body && typeof body.message === 'string') msg = body.message;
-    else msg = `${r.status} ${r.statusText}`;
-    const err = new Error(msg);
-    err.status = r.status;
-    err.detail = d;
-    err.retryAfter = parseInt(r.headers.get('Retry-After') || '0', 10) || 0;
-    throw err;
+      const d = body && body.detail !== undefined ? body.detail : body;
+      let msg;
+      if (typeof d === 'string')              msg = d;
+      else if (d && typeof d.message === 'string') msg = d.message;
+      else if (d && typeof d.error   === 'string') msg = d.error;
+      else if (body && typeof body.message === 'string') msg = body.message;
+      else msg = `${r.status} ${r.statusText}`;
+      const err = new Error(msg);
+      err.status = r.status;
+      err.detail = d;
+      err.retryAfter = parseInt(r.headers.get('Retry-After') || '0', 10) || 0;
+      throw err;
+    }
+    if (parseError) {
+      const err = new Error('Le serveur a renvoyé une réponse invalide. Réessayez.');
+      err.status = r.status;
+      err.protocol = true;
+      throw err;
+    }
+    return body;
+  } finally {
+    clearTimeout(timer);
+    // A completed request used to leave this listener attached until the
+    // caller eventually aborted its signal. Long-lived view controllers then
+    // retained every finished request controller and its closure.
+    extSignal?.removeEventListener?.('abort', onExternalAbort);
   }
-  // 204/empty bodies (some DELETEs) would make r.json() throw a misleading
-  // SyntaxError — return null instead.
-  if (r.status === 204) return null;
-  return r.json();
 }
 
+// Kept private to the API facade so existing call sites stay compact; the
+// named export above gives the request primitive its own dependency-free
+// regression tests.
+const j = requestJson;
+
 export const api = {
-  getEmails(params = {}) {
+  getEmails(params = {}, requestOptions = {}) {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {
       if (v === undefined || v === null || v === '') continue;
       q.set(k, v);
     }
     const qs = q.toString();
-    return j(`/api/emails${qs ? '?' + qs : ''}`);
+    return j(`/api/emails${qs ? '?' + qs : ''}`, requestOptions);
   },
 
-  getEmail(intId) {
-    return j(`/api/emails/${intId}`);
+  getEmail(intId, requestOptions = {}) {
+    return j(`/api/emails/${intId}`, requestOptions);
   },
 
   // Server-side search with Gmail-style operators. Returns {parsed, results}.
-  searchEmails(q, params = {}) {
+  searchEmails(q, params = {}, requestOptions = {}) {
     const sp = new URLSearchParams({ q });
     for (const [k, v] of Object.entries(params)) {
       if (v === undefined || v === null || v === '') continue;
       sp.set(k, v);
     }
-    return j(`/api/emails/search?${sp.toString()}`);
+    return j(`/api/emails/search?${sp.toString()}`, requestOptions);
   },
 
   // All messages of the conversation an email belongs to. {thread_id, messages[]}.
-  getThread(intId) {
-    return j(`/api/emails/${intId}/thread`);
+  getThread(intId, requestOptions = {}) {
+    return j(`/api/emails/${intId}/thread`, requestOptions);
   },
 
   // Bounded AI agent over the local mailbox. {text, trace[]}. 409 when AI off.
@@ -142,8 +187,8 @@ export const api = {
   // Personal multi-label assignment, separate from the AI category
   // enum. The /api/emails responses now include a labels[] array on
   // every row; setEmailLabels does a replace-all PUT.
-  getLabels() {
-    return j('/api/labels');
+  getLabels(requestOptions = {}) {
+    return j('/api/labels', requestOptions);
   },
   createLabel(payload) {
     return j('/api/labels', {
@@ -174,8 +219,8 @@ export const api = {
   // App-only sidebar folders. Built-ins (inbox/sent/draft/deleted)
   // stay hardcoded in mailbox.js's FOLDERS const; these are merged
   // into the sidebar list at runtime.
-  getFolders() {
-    return j('/api/folders');
+  getFolders(requestOptions = {}) {
+    return j('/api/folders', requestOptions);
   },
   createFolder(name) {
     return j('/api/folders', {
@@ -239,12 +284,12 @@ export const api = {
   // User-typed compose drafts persisted server-side. Distinct from
   // generateDraft() above which produces an AI suggestion tied to an
   // inbound email's int_id (stored in emails.draft_response).
-  getDrafts(account, opts = {}) {
+  getDrafts(account, opts = {}, requestOptions = {}) {
     const q = new URLSearchParams();
     if (account) q.set('account', account);
     if (opts.inReplyToInt != null) q.set('in_reply_to_int', String(opts.inReplyToInt));
     const qs = q.toString();
-    return j(`/api/drafts${qs ? '?' + qs : ''}`);
+    return j(`/api/drafts${qs ? '?' + qs : ''}`, requestOptions);
   },
   createDraft(payload) {
     return j('/api/drafts', {
@@ -337,13 +382,13 @@ export const api = {
   },
 
   getStats()    { return j('/api/stats'); },
-  getAccounts() { return j('/api/accounts'); },
+  getAccounts(requestOptions = {}) { return j('/api/accounts', requestOptions); },
   // NOT dead code: the dashboard PAGE is gone, but the mailbox sidebar's
   // COMPTES section reads per-account counters (unread / needs_reply /
   // favourite / total) from this endpoint in loadAccounts(). Removing it
   // "as unused" during the dashboard cleanup silently killed that whole
   // section — the call threw before its .catch(() => null) could attach.
-  getDashboard() { return j('/api/dashboard/status'); },
+  getDashboard(requestOptions = {}) { return j('/api/dashboard/status', requestOptions); },
 
   getTopSenders(params = {}) {
     const q = new URLSearchParams();
@@ -441,6 +486,13 @@ export const api = {
 
   triggerSync() {
     return j('/api/sync', { method: 'POST' });
+  },
+
+  isAiDisabledError(e) {
+    if (!e) return false;
+    if (e.status === 409) return true;
+    const msg = String(e.message || e.detail || '').toLowerCase();
+    return msg.includes('ia désactivée') || msg.includes('sans ia') || msg.includes('ai disabled');
   },
 
   getSyncStatus()   { return j('/api/sync/status'); },
@@ -826,4 +878,8 @@ export function scoreClass(s) {
   if (s >= 7) return 's-hi';
   if (s >= 4) return 's-md';
   return 's-lo';
+}
+
+export function isAiDisabledError(e) {
+  return api.isAiDisabledError(e);
 }

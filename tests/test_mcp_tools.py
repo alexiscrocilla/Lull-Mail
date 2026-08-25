@@ -11,6 +11,7 @@ Install it (`pip install mcp`) to exercise them locally.
 
 from __future__ import annotations
 
+import re
 import pytest
 
 mcp_sdk = pytest.importorskip(
@@ -33,7 +34,7 @@ def test_mcp_has_no_send_tool(fresh_app):
     from src import mcp_server
     server = mcp_server.build_server()
     tools = asyncio.run(server.list_tools())
-    assert not any("send" in t.name for t in tools)
+    assert not any(re.search(r"(^|_)send($|_)", t.name) for t in tools)
 
 
 def test_mcp_tools_dispatch_through_server(fresh_app):

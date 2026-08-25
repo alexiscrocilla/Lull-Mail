@@ -16,13 +16,17 @@ DB_PATH = paths.DB_PATH
 
 def _conn() -> sqlite3.Connection:
     paths.ensure_dirs()
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH, timeout=10.0)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
     # Enable FK enforcement so ON DELETE CASCADE on email_labels.label_id
     # actually triggers when a label is removed. SQLite ships with FK
     # checks OFF by default for backwards compatibility.
     con.execute("PRAGMA foreign_keys=ON")
+    con.execute("PRAGMA busy_timeout=10000")
+    con.execute("PRAGMA synchronous=NORMAL")
+    con.execute("PRAGMA cache_size=-64000")
+    con.execute("PRAGMA temp_store=MEMORY")
     return con
 
 
@@ -54,14 +58,22 @@ def init_db():
                 tokens_in   INTEGER DEFAULT 0,
                 tokens_out  INTEGER DEFAULT 0,
                 local_classified INTEGER DEFAULT 0,
-                date_received_iso TEXT
+                date_received_iso TEXT,
+                body_state  TEXT    DEFAULT 'full',
+                body_error  TEXT,
+                body_attempts INTEGER DEFAULT 0,
+                body_next_retry_at TEXT,
+                body_updated_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS sync_state (
                 account_email TEXT PRIMARY KEY,
                 last_uid      TEXT,
                 last_sync     TEXT,
-                last_error    TEXT
+                last_error    TEXT,
+                uidvalidity   TEXT,
+                consecutive_failures INTEGER DEFAULT 0,
+                backoff_until TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_emails_account    ON emails(account_email);
@@ -81,10 +93,27 @@ def init_db():
             con.execute("ALTER TABLE emails ADD COLUMN tokens_in INTEGER DEFAULT 0")
         if "tokens_out" not in cols:
             con.execute("ALTER TABLE emails ADD COLUMN tokens_out INTEGER DEFAULT 0")
+        if "body_state" not in cols:
+            con.execute("ALTER TABLE emails ADD COLUMN body_state TEXT DEFAULT 'full'")
+        if "body_error" not in cols:
+            con.execute("ALTER TABLE emails ADD COLUMN body_error TEXT")
+        if "body_attempts" not in cols:
+            con.execute("ALTER TABLE emails ADD COLUMN body_attempts INTEGER DEFAULT 0")
+        if "body_next_retry_at" not in cols:
+            con.execute("ALTER TABLE emails ADD COLUMN body_next_retry_at TEXT")
+        if "body_updated_at" not in cols:
+            con.execute("ALTER TABLE emails ADD COLUMN body_updated_at TEXT")
+
         # sync_state migrations
         sync_cols = {row["name"] for row in con.execute("PRAGMA table_info(sync_state)")}
         if "last_error" not in sync_cols:
             con.execute("ALTER TABLE sync_state ADD COLUMN last_error TEXT")
+        if "uidvalidity" not in sync_cols:
+            con.execute("ALTER TABLE sync_state ADD COLUMN uidvalidity TEXT")
+        if "consecutive_failures" not in sync_cols:
+            con.execute("ALTER TABLE sync_state ADD COLUMN consecutive_failures INTEGER DEFAULT 0")
+        if "backoff_until" not in sync_cols:
+            con.execute("ALTER TABLE sync_state ADD COLUMN backoff_until TEXT")
         # Auto-test on save (Settings / onboarding) records its result here so
         # the UI can render a status badge per account without re-running the
         # IMAP login on every Settings page load. Distinct from `last_sync`/
@@ -350,6 +379,35 @@ def init_db():
         """)
         con.execute("CREATE INDEX IF NOT EXISTS idx_folders_position ON folders(position)")
 
+        # Offline mutations queue (seen, flagged, trash) with revision-based
+        # optimistic concurrency and retry scheduling.
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS pending_ops (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                email_int_id    INTEGER NOT NULL,
+                account_email   TEXT    NOT NULL,
+                operation       TEXT    NOT NULL,
+                desired_value   TEXT    NOT NULL DEFAULT '',
+                status          TEXT    NOT NULL DEFAULT 'pending',
+                attempts        INTEGER NOT NULL DEFAULT 0,
+                revision        INTEGER NOT NULL DEFAULT 1,
+                next_attempt_at TEXT,
+                last_error      TEXT,
+                created_at      TEXT    DEFAULT (datetime('now')),
+                updated_at      TEXT    DEFAULT (datetime('now')),
+                UNIQUE(email_int_id, operation)
+            )
+        """)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_pending_ops_status_next ON pending_ops(status, next_attempt_at)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_pending_ops_account ON pending_ops(account_email)")
+
+        # Composite indexes for fast list/search/hydration lookups
+        con.execute("CREATE INDEX IF NOT EXISTS idx_emails_acc_folder_date ON emails(account_email, folder, date_received_iso DESC)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_emails_folder_date ON emails(folder, date_received_iso DESC)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_emails_cat_date ON emails(category, date_received_iso DESC)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_emails_thread_date ON emails(thread_id, date_received_iso DESC)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_emails_body_state ON emails(body_state, body_next_retry_at)")
+
 
 def email_exists(message_id: str) -> bool:
     with _conn() as con:
@@ -383,14 +441,21 @@ def insert_email(data: Dict[str, Any]) -> bool:
                 account=data["account"],
                 date_iso=dt_iso,
             )
-            con.execute("""
+            body_state = data.get("body_state")
+            if not body_state:
+                body_state = "full" if (data.get("body_text") or data.get("body_html")) else "envelope"
+            is_read_val = 1 if data.get("is_read") else 0
+            is_fav_val = 1 if data.get("is_favourite") else 0
+
+            cur = con.execute("""
                 INSERT OR IGNORE INTO emails
                     (message_id, account_email, uid, subject, sender, recipient,
                      date_received, date_received_iso, body_text, body_html,
                      list_unsubscribe, list_unsubscribe_post,
                      unsubscribe_url, unsubscribe_mailto, auth_results,
-                     in_reply_to, email_references, thread_id, normalized_subject)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     in_reply_to, email_references, thread_id, normalized_subject,
+                     body_state, is_read, is_favourite)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data["message_id"],
                 data["account"],
@@ -415,7 +480,15 @@ def insert_email(data: Dict[str, Any]) -> bool:
                 references,
                 thread_id,
                 norm_subject,
+                body_state,
+                is_read_val,
+                is_fav_val,
             ))
+            if cur.rowcount == 0 and data.get("uid"):
+                con.execute(
+                    "UPDATE emails SET uid = ? WHERE message_id = ? AND account_email = ?",
+                    (data["uid"], data["message_id"], data["account"]),
+                )
         return True
     except Exception as e:
         logger.error(f"insert_email error: {e}")
@@ -865,7 +938,7 @@ def get_pending_emails(limit: int = 30) -> List[Dict]:
     with _conn() as con:
         rows = con.execute("""
             SELECT * FROM emails
-            WHERE category = 'pending'
+            WHERE category = 'pending' AND (body_state IS NULL OR body_state = 'full')
             ORDER BY fetched_at DESC
             LIMIT ?
         """, (limit,)).fetchall()
@@ -914,28 +987,483 @@ def get_sync_state(account_email: str) -> Optional[Dict]:
         return dict(row) if row else None
 
 
-def update_sync_state(account_email: str, last_uid: Optional[str] = None):
-    """Record a successful sync tick — clears any stored error."""
+def update_sync_state(
+    account_email: str,
+    last_uid: Optional[str] = None,
+    uidvalidity: Optional[str] = None,
+):
+    """Record a successful sync tick — clears any stored error and backoff."""
     with _conn() as con:
         con.execute("""
-            INSERT INTO sync_state (account_email, last_uid, last_sync, last_error)
-            VALUES (?, ?, datetime('now'), NULL)
+            INSERT INTO sync_state (
+                account_email, last_uid, uidvalidity, last_sync, last_error,
+                consecutive_failures, backoff_until
+            )
+            VALUES (?, ?, ?, datetime('now'), NULL, 0, NULL)
             ON CONFLICT(account_email) DO UPDATE SET
-                last_uid   = COALESCE(excluded.last_uid, last_uid),
-                last_sync  = datetime('now'),
-                last_error = NULL
-        """, (account_email, last_uid))
+                last_uid             = COALESCE(excluded.last_uid, last_uid),
+                uidvalidity          = COALESCE(excluded.uidvalidity, uidvalidity),
+                last_sync            = datetime('now'),
+                last_error           = NULL,
+                consecutive_failures = 0,
+                backoff_until        = NULL
+        """, (account_email, last_uid, uidvalidity))
 
 
-def set_sync_error(account_email: str, error: str):
+def set_sync_error(
+    account_email: str,
+    error: str,
+    backoff_seconds: Optional[int] = None,
+):
     """Persist a per-account IMAP/fetch error without touching last_uid or last_sync."""
+    from datetime import timedelta
+    backoff_until = None
+    if backoff_seconds and backoff_seconds > 0:
+        backoff_until = (datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)).isoformat()
     with _conn() as con:
         con.execute("""
-            INSERT INTO sync_state (account_email, last_uid, last_sync, last_error)
-            VALUES (?, NULL, NULL, ?)
+            INSERT INTO sync_state (
+                account_email, last_uid, last_sync, last_error,
+                consecutive_failures, backoff_until
+            )
+            VALUES (?, NULL, NULL, ?, 1, ?)
             ON CONFLICT(account_email) DO UPDATE SET
-                last_error = excluded.last_error
-        """, (account_email, str(error)[:500]))
+                last_error           = excluded.last_error,
+                consecutive_failures = sync_state.consecutive_failures + 1,
+                backoff_until        = COALESCE(excluded.backoff_until, sync_state.backoff_until)
+        """, (account_email, str(error)[:500], backoff_until))
+
+
+def remap_account_uids_on_uidvalidity_change(account_email: str, new_uidvalidity: str) -> None:
+    """When UIDVALIDITY changes, invalidate local UIDs for this account and reset cursor."""
+    with _conn() as con:
+        con.execute("UPDATE emails SET uid = NULL WHERE account_email = ?", (account_email,))
+        con.execute("""
+            INSERT INTO sync_state (account_email, last_uid, uidvalidity, last_sync, last_error, consecutive_failures, backoff_until)
+            VALUES (?, NULL, ?, datetime('now'), NULL, 0, NULL)
+            ON CONFLICT(account_email) DO UPDATE SET
+                last_uid             = NULL,
+                uidvalidity          = excluded.uidvalidity,
+                last_error           = NULL,
+                consecutive_failures = 0,
+                backoff_until        = NULL
+        """, (account_email, new_uidvalidity))
+
+
+def update_email_uid(message_id: str, account_email: str, new_uid: str) -> None:
+    with _conn() as con:
+        con.execute(
+            "UPDATE emails SET uid = ? WHERE message_id = ? AND account_email = ?",
+            (new_uid, message_id, account_email),
+        )
+
+
+def reset_sync_backoff(account_email: str) -> None:
+    with _conn() as con:
+        con.execute("""
+            UPDATE sync_state
+            SET consecutive_failures = 0, backoff_until = NULL, last_error = NULL
+            WHERE account_email = ?
+        """, (account_email,))
+
+
+# ── Offline mutations queue (pending_ops) ────────────────────────────
+
+def queue_pending_op(
+    email_int_id: int,
+    account_email: str,
+    operation: str,
+    desired_value: str = "",
+    delay_seconds: int = 0,
+    con: Optional[sqlite3.Connection] = None,
+) -> int:
+    """Enqueue or coalesce an offline IMAP mutation op.
+
+    Uses revision-based optimistic concurrency. Bumps revision on every update
+    so that an in-flight worker cannot acknowledge a stale state.
+    """
+    from datetime import timedelta
+    next_attempt = None
+    if delay_seconds > 0:
+        next_attempt = (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat()
+
+    sql = """
+        INSERT INTO pending_ops (
+            email_int_id, account_email, operation, desired_value,
+            status, attempts, revision, next_attempt_at, last_error, updated_at
+        )
+        VALUES (?, ?, ?, ?, 'pending', 0, 1, ?, NULL, datetime('now'))
+        ON CONFLICT(email_int_id, operation) DO UPDATE SET
+            desired_value   = excluded.desired_value,
+            status          = 'pending',
+            revision        = pending_ops.revision + 1,
+            next_attempt_at = excluded.next_attempt_at,
+            last_error      = NULL,
+            updated_at      = datetime('now')
+    """
+    params = (email_int_id, account_email, operation, desired_value, next_attempt)
+    if con is not None:
+        cur = con.execute(sql, params)
+        return cur.lastrowid
+    with _conn() as c:
+        cur = c.execute(sql, params)
+        return cur.lastrowid
+
+
+def cancel_pending_op(
+    email_int_id: int,
+    operation: str,
+    con: Optional[sqlite3.Connection] = None,
+) -> bool:
+    """Cancel a pending op before execution (e.g., undo trash)."""
+    sql = "DELETE FROM pending_ops WHERE email_int_id = ? AND operation = ?"
+    if con is not None:
+        cur = con.execute(sql, (email_int_id, operation))
+        return cur.rowcount > 0
+    with _conn() as c:
+        cur = c.execute(sql, (email_int_id, operation))
+        return cur.rowcount > 0
+
+
+def get_due_pending_ops(limit: int = 50, account: Optional[str] = None) -> List[Dict]:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    q = """
+        SELECT p.*, e.uid, e.message_id, e.folder
+        FROM pending_ops p
+        JOIN emails e ON e.int_id = p.email_int_id
+        WHERE p.status = 'pending'
+          AND (p.next_attempt_at IS NULL OR p.next_attempt_at <= ?)
+    """
+    params: list = [now_iso]
+    if account:
+        q += " AND p.account_email = ?"
+        params.append(account)
+    q += " ORDER BY p.id ASC LIMIT ?"
+    params.append(limit)
+    with _conn() as con:
+        return [dict(r) for r in con.execute(q, params).fetchall()]
+
+
+def claim_pending_ops(limit: int = 50, account: Optional[str] = None) -> List[Dict]:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        q = """
+            SELECT p.*, e.uid, e.message_id, e.folder
+            FROM pending_ops p
+            JOIN emails e ON e.int_id = p.email_int_id
+            WHERE p.status = 'pending'
+              AND (p.next_attempt_at IS NULL OR p.next_attempt_at <= ?)
+        """
+        params: list = [now_iso]
+        if account:
+            q += " AND p.account_email = ?"
+            params.append(account)
+        q += " ORDER BY p.id ASC LIMIT ?"
+        params.append(limit)
+        rows = [dict(r) for r in con.execute(q, params).fetchall()]
+        if rows:
+            ids = [r["id"] for r in rows]
+            placeholders = ",".join("?" for _ in ids)
+            con.execute(
+                f"UPDATE pending_ops SET status = 'in_flight', updated_at = datetime('now') WHERE id IN ({placeholders})",
+                ids,
+            )
+        return rows
+
+
+def complete_pending_op(op_id: int, expected_revision: int) -> bool:
+    """Acknowledge completed op if revision hasn't bumped during execution."""
+    with _conn() as con:
+        cur = con.execute(
+            "DELETE FROM pending_ops WHERE id = ? AND revision = ?",
+            (op_id, expected_revision),
+        )
+        if cur.rowcount == 0:
+            # Revision changed by newer action; revert status to pending
+            con.execute(
+                "UPDATE pending_ops SET status = 'pending', updated_at = datetime('now') WHERE id = ?",
+                (op_id,),
+            )
+            return False
+        return True
+
+
+def fail_pending_op(
+    op_id: int,
+    expected_revision: int,
+    error: str,
+    retry_delay_seconds: int = 30,
+) -> bool:
+    from datetime import timedelta
+    next_att = (datetime.now(timezone.utc) + timedelta(seconds=retry_delay_seconds)).isoformat()
+    with _conn() as con:
+        cur = con.execute("""
+            UPDATE pending_ops
+            SET status = 'pending',
+                attempts = attempts + 1,
+                next_attempt_at = ?,
+                last_error = ?,
+                updated_at = datetime('now')
+            WHERE id = ? AND revision = ?
+        """, (next_att, str(error)[:500], op_id, expected_revision))
+        if cur.rowcount == 0:
+            con.execute(
+                "UPDATE pending_ops SET status = 'pending', updated_at = datetime('now') WHERE id = ?",
+                (op_id,),
+            )
+            return False
+        return True
+
+
+def count_pending_ops(account: Optional[str] = None) -> int:
+    q = "SELECT COUNT(*) FROM pending_ops WHERE status != 'done'"
+    params = []
+    if account:
+        q += " AND account_email = ?"
+        params.append(account)
+    with _conn() as con:
+        return con.execute(q, params).fetchone()[0]
+
+
+def delete_pending_ops_for_account(account_email: str) -> int:
+    with _conn() as con:
+        cur = con.execute("DELETE FROM pending_ops WHERE account_email = ?", (account_email,))
+        return cur.rowcount
+
+
+# ── Transactional email mutations (Local state + pending_ops in one TX) ──
+
+def set_email_read_state_tx(email_int_id: int, is_read: bool) -> Optional[Dict]:
+    with _conn() as con:
+        row = con.execute("SELECT * FROM emails WHERE int_id = ?", (email_int_id,)).fetchone()
+        if not row:
+            return None
+        acc = row["account_email"]
+        con.execute("UPDATE emails SET is_read = ? WHERE int_id = ?", (1 if is_read else 0, email_int_id))
+        if row["uid"]:
+            queue_pending_op(
+                email_int_id=email_int_id,
+                account_email=acc,
+                operation="seen",
+                desired_value="1" if is_read else "0",
+                con=con,
+            )
+        updated = con.execute("SELECT * FROM emails WHERE int_id = ?", (email_int_id,)).fetchone()
+        return dict(updated) if updated else None
+
+
+def set_email_favourite_tx(email_int_id: int, is_favourite: bool) -> Optional[Dict]:
+    with _conn() as con:
+        row = con.execute("SELECT * FROM emails WHERE int_id = ?", (email_int_id,)).fetchone()
+        if not row:
+            return None
+        acc = row["account_email"]
+        con.execute("UPDATE emails SET is_favourite = ? WHERE int_id = ?", (1 if is_favourite else 0, email_int_id))
+        if row["uid"]:
+            queue_pending_op(
+                email_int_id=email_int_id,
+                account_email=acc,
+                operation="flagged",
+                desired_value="1" if is_favourite else "0",
+                con=con,
+            )
+        updated = con.execute("SELECT * FROM emails WHERE int_id = ?", (email_int_id,)).fetchone()
+        return dict(updated) if updated else None
+
+
+def set_email_folder_tx(email_int_id: int, folder: str, trash_delay_seconds: int = 5) -> Optional[Dict]:
+    with _conn() as con:
+        row = con.execute("SELECT * FROM emails WHERE int_id = ?", (email_int_id,)).fetchone()
+        if not row:
+            return None
+        acc = row["account_email"]
+        con.execute("UPDATE emails SET folder = ? WHERE int_id = ?", (folder, email_int_id))
+        if folder == "deleted":
+            if row["uid"]:
+                queue_pending_op(
+                    email_int_id=email_int_id,
+                    account_email=acc,
+                    operation="trash",
+                    desired_value="1",
+                    delay_seconds=trash_delay_seconds,
+                    con=con,
+                )
+        else:
+            cancel_pending_op(email_int_id, "trash", con=con)
+        updated = con.execute("SELECT * FROM emails WHERE int_id = ?", (email_int_id,)).fetchone()
+        return dict(updated) if updated else None
+
+
+def bulk_set_folder_tx(email_int_ids: List[int], folder: str, trash_delay_seconds: int = 5) -> List[Dict]:
+    if not email_int_ids:
+        return []
+    with _conn() as con:
+        placeholders = ",".join("?" for _ in email_int_ids)
+        rows = [dict(r) for r in con.execute(f"SELECT * FROM emails WHERE int_id IN ({placeholders})", email_int_ids).fetchall()]
+        con.execute(f"UPDATE emails SET folder = ? WHERE int_id IN ({placeholders})", [folder] + list(email_int_ids))
+        for r in rows:
+            if folder == "deleted":
+                if r.get("uid"):
+                    queue_pending_op(
+                        email_int_id=r["int_id"],
+                        account_email=r["account_email"],
+                        operation="trash",
+                        desired_value="1",
+                        delay_seconds=trash_delay_seconds,
+                        con=con,
+                    )
+            else:
+                cancel_pending_op(r["int_id"], "trash", con=con)
+        return rows
+
+
+def bulk_set_read_tx(email_int_ids: List[int], is_read: bool) -> List[Dict]:
+    if not email_int_ids:
+        return []
+    with _conn() as con:
+        placeholders = ",".join("?" for _ in email_int_ids)
+        rows = [dict(r) for r in con.execute(f"SELECT * FROM emails WHERE int_id IN ({placeholders})", email_int_ids).fetchall()]
+        con.execute(f"UPDATE emails SET is_read = ? WHERE int_id IN ({placeholders})", [1 if is_read else 0] + list(email_int_ids))
+        for r in rows:
+            if r.get("uid"):
+                queue_pending_op(
+                    email_int_id=r["int_id"],
+                    account_email=r["account_email"],
+                    operation="seen",
+                    desired_value="1" if is_read else "0",
+                    con=con,
+                )
+        return rows
+
+
+# ── Body hydration queue primitives ──────────────────────────────────
+
+def claim_emails_for_body_hydration(limit: int = 20, account: Optional[str] = None) -> List[Dict]:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        q = """
+            SELECT * FROM emails
+            WHERE (body_state = 'envelope' OR (body_state = 'body_failed' AND (body_next_retry_at IS NULL OR body_next_retry_at <= ?)))
+              AND uid IS NOT NULL AND uid != ''
+              AND folder != 'deleted'
+        """
+        params: list = [now_iso]
+        if account:
+            q += " AND account_email = ?"
+            params.append(account)
+        q += " ORDER BY date_received_iso DESC LIMIT ?"
+        params.append(limit)
+        rows = [dict(r) for r in con.execute(q, params).fetchall()]
+        if rows:
+            ids = [r["int_id"] for r in rows]
+            placeholders = ",".join("?" for _ in ids)
+            con.execute(
+                f"UPDATE emails SET body_state = 'hydrating', body_updated_at = datetime('now') WHERE int_id IN ({placeholders})",
+                ids,
+            )
+        return rows
+
+
+def claim_single_email_for_hydration(int_id: int) -> Optional[Dict]:
+    with _conn() as con:
+        row = con.execute("SELECT * FROM emails WHERE int_id = ?", (int_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        if d.get("body_state") == "full":
+            return d
+        if d.get("body_state") == "hydrating":
+            return None  # already in flight
+        con.execute(
+            "UPDATE emails SET body_state = 'hydrating', body_updated_at = datetime('now') WHERE int_id = ?",
+            (int_id,),
+        )
+        d["body_state"] = "hydrating"
+        return d
+
+
+def update_email_body_hydrated(
+    message_id: str,
+    body_text: str,
+    body_html: str,
+    list_unsubscribe: Optional[str] = None,
+    list_unsubscribe_post: Optional[str] = None,
+    unsubscribe_url: Optional[str] = None,
+    unsubscribe_mailto: Optional[str] = None,
+    auth_results: Optional[str] = None,
+    in_reply_to: Optional[str] = None,
+    references: Optional[str] = None,
+    normalized_subject: Optional[str] = None,
+    thread_id: Optional[str] = None,
+) -> bool:
+    with _conn() as con:
+        con.execute("""
+            UPDATE emails SET
+                body_text = ?,
+                body_html = ?,
+                body_state = 'full',
+                body_error = NULL,
+                body_attempts = 0,
+                body_next_retry_at = NULL,
+                body_updated_at = datetime('now'),
+                attachments_scanned_at = datetime('now'),
+                list_unsubscribe = COALESCE(?, list_unsubscribe),
+                list_unsubscribe_post = COALESCE(?, list_unsubscribe_post),
+                unsubscribe_url = COALESCE(?, unsubscribe_url),
+                unsubscribe_mailto = COALESCE(?, unsubscribe_mailto),
+                auth_results = COALESCE(?, auth_results),
+                in_reply_to = COALESCE(?, in_reply_to),
+                email_references = COALESCE(?, email_references),
+                normalized_subject = COALESCE(?, normalized_subject),
+                thread_id = COALESCE(?, thread_id)
+            WHERE message_id = ?
+        """, (
+            body_text,
+            body_html,
+            list_unsubscribe,
+            list_unsubscribe_post,
+            unsubscribe_url,
+            unsubscribe_mailto,
+            auth_results,
+            in_reply_to,
+            references,
+            normalized_subject,
+            thread_id,
+            message_id,
+        ))
+        return True
+
+
+def mark_email_body_failed(
+    message_id: str,
+    error: str,
+    retry_delay_seconds: int = 60,
+    max_attempts: int = 5,
+) -> None:
+    from datetime import timedelta
+    next_att = (datetime.now(timezone.utc) + timedelta(seconds=retry_delay_seconds)).isoformat()
+    with _conn() as con:
+        con.execute("""
+            UPDATE emails SET
+                body_state = CASE WHEN body_attempts + 1 >= ? THEN 'failed' ELSE 'body_failed' END,
+                body_error = ?,
+                body_attempts = body_attempts + 1,
+                body_next_retry_at = ?,
+                body_updated_at = datetime('now')
+            WHERE message_id = ?
+        """, (max_attempts, str(error)[:500], next_att, message_id))
+
+
+def reset_hydrating_body_states() -> int:
+    """Reset any 'hydrating' messages and 'in_flight' ops stuck at boot time."""
+    with _conn() as con:
+        cur1 = con.execute(
+            "UPDATE emails SET body_state = 'envelope' WHERE body_state = 'hydrating'"
+        )
+        con.execute(
+            "UPDATE pending_ops SET status = 'pending' WHERE status = 'in_flight'"
+        )
+        return cur1.rowcount
 
 
 def record_test_result(account_email: str, ok: bool, error: Optional[str] = None):
