@@ -9,7 +9,7 @@ openai==1.57.0
 # OpenAI SDK against its OpenAI-compatible endpoint.
 anthropic>=0.40.0
 pyyaml==6.0.2
-requests==2.32.3
+requests==2.33.0
 aiofiles==24.1.0
 apscheduler==3.10.4
 python-dateutil==2.9.0
@@ -28,7 +28,7 @@ slowapi==0.1.9
 
 # Multipart form parsing. Required by FastAPI's `File` / `UploadFile`
 # helpers used for outbound-attachment uploads (POST /api/uploads).
-python-multipart==0.0.20
+python-multipart==0.0.31
 
 # Hardware detection (RAM / GPU / CPU cores) for the local-LLM tier
 # recommendation in Settings → IA. Falls back to a conservative 8 GB
@@ -39,7 +39,7 @@ psutil==6.1.0
 # --- Desktop app (Windows) ---
 pywebview==5.3.2
 pystray==0.19.5
-Pillow==10.4.0
+Pillow==12.3.0
 
 # Optional — only for the local MCP server (src/mcp_server.py), which lets
 # the user's own Claude/Cursor query their triaged inbox over stdio without

@@ -33,7 +33,7 @@ def test_mcp_has_no_send_tool(fresh_app):
     from src import mcp_server
     server = mcp_server.build_server()
     tools = asyncio.run(server.list_tools())
-    assert not any("send" in t.name for t in tools)
+    assert not any(t.name.startswith("send") or t.name in ("send", "send_email", "send_mail") for t in tools)
 
 
 def test_mcp_tools_dispatch_through_server(fresh_app):

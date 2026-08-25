@@ -79,3 +79,19 @@ def test_is_path_within_blocks_traversal(tmp_path):
     outside = tmp_path.parent / "elsewhere.bin"
     assert is_path_within(str(inside), str(base))
     assert not is_path_within(str(outside), str(base))
+
+
+def test_upload_attachment_multipart_success(client, tmp_path, monkeypatch):
+    """Verify multipart form upload via python-multipart and FastAPI."""
+    from src import paths
+    monkeypatch.setattr(paths, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(paths, "OUTBOX_ATTACHMENTS_DIR", tmp_path / "outbox_attachments")
+    
+    files = {"file": ("test_doc.txt", b"Hello multipart attachment!", "text/plain")}
+    response = client.post("/api/uploads", files=files)
+    assert response.status_code == 200
+    data = response.json()
+    assert "upload_id" in data
+    assert data["filename"] == "test_doc.txt"
+    assert data["size"] == len(b"Hello multipart attachment!")
+
