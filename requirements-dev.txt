@@ -3,7 +3,7 @@
 
 -r requirements.txt
 
-pytest==8.3.4
+pytest==9.0.3
 httpx==0.28.1            # FastAPI's TestClient depends on this
 pytest-asyncio==0.24.0
 keyrings.alt==5.0.2      # In-memory backend for testing the keyring path
