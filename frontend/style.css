@@ -5051,6 +5051,50 @@ kbd {
 #btn-sync.syncing i,
 #btn-sync.syncing svg { animation: spin 700ms linear infinite; transform-origin: center; }
 
+/* ── Live sync status: line under the mailbox title, ring on the account
+   being fetched, "+N" flash when an account just received mail ── */
+.mb-side-head-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mb-sync-line {
+  min-height: 14px;
+  font-size: 11.5px;
+  line-height: 14px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.mb-sync-line > span { overflow: hidden; text-overflow: ellipsis; }
+.mb-sync-line.is-busy { color: var(--accent); }
+.mb-sync-line.has-error { color: var(--warning); }
+.mb-sync-line .mb-sync-bolt { width: 11px; height: 11px; flex: none; color: var(--accent); }
+.mb-acc-av { position: relative; }
+.mb-acc-av.is-fetching::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--accent);
+  border-right-color: var(--accent);
+  animation: spin 900ms linear infinite;
+}
+.mb-acc-badge.flash-new {
+  background: var(--accent);
+  color: var(--surface);
+  animation: mb-flash-new 2.4s ease-out;
+}
+@keyframes mb-flash-new {
+  0%   { transform: scale(1.35); }
+  20%  { transform: scale(1); }
+  100% { transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mb-acc-av.is-fetching::after { animation: none; border-color: var(--accent); }
+  .mb-acc-badge.flash-new { animation: none; }
+}
+
 /* ── Generic confirm dialog ────────────────────────────── */
 .confirm-backdrop {
   position: fixed;

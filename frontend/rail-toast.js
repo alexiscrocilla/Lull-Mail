@@ -374,13 +374,33 @@ let _onDemandBusyCount = 0;
 let _syncBusy = false;
 let _busyToast = null;
 
-function _busyMessage() {
+let _lastStatus = null;
+let _busyToastMsg = '';
+
+function _tr(key, vars, fallback) {
   // Pull i18n lazily — i18n.js may not be loaded yet when this module
   // runs (onboarding pages, settings opened immediately). Fall back to FR.
   if (typeof window !== 'undefined' && typeof window.t === 'function') {
-    return window.t('rt.ai_busy') || 'Analyse IA en cours…';
+    const s = window.t(key, vars);
+    if (s && s !== key) return s;
   }
-  return 'Analyse IA en cours…';
+  return fallback;
+}
+
+function _busyMessage() {
+  // One wording per phase. The sidebar carries the live counters; the rail
+  // only says what kind of work runs, so it never flickers per mail. Before
+  // this the pill said "AI analysis running…" during the IMAP fetch too.
+  const s = _lastStatus;
+  if (s && s.fetching) {
+    const accs = (s.accounts || []).filter((a) => a.phase === 'fetching');
+    if (accs.length === 1) return _tr('rt.fetching_one', { name: accs[0].name }, `Relève de ${accs[0].name}…`);
+    return _tr('rt.fetching', {}, 'Relève du courrier…');
+  }
+  if (s && s.analysing && (s.analysis || {}).phase !== 'analysing') {
+    return _tr('rt.hydrating', {}, 'Téléchargement des messages…');
+  }
+  return _tr('rt.ai_busy', {}, 'Analyse IA en cours…');
 }
 
 function _refreshBusyToast() {
@@ -389,9 +409,10 @@ function _refreshBusyToast() {
     // Spawn a persistent loading toast. duration:0 = no auto-dismiss,
     // collapseAfter:1500 = morph to circle after a second so it doesn't
     // hog the rail with a full pill while still being visible.
+    _busyToastMsg = _busyMessage();
     _busyToast = railToast.show({
       variant: 'loading',
-      message: _busyMessage(),
+      message: _busyToastMsg,
       duration: 0,
       collapseAfter: 1500,
     });
@@ -412,10 +433,18 @@ async function checkAiBusy() {
     const r = await fetch('/api/sync/status');
     if (!r.ok) return;
     const s = await r.json();
+    _lastStatus = s;
     const next = !!s.running;
     if (next !== _syncBusy) {
       _syncBusy = next;
       _refreshBusyToast();
+    } else if (next && _busyToast && !_busyToast.destroyed) {
+      // Phase changed while busy (fetch → download → analysis): reword in place.
+      const msg = _busyMessage();
+      if (msg !== _busyToastMsg) {
+        _busyToastMsg = msg;
+        _busyToast.update({ message: msg });
+      }
     }
     // Re-broadcast for the rail's AI-queue indicator (app.js) — it rides
     // this existing 3 s poll instead of running one of its own.

@@ -611,7 +611,10 @@ export async function mountMailbox(host, _opts) {
       <div class="mb-cols">
       <aside class="mb-side mb-stagger" aria-label="${t('mb.aria.sidebar')}">
         <div class="mb-side-head">
-          <h1>${t('mb.title')}</h1>
+          <div class="mb-side-head-text">
+            <h1>${t('mb.title')}</h1>
+            <div class="mb-sync-line" id="mb-sync-line" aria-live="polite"></div>
+          </div>
           <button class="icon-btn" id="btn-sync" aria-label="${t('mb.sync')}" title="${t('mb.sync')}">
             <i data-lucide="refresh-cw" class="w-4 h-4"></i>
           </button>
@@ -1522,6 +1525,100 @@ export async function mountMailbox(host, _opts) {
     });
   }
 
+  // ── Live sync status (sidebar line + per-account state) ─────
+  // Fed by the 3 s /api/sync/status poll that rail-toast.js re-broadcasts
+  // as a 'sync-status' event. Answers the two questions users kept asking:
+  // "is it fetching right now, and which account?" and "when did it last
+  // fetch?". Pure DOM patching — never a list re-render.
+  let _lastSyncStatus = null;
+
+  function _agoLabel(iso) {
+    const ts = Date.parse(iso || '');
+    if (!ts) return '';
+    const s = Math.max(0, (Date.now() - ts) / 1000);
+    if (s < 60) return t('mb.sync.just_now');
+    if (s < 3600) return t('mb.sync.min_ago', { n: Math.floor(s / 60) });
+    if (s < 86400) return t('mb.sync.h_ago', { n: Math.floor(s / 3600) });
+    return t('mb.sync.d_ago', { n: Math.floor(s / 86400) });
+  }
+
+  function _clockLabel(iso) {
+    const ts = Date.parse(iso || '');
+    if (!ts) return '';
+    return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  const _BOLT_SVG = '<svg class="mb-sync-bolt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>';
+
+  function renderSyncLine(s) {
+    const el = $('#mb-sync-line');
+    if (!el) return;
+    if (!s) { el.textContent = ''; el.className = 'mb-sync-line'; return; }
+    const accs = s.accounts || [];
+    const fetching = accs.filter((a) => a.phase === 'fetching');
+    let text = '';
+    let cls = '';
+    if (s.fetching) {
+      cls = 'is-busy';
+      if (fetching.length === 1) text = t('mb.sync.line_fetching_one', { name: fetching[0].name });
+      else if (fetching.length > 1) text = t('mb.sync.line_fetching_many', { n: fetching.length });
+      else text = t('mb.sync.line_fetching');
+    } else if (s.analysing) {
+      cls = 'is-busy';
+      const a = s.analysis || {};
+      text = (a.phase === 'analysing' && a.total)
+        ? t('mb.sync.line_analysing', { done: a.done, total: a.total })
+        : t('mb.sync.line_hydrating');
+    } else {
+      text = s.last_sync_iso ? t('mb.sync.line_last', { t: _agoLabel(s.last_sync_iso) }) : t('mb.sync.line_never');
+      const errs = accs.filter((a) => a.error);
+      if (errs.length) {
+        cls = 'has-error';
+        text += ' · ' + t('mb.sync.line_errors', { n: errs.length });
+      }
+    }
+    const push = accs.length > 0 && accs.some((a) => a.push && a.push.connected);
+    el.className = 'mb-sync-line ' + cls;
+    el.title = push ? t('mb.sync.push_on') : '';
+    el.innerHTML = `${push ? _BOLT_SVG : ''}<span>${escapeHtml(text)}</span>`;
+  }
+
+  function _applySyncStatusToAccounts(s) {
+    const section = $('#mb-accounts-list');
+    if (!section || !s) return;
+    for (const a of (s.accounts || [])) {
+      const btn = section.querySelector(`[data-acc="${CSS.escape(a.email)}"]`);
+      if (!btn) continue;
+      btn.querySelector('.mb-acc-av')?.classList.toggle('is-fetching', a.phase === 'fetching');
+      const parts = [];
+      if (a.phase === 'fetching') parts.push(t('mb.sync.acc_fetching', { n: a.fetched || 0 }));
+      else if (a.last_sync) parts.push(t('mb.sync.acc_last', { t: _agoLabel(a.last_sync) }));
+      else parts.push(t('mb.sync.line_never'));
+      if (a.error) {
+        let line = t('mb.sync.acc_error', { msg: a.error });
+        if (a.backoff_until) line += ' · ' + t('mb.sync.acc_retry', { time: _clockLabel(a.backoff_until) });
+        parts.push(line);
+      }
+      if (a.push && a.push.connected) parts.push(t('mb.sync.push_on'));
+      parts.push(t('mb.sidebar.acc_toggle_title'));
+      btn.title = parts.join('\n');
+      // "+N" flash on the badge when this account just received mail.
+      if (a.last_new_at && a.last_new_count > 0 && btn.dataset.lastNewAt !== a.last_new_at) {
+        btn.dataset.lastNewAt = a.last_new_at;
+        const badge = btn.querySelector('.mb-acc-badge');
+        if (badge && !badge.classList.contains('error') && Date.now() - Date.parse(a.last_new_at) < 30_000) {
+          badge.classList.add('flash-new');
+          badge.textContent = `+${a.last_new_count}`;
+          setTimeout(() => {
+            badge.classList.remove('flash-new');
+            const sec = $('#mb-accounts-list');
+            if (sec) _patchAccountBadges(sec);
+          }, 2500);
+        }
+      }
+    }
+  }
+
   function renderAccounts() {
     const outerWrap = $('#mb-accounts-wrap');
     if (!outerWrap) return;
@@ -1696,6 +1793,8 @@ export async function mountMailbox(host, _opts) {
         localStorage.setItem(key, nowCollapsed ? '1' : '0');
       });
     });
+    // A structural rebuild drops the live rings/tooltips; put them back.
+    if (_lastSyncStatus) _applySyncStatusToAccounts(_lastSyncStatus);
     window.lucide?.createIcons();
   }
 
@@ -2326,6 +2425,19 @@ export async function mountMailbox(host, _opts) {
     }
     if (state.folder === 'favourite') {
       return { icon: 'star', title: t('mb.empty.fav_title'), desc: t('mb.empty.fav_desc') };
+    }
+    // First sync: the list is empty because the mail has not landed yet, not
+    // because the folder is empty. Say so, with the account and the count —
+    // the 5 s poll repaints this while the chunks come in.
+    if (state.folder === 'inbox' && _lastSyncStatus?.fetching) {
+      const busy = (_lastSyncStatus.accounts || []).filter((a) => a.phase === 'fetching');
+      const a = busy[0];
+      return {
+        icon: 'refresh-cw',
+        title: t('mb.empty.first_sync_title'),
+        desc: a ? t('mb.empty.first_sync_desc', { name: a.name, n: a.fetched || 0 })
+                : t('mb.empty.first_sync_desc_generic'),
+      };
     }
     return { icon: 'inbox', title: t('mb.list.empty_title'), desc: t('mb.list.empty_none') };
   }
@@ -5175,12 +5287,13 @@ export async function mountMailbox(host, _opts) {
   async function loadAccounts() {
     _lastLoadAt = Date.now();
     try {
-      const [accs, dash] = await Promise.all([
-        api.getAccounts(),
-        api.getDashboard().catch(() => null),
-      ]);
+      // /api/accounts carries the per-account counters itself now; the
+      // dashboard aggregates (histograms, throughput) were computed on every
+      // 5 s tick of a running sync just to read `unread` out of them.
+      const accs = await api.getAccounts();
+      const dash = { accounts: accs };
       state.accounts = accs;
-      // Merge unread counts (dashboard) with sync_error (accounts list)
+      // Merge unread counts with sync_error (accounts list)
       const errMap = {};
       for (const a of accs) errMap[a.email] = a.sync_error || null;
 
@@ -6086,18 +6199,49 @@ export async function mountMailbox(host, _opts) {
   // /api/sync/status every 3s for its busy indicator and re-broadcasts the
   // payload — ride that instead of opening a third poll. pollSync() is a
   // no-op while already armed, so firing on every broadcast costs nothing.
-  const onSyncStatus = (e) => { if (e.detail?.running) pollSync(); };
+  const onSyncStatus = (e) => {
+    const s = e.detail || null;
+    _lastSyncStatus = s;
+    renderSyncLine(s);
+    _applySyncStatusToAccounts(s);
+    if (s?.running) pollSync();
+  };
   window.addEventListener('sync-status', onSyncStatus);
+  // Don't wait up to 3 s for the first broadcast: the sidebar line would
+  // sit empty on every mount.
+  window.railToast?.checkAiBusy?.();
+
+  // Coming back to the app is the moment people expect fresh mail: ask for
+  // a fetch when the last one is older than a minute. The backend refuses
+  // overlapping passes and rate-limits; with IMAP IDLE live this is
+  // usually a no-op because the mail already arrived.
+  let _lastReturnFetch = 0;
+  function _maybeFetchOnReturn() {
+    if (Date.now() - _lastReturnFetch < 60_000) return;
+    const s = _lastSyncStatus;
+    if (s?.fetching) return;
+    const last = s?.last_sync_iso ? Date.parse(s.last_sync_iso) : 0;
+    if (last && Date.now() - last < 60_000) return;
+    _lastReturnFetch = Date.now();
+    api.triggerSync().then((r) => {
+      if (r?.ok) { setSyncSpinner(true); pollSync(); }
+    }).catch(() => {});
+  }
 
   // Refresh when the user comes back to the tab, but debounce: a quick
   // tab-switch must not trigger a second reload on top of the periodic
   // refresh that just fired.
   const onVisibility = () => {
     if (document.hidden) return;
+    _maybeFetchOnReturn();
     if (Date.now() - _lastLoadAt < 10_000) return;
     _backgroundRefresh();
   };
   document.addEventListener('visibilitychange', onVisibility);
+  // The native window regaining focus (tray → open, alt-tab) fires `focus`,
+  // not `visibilitychange`: same expectation of fresh mail.
+  const onFocus = () => { if (!document.hidden) _maybeFetchOnReturn(); };
+  window.addEventListener('focus', onFocus);
 
   // ── Initial render ────────────────────────────────────────
   const _mountedAt = Date.now(); // used to synchronise accounts stagger with static stagger
@@ -6336,6 +6480,7 @@ export async function mountMailbox(host, _opts) {
     if (syncTimer) clearInterval(syncTimer);
     if (refreshTimer) clearInterval(refreshTimer);
     document.removeEventListener('visibilitychange', onVisibility);
+    window.removeEventListener('focus', onFocus);
     window.removeEventListener('sync-status', onSyncStatus);
     window.removeEventListener('app:key', onKey);
     document.removeEventListener('keydown', onEscape);

@@ -1312,7 +1312,7 @@ export async function mountSettings(host, opts = {}) {
     els.ntfyMin.value = ntfy.min_importance || 7;
 
     // General
-    els.genInterval.value = (state.config.polling || {}).interval_minutes || 10;
+    els.genInterval.value = (state.config.polling || {}).interval_minutes || 2;
     if (els.genInjection) {
       els.genInjection.value =
         ((state.config.security || {}).injection_scan || {}).mode || 'hybrid';
@@ -1354,7 +1354,7 @@ export async function mountSettings(host, opts = {}) {
   }
 
   async function saveGeneral() {
-    const polling = parseInt(els.genInterval.value, 10) || 10;
+    const polling = parseInt(els.genInterval.value, 10) || 2;
     const injectionMode = els.genInjection?.value || 'hybrid';
     setBusy(els.btnSaveGn, true, t('set.busy.saving'));
     try {
