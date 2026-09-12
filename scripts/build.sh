@@ -57,6 +57,7 @@ echo "[version] $_VER baked into src/_version.py"
 echo "[1/4] Updating dependencies..."
 "$PIP" install -r requirements.txt -q
 "$PIP" install pyinstaller==6.11.1 -q
+"$PYTHON" scripts/embed_update_keys.py
 
 # Local LLM backend. Without this wheel, the spec's `try: import llama_cpp`
 # falls through to `_local_llm_available = False` and the installer ships

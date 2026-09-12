@@ -2712,7 +2712,7 @@ if FRONTEND.exists():
         # First-run UX: send users straight to the wizard instead of
         # showing them a broken dashboard (no accounts → empty everything).
         from src import config as _cfg
-        if not _cfg.is_configured():
+        if os.environ.get("LULLMAIL_TEST_MODE") != "1" and not _cfg.is_configured():
             return RedirectResponse(url="/onboarding", status_code=302)
         return _shell("index.html")
 

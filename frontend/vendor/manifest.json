@@ -1,0 +1,16 @@
+{
+  "files": [
+    {
+      "path": "dompurify.es.mjs",
+      "package": "dompurify@3.2.6",
+      "license": "Apache-2.0 OR MPL-2.0",
+      "sha256": "4b95c409255f7253ea09bc348e2467702224594adf021ba013295d829c1bd30f"
+    },
+    {
+      "path": "DOMPURIFY-LICENSE",
+      "package": "dompurify@3.2.6",
+      "license": "Apache-2.0 OR MPL-2.0",
+      "sha256": "1b02e03c3fb4f87d476c128f0eb9def1f5a1709d28b180465228bd41574623b7"
+    }
+  ]
+}

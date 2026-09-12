@@ -39,6 +39,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
+.venv\Scripts\python scripts\embed_update_keys.py
+if errorlevel 1 (
+    echo [ERREUR] Cles publiques de mise a jour invalides ou absentes.
+    exit /b 1
+)
+
 :: Backend LLM local. Sans ce wheel, le spec PyInstaller skip le bundle
 :: de llama_cpp et l'installeur publie une app inutilisable en mode Local
 :: (ModuleNotFoundError au runtime, observe sur la v0.7.0). On installe

@@ -25,10 +25,14 @@ on:
         type: string
 
 jobs:
+  quality:
+    uses: ./.github/workflows/ci.yml
+
   # ───────────────────────────────────────────────────────────────────────────
   # Windows — PyInstaller onedir → Inno Setup installer (.exe)
   # ───────────────────────────────────────────────────────────────────────────
   build-windows:
+    needs: quality
     runs-on: windows-latest
     permissions:
       contents: write
@@ -130,6 +134,7 @@ jobs:
   # macOS — PyInstaller onedir + .app bundle → hdiutil .dmg
   # ───────────────────────────────────────────────────────────────────────────
   build-macos:
+    needs: quality
     runs-on: macos-latest
     permissions:
       contents: write
@@ -257,6 +262,7 @@ jobs:
   # Linux — PyInstaller onedir → .tar.gz
   # ───────────────────────────────────────────────────────────────────────────
   build-linux:
+    needs: quality
     runs-on: ubuntu-latest
     permissions:
       contents: write

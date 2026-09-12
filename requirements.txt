@@ -14,6 +14,11 @@ aiofiles==24.1.0
 apscheduler==3.10.4
 python-dateutil==2.9.0
 
+# Ed25519 verification for signed update manifests. The private signing key
+# never ships in the application; release CI only injects it in the protected
+# signing job.
+cryptography==45.0.6
+
 # Cross-platform secret store (Windows Credential Manager / macOS
 # Keychain / Linux Secret Service). Replaces clear-text passwords +
 # OpenAI key in config.yaml — see src/secrets_store.py and

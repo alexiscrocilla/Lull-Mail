@@ -19,6 +19,7 @@ venv/
 
 # ── Généré au build (version baking) ──
 src/_version.py
+src/_update_keys.py
 
 # ── PyInstaller build artefacts ──
 build/
@@ -31,6 +32,14 @@ dist/
 .vscode/
 .idea/
 .vs/
+node_modules/
+frontend/node_modules/
+frontend/test-results/
+frontend/playwright-report/
+frontend/.playwright-data/
 *.lnk
 Thumbs.db
 .DS_Store
+
+# pnpm content-addressable store (frontend deps cache)
+.pnpm-store/
