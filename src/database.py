@@ -1466,6 +1466,52 @@ def reset_hydrating_body_states() -> int:
         return cur1.rowcount
 
 
+def release_hydration_claims(message_ids: List[str]) -> int:
+    """Give back rows a hydration pass claimed but could not download
+    (connection failure). Only touches rows still in 'hydrating'."""
+    ids = [m for m in (message_ids or []) if m]
+    if not ids:
+        return 0
+    with _conn() as con:
+        placeholders = ",".join("?" for _ in ids)
+        cur = con.execute(
+            f"UPDATE emails SET body_state = 'envelope', body_updated_at = datetime('now') "
+            f"WHERE body_state = 'hydrating' AND message_id IN ({placeholders})",
+            ids,
+        )
+        return cur.rowcount
+
+
+def reclaim_stale_hydrating(max_age_minutes: int = 10) -> int:
+    """Rows stuck in 'hydrating' longer than *max_age_minutes* (crash, dead
+    socket) go back to 'envelope' so they get analysed eventually."""
+    with _conn() as con:
+        cur = con.execute(
+            "UPDATE emails SET body_state = 'envelope', body_updated_at = datetime('now') "
+            "WHERE body_state = 'hydrating' "
+            "AND (body_updated_at IS NULL OR body_updated_at < datetime('now', ?))",
+            (f"-{int(max_age_minutes)} minutes",),
+        )
+        return cur.rowcount
+
+
+def count_hydration_candidates(account: Optional[str] = None) -> int:
+    """How many rows the next hydration round could claim."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    q = """
+        SELECT COUNT(*) FROM emails
+        WHERE (body_state = 'envelope' OR (body_state = 'body_failed' AND (body_next_retry_at IS NULL OR body_next_retry_at <= ?)))
+          AND uid IS NOT NULL AND uid != ''
+          AND folder != 'deleted'
+    """
+    params: list = [now_iso]
+    if account:
+        q += " AND account_email = ?"
+        params.append(account)
+    with _conn() as con:
+        return int(con.execute(q, params).fetchone()[0])
+
+
 def record_test_result(account_email: str, ok: bool, error: Optional[str] = None):
     """Persist the outcome of an explicit IMAP login test (auto-test on
     save in Settings/onboarding, or manual click on the per-row icon).

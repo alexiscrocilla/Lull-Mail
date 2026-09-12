@@ -576,6 +576,13 @@ def main() -> int:
             window.restore()
         except Exception:  # noqa: BLE001
             logger.exception("Réaffichage de la fenêtre a échoué")
+        # The user just came back to the app: fetch right away instead of
+        # waiting for the next tick (at most once every 30 s).
+        try:
+            from src.scheduler import request_fetch
+            request_fetch(trigger="window", min_gap_seconds=30)
+        except Exception:  # noqa: BLE001
+            logger.exception("Relève au réaffichage a échoué")
 
     def _request_quit():
         _QUIT_REQUESTED.set()

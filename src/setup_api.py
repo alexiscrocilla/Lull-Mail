@@ -278,7 +278,7 @@ class NtfyPayload(BaseModel):
 
 
 class GeneralPayload(BaseModel):
-    polling_interval_minutes: int = Field(10, ge=1, le=1440)
+    polling_interval_minutes: int = Field(2, ge=1, le=1440)
     # `server_port` accepted but ignored — the desktop app picks an
     # ephemeral port at startup. Kept in the schema only for backwards
     # compatibility with older config.yaml files.
@@ -811,6 +811,8 @@ def save_general(payload: GeneralPayload) -> Dict[str, Any]:
     data = _load_or_default()
     polling = data.get("polling") or {}
     polling["interval_minutes"] = payload.polling_interval_minutes
+    # An explicit choice — never to be touched by the 10→2 boot migration.
+    polling["interval_migrated"] = True
     data["polling"] = polling
     # We still write a sane server section so older code that reads
     # config.server.host/port doesn't blow up — but the actual port used
@@ -828,6 +830,12 @@ def save_general(payload: GeneralPayload) -> Dict[str, Any]:
         security["injection_scan"] = scan
         data["security"] = security
     _persist(data)
+    # Apply the new cadence to the running scheduler right away: before this
+    # the value only took effect after a restart of the services.
+    try:
+        lifecycle.reschedule_fetch(payload.polling_interval_minutes)
+    except Exception:  # noqa: BLE001 — the config is saved either way
+        logger.exception("Replanification de la relève a échoué")
     return {"ok": True}
 
 

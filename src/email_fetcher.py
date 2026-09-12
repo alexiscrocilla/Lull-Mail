@@ -357,7 +357,13 @@ def persist_attachments(
     return saved
 
 
-def _make_connection(account: Dict) -> imaplib.IMAP4:
+# Socket timeout for every IMAP connection the app opens. Without one, a
+# connection that silently dies (Wi-Fi switch, sleep/resume, server hang)
+# blocks its thread forever — and with it the whole sync pass.
+IMAP_TIMEOUT_SECONDS = 30.0
+
+
+def _make_connection(account: Dict, timeout: Optional[float] = None) -> imaplib.IMAP4:
     host = account["imap_host"]
     port = int(account["imap_port"])
     use_ssl = account.get("ssl", True)
@@ -376,10 +382,12 @@ def _make_connection(account: Dict) -> imaplib.IMAP4:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
 
+    if timeout is None:
+        timeout = IMAP_TIMEOUT_SECONDS
     if use_ssl:
-        conn = imaplib.IMAP4_SSL(host, port, ssl_context=ctx)
+        conn = imaplib.IMAP4_SSL(host, port, ssl_context=ctx, timeout=timeout)
     else:
-        conn = imaplib.IMAP4(host, port)
+        conn = imaplib.IMAP4(host, port, timeout=timeout)
         if starttls:
             conn.starttls(ssl_context=ctx)
 
@@ -833,6 +841,30 @@ def _parse_flags(raw_resp: Any) -> Tuple[bool, bool]:
     return is_seen, is_flagged
 
 
+_UID_RE = re.compile(rb"\bUID (\d+)")
+
+
+def _parse_fetch_items(msg_data: Any, default_uid: Optional[bytes] = None) -> List[Tuple[bytes, bytes, str]]:
+    """Flatten a FETCH response — one or many messages — into
+    ``(uid, raw_bytes, metadata_text)`` triples.
+
+    imaplib returns ``[(meta, literal), b')', (meta, literal), b')', …]``
+    and sometimes splits attributes that follow the literal (typically
+    ``FLAGS``) into a bare bytes item; those are glued back onto the
+    message they belong to so flag parsing sees them.
+    """
+    items: List[List[Any]] = []
+    for part in msg_data or ():
+        if isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], (bytes, bytearray)):
+            meta = part[0] if isinstance(part[0], (bytes, bytearray)) else str(part[0]).encode()
+            m = _UID_RE.search(bytes(meta))
+            uid = m.group(1) if m else (default_uid or b"")
+            items.append([uid, bytes(part[1]), bytes(meta).decode("utf-8", "replace")])
+        elif isinstance(part, (bytes, bytearray)) and items:
+            items[-1][2] += bytes(part).decode("utf-8", "replace")
+    return [(u, r, m) for u, r, m in items if u]
+
+
 def hydrate_email_bodies(
     account: Dict,
     targets: List[Dict],
@@ -939,6 +971,13 @@ def hydrate_email_bodies(
                 pass
     except Exception as e:
         logger.error(f"[{account['email']}] hydrate_email_bodies connection failed: {e}")
+        # The claim flipped these rows to 'hydrating'; give them back so the
+        # next pass (or the next account that answers) can pick them up
+        # instead of leaving them invisible to the analysis forever.
+        try:
+            db.release_hydration_claims([t.get("message_id") for t in targets if t.get("message_id")])
+        except Exception:  # noqa: BLE001
+            pass
     return processed
 
 
@@ -958,12 +997,22 @@ def fetch_emails(
     limit: int = 50,
     attachment_policy: Optional[AttachmentPolicy] = None,
     envelope_only: bool = True,
+    on_chunk=None,
+    chunk_size: int = 20,
+    fetch_batch: int = 50,
 ) -> Tuple[List[Dict], Optional[str], Optional[str], bool]:
     """Fetch emails for *account*.
 
     Returns ``(results, error, server_uidvalidity, uidvalidity_changed)`` where
     *error* is ``None`` on success and a short human-readable string when a
     connection-level failure occurred.
+
+    *on_chunk*, when given, is called from this thread every *chunk_size*
+    parsed messages (and once more with the remainder) with a dict
+    ``{"emails": [...], "server_uidvalidity": …, "uidvalidity_changed": …}``
+    so the caller can persist progressively. Headers are requested
+    *fetch_batch* UIDs per round-trip; servers that refuse the grouped form
+    fall back to one FETCH per message.
     """
     results: List[Dict] = []
     server_uidvalidity: Optional[str] = None
@@ -1011,28 +1060,74 @@ def fetch_emails(
         if len(uids) > limit:
             uids = uids[-limit:]
 
+        # ── Streaming: hand finished envelopes to the caller every
+        # `chunk_size` messages so the inbox fills while the fetch runs.
+        pending_chunk: List[Dict] = []
+
+        def _flush_chunk(force: bool = False) -> None:
+            if on_chunk is None or not pending_chunk:
+                return
+            if not force and len(pending_chunk) < chunk_size:
+                return
+            batch = list(pending_chunk)
+            pending_chunk.clear()
+            try:
+                on_chunk({
+                    "emails": batch,
+                    "server_uidvalidity": server_uidvalidity,
+                    "uidvalidity_changed": uidvalidity_changed,
+                })
+            except Exception as e:  # noqa: BLE001 — a consumer bug must not abort the fetch
+                logger.warning(f"[{account['email']}] on_chunk a échoué : {e}")
+
+        # ── Batched FETCH: one round-trip per `fetch_batch` UIDs instead of
+        # one per message (500 messages → 10 round-trips). Servers that
+        # reject the grouped form fall back to the per-message path below.
+        prefetched: Dict[bytes, Tuple[bytes, str]] = {}
+        if envelope_only and fetch_batch > 1 and len(uids) > 1:
+            for start in range(0, len(uids), fetch_batch):
+                batch_uids = uids[start:start + fetch_batch]
+                try:
+                    status, msg_data = conn.uid(
+                        "fetch", b",".join(batch_uids), "(UID FLAGS BODY.PEEK[HEADER])"
+                    )
+                except imaplib.IMAP4.abort:
+                    raise
+                except Exception as e:  # noqa: BLE001 — grouped form refused
+                    logger.info(f"[{account['email']}] FETCH groupé refusé ({e}), repli message par message")
+                    break
+                if status != "OK" or not msg_data:
+                    break
+                for uid_b, raw_b, meta in _parse_fetch_items(msg_data):
+                    prefetched[uid_b] = (raw_b, meta)
+
         for uid in uids:
             try:
                 is_read, is_fav = False, False
-                if envelope_only:
-                    status, msg_data = conn.uid("fetch", uid, "(FLAGS BODY.PEEK[HEADER])")
-                    if status != "OK" or not msg_data or not msg_data[0]:
-                        # Fallback to full fetch if server rejects partial fetch
-                        status, msg_data = conn.uid("fetch", uid, "(RFC822)")
-                else:
-                    status, msg_data = conn.uid("fetch", uid, "(RFC822)")
-
-                if status != "OK" or not msg_data or not msg_data[0]:
-                    continue
-
                 raw = None
-                for part in msg_data:
-                    if isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], (bytes, bytearray)):
-                        raw = bytes(part[1])
-                        is_read, is_fav = _parse_flags(part[0])
-                        break
-                    elif isinstance(part, bytes):
-                        is_read, is_fav = _parse_flags(part)
+                hit = prefetched.pop(uid, None)
+                if hit is not None:
+                    raw, meta = hit
+                    is_read, is_fav = _parse_flags(meta)
+                else:
+                    if envelope_only:
+                        status, msg_data = conn.uid("fetch", uid, "(FLAGS BODY.PEEK[HEADER])")
+                        if status != "OK" or not msg_data or not msg_data[0]:
+                            # Fallback to full fetch if server rejects partial fetch
+                            status, msg_data = conn.uid("fetch", uid, "(RFC822)")
+                    else:
+                        status, msg_data = conn.uid("fetch", uid, "(RFC822)")
+
+                    if status != "OK" or not msg_data or not msg_data[0]:
+                        continue
+
+                    for part in msg_data:
+                        if isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], (bytes, bytearray)):
+                            raw = bytes(part[1])
+                            is_read, is_fav = _parse_flags(part[0])
+                            break
+                        elif isinstance(part, bytes):
+                            is_read, is_fav = _parse_flags(part)
 
                 if raw is None:
                     continue
@@ -1093,9 +1188,12 @@ def fetch_emails(
                     "references": references,
                     "_attachment_parts": attachment_parts,
                 })
+                pending_chunk.append(results[-1])
+                _flush_chunk()
             except Exception as e:
                 logger.warning(f"[{account['email']}] UID {uid} skipped: {e}")
 
+        _flush_chunk(force=True)
         conn.logout()
         return results, None, server_uidvalidity, uidvalidity_changed
 

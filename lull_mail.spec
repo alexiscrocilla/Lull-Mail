@@ -68,6 +68,7 @@ _pystray_backends: dict = {
 hiddenimports += _pystray_backends.get(_sys.platform, ["pystray._xorg"])
 hiddenimports += [
     "src._version",
+    "imapclient",
     "PIL._tkinter_finder",
     "uvicorn.logging",
     "uvicorn.loops",

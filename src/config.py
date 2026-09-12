@@ -178,13 +178,21 @@ class NtfyConfig(BaseModel):
 
 
 class PollingConfig(BaseModel):
-    interval_minutes: int = Field(default=10, ge=1, le=1440)
+    # Cadence of the header-only delta fetch. IMAP IDLE (below) normally
+    # wakes the fetch first; the interval is the safety net.
+    interval_minutes: int = Field(default=2, ge=1, le=1440)
     initial_fetch_count: int = Field(default=500, ge=1, le=2000)
     max_age_days: int = Field(default=30, ge=0, le=3650)
     ai_batch_size: int = Field(default=200, ge=1, le=2000)
     # IMAP accounts fetched concurrently per sync (network only; DB writes
     # stay single-threaded).
     fetch_workers: int = Field(default=4, ge=1, le=16)
+    # One long-lived IMAP IDLE connection per account: the server announces
+    # new mail and the fetch runs within seconds instead of at the next tick.
+    idle_enabled: bool = True
+    # Set once the historical 10-minute default has been migrated to 2 (or
+    # the user saved an explicit value), so a deliberate 10 sticks.
+    interval_migrated: bool = False
 
 
 class ServerConfig(BaseModel):
@@ -352,8 +360,42 @@ def load() -> Dict[str, Any]:
         _config = yaml.safe_load(f) or {}
 
     _validate(_config)
+    # Before secrets are resolved: what gets written back must stay in
+    # sentinel form.
+    _migrate_polling_interval(_config)
     _resolve_secrets(_config)
     return _config
+
+
+LEGACY_POLL_INTERVAL = 10
+DEFAULT_POLL_INTERVAL = 2
+
+
+def _migrate_polling_interval(conf: Dict[str, Any]) -> bool:
+    """One-shot: a config still on the historical 10-minute default moves to
+    2 minutes now that the header fetch no longer waits for the AI pass. Any
+    other value is the user's choice and is left alone; the marker written
+    here also protects a 10 the user picks deliberately later on. Returns
+    True when the interval changed."""
+    polling = conf.get("polling")
+    if not isinstance(polling, dict) or polling.get("interval_migrated"):
+        return False
+    changed = False
+    try:
+        current = int(polling.get("interval_minutes", DEFAULT_POLL_INTERVAL) or 0)
+    except (TypeError, ValueError):
+        current = 0
+    if current == LEGACY_POLL_INTERVAL:
+        polling["interval_minutes"] = DEFAULT_POLL_INTERVAL
+        changed = True
+        logger.info("Intervalle de relève migré de %d à %d minutes",
+                    LEGACY_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
+    polling["interval_migrated"] = True
+    try:
+        _write_raw(conf)
+    except Exception:  # noqa: BLE001 — a read-only disk must not block boot
+        logger.exception("Impossible d'enregistrer la migration de l'intervalle")
+    return changed
 
 
 def _resolve_secrets(conf: Dict[str, Any]) -> None:
@@ -501,6 +543,11 @@ def save(data: Dict[str, Any]) -> None:
     """Atomically write config.yaml. Validates first so we never persist
     something the loader would refuse on next boot."""
     _validate(data)
+    _write_raw(data)
+
+
+def _write_raw(data: Dict[str, Any]) -> None:
+    """Atomic YAML dump, no validation (callers validate first)."""
     paths.ensure_dirs()
     tmp = CONFIG_PATH.with_suffix(".yaml.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
@@ -537,8 +584,9 @@ def default_skeleton() -> Dict[str, Any]:
             "anthropic": {"api_key": "", "model": "claude-3-5-haiku-latest"},
         },
         "ntfy": {"server": "https://ntfy.sh", "topic": "", "min_importance": 7},
-        "polling": {"interval_minutes": 10, "initial_fetch_count": 500,
-                    "max_age_days": 30, "ai_batch_size": 200},
+        "polling": {"interval_minutes": 2, "initial_fetch_count": 500,
+                    "max_age_days": 30, "ai_batch_size": 200,
+                    "idle_enabled": True, "interval_migrated": True},
         "server": {"host": "127.0.0.1", "port": 8000},
         "attachments": {
             "enabled": True,

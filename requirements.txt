@@ -59,3 +59,7 @@ mcp>=1.2.0
 # extra index URL. The frozen build (PyInstaller) must install
 # requirements-local.txt in its environment before invoking
 # `pyinstaller lull_mail.spec`.
+
+# IMAP IDLE (RFC 2177): instant new-mail wake-up on a long-lived connection
+# per account. stdlib imaplib has no idle()/idle_check().
+imapclient==3.0.1

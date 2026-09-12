@@ -2028,11 +2028,15 @@ def get_stats():
 def get_accounts():
     conf = cfg.get()
     result = []
+    # Per-account counters ride along so the sidebar no longer needs the
+    # (heavy) /api/dashboard/status aggregates just to show unread badges.
+    per_acc = {r["account_email"]: r for r in db.per_account_stats()}
     for acc in conf.get("accounts", []):
         if not acc.get("enabled", True):
             continue
         state = db.get_sync_state(acc["email"])
         pending_ops_cnt = db.count_pending_ops(acc["email"])
+        stat = per_acc.get(acc["email"], {})
         result.append({
             "email": acc["email"],
             "name": acc.get("name", acc["email"]),
@@ -2042,6 +2046,12 @@ def get_accounts():
             "backoff_until": state["backoff_until"] if state else None,
             "consecutive_failures": state["consecutive_failures"] if state else 0,
             "pending_ops": pending_ops_cnt,
+            "unread": int(stat.get("unread") or 0),
+            "needs_reply": int(stat.get("needs_reply") or 0),
+            "pending": int(stat.get("pending") or 0),
+            "favourite": int(stat.get("favourite") or 0),
+            "draft": int(stat.get("draft") or 0),
+            "total": int(stat.get("total") or 0),
             # Auto-test status (separate from sync lifecycle). Drives the
             # green/red/grey badge in the Settings account list.
             "last_test_at": state["last_test_at"] if state else None,
@@ -2054,11 +2064,17 @@ def get_accounts():
 
 @app.post("/api/sync")
 @limiter.limit("6/minute")
-def trigger_sync(request: Request, bg: BackgroundTasks, locale: str = Depends(get_locale)):
-    from src.scheduler import is_running, run_sync
-    if is_running():
+def trigger_sync(request: Request, account: Optional[str] = None,
+                 locale: str = Depends(get_locale)):
+    """Manual fetch: headers now, analysis chained in the background. A manual
+    sync also lifts a per-account backoff — the user is asking for a retry.
+    `account` narrows the pass to one mailbox."""
+    from src.scheduler import is_fetching, request_fetch
+    if is_fetching():
         return {"ok": False, "message": tr("sync.already_running", locale)}
-    bg.add_task(run_sync)
+    only = [account] if account else None
+    if not request_fetch(only, trigger="manual", ignore_backoff=True):
+        return {"ok": False, "message": tr("sync.already_running", locale)}
     return {"ok": True, "message": tr("sync.started", locale)}
 
 
@@ -2090,17 +2106,69 @@ def app_show_window():
         return {"shown": False}
 
 
+def _sqlite_utc_to_iso(value: Optional[str]) -> Optional[str]:
+    """`datetime('now')` in SQLite is UTC without a zone; make it explicit."""
+    if not value:
+        return None
+    s = str(value)
+    if "T" not in s:
+        s = s.replace(" ", "T", 1)
+    if not (s.endswith("Z") or "+" in s[10:] or "-" in s[11:]):
+        s += "+00:00"
+    return s
+
+
 @app.get("/api/sync/status")
 def sync_status():
-    """Polled every 3 s by the rail (rail-toast.js). `queue_pending` feeds
-    the rail's AI-queue indicator — one COUNT query, cheap at this rate."""
-    from src.scheduler import get_last_sync, is_running
-    return {
-        "running": is_running(),
-        "last_sync": get_last_sync(),
-        "queue_pending": db.count_pending(),
-        "pending_ops": db.count_pending_ops(),
-    }
+    """Polled every 3 s by the rail (rail-toast.js) and every 5 s by the
+    mailbox while a pass runs. Cheap: an in-memory progress snapshot, two
+    COUNTs and the (tiny) sync_state table. Per account it says what is
+    happening right now (phase), when the last successful fetch was, whether
+    the account is paused after errors, and whether IMAP IDLE is live."""
+    from datetime import datetime as _dt, timezone as _tz
+    from src.scheduler import get_status
+
+    status = get_status()
+    live_accounts = status.pop("accounts", {}) or {}
+    push_states = status.pop("push", {}) or {}
+    try:
+        conf = cfg.get()
+    except Exception:  # noqa: BLE001 — setup mode: no config yet, nothing to sync
+        conf = {}
+    now_iso = _dt.now(_tz.utc).isoformat()
+    accounts = []
+    for acc in conf.get("accounts", []) or []:
+        if not acc.get("enabled", True):
+            continue
+        email = acc["email"]
+        state = db.get_sync_state(email) or {}
+        live = live_accounts.get(email) or {}
+        push = push_states.get(email) or {}
+        backoff = state.get("backoff_until")
+        accounts.append({
+            "email": email,
+            "name": acc.get("name") or email,
+            "type": acc.get("type", "other"),
+            "phase": live.get("phase", "idle"),
+            "started_at": live.get("started_at"),
+            "fetched": int(live.get("fetched") or 0),
+            "new": int(live.get("new") or 0),
+            "last_new_count": int(live.get("last_new_count") or 0),
+            "last_new_at": live.get("last_new_at"),
+            "last_sync": _sqlite_utc_to_iso(state.get("last_sync")),
+            "error": live.get("error") or state.get("last_error"),
+            "backoff_until": backoff if (backoff and backoff > now_iso) else None,
+            "consecutive_failures": int(state.get("consecutive_failures") or 0),
+            "push": {
+                "connected": bool(push.get("connected")),
+                "supported": push.get("supported"),
+                "error": push.get("error"),
+            },
+        })
+    status["accounts"] = accounts
+    status["queue_pending"] = db.count_pending()
+    status["pending_ops"] = db.count_pending_ops()
+    return status
 
 
 # ── Local LLM management ─────────────────────────────────────────────────────
