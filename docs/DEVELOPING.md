@@ -188,7 +188,12 @@ src/                  ← Python code
                         + keyring sentinel resolution
   database.py         ← SQLite (emails, sync_state, attachments,
                         sender_cache, custom_rules, kv)
-  email_fetcher.py    ← IMAP polling + auth-results extraction
+  email_fetcher.py    ← IMAP delta fetch (grouped FETCH, streamed in chunks),
+                        body hydration, auth-results extraction
+  idle_watcher.py     ← IMAP IDLE: one long-lived connection per account
+                        wakes a targeted fetch the moment mail arrives
+  sync_progress.py    ← in-memory status board behind /api/sync/status
+                        (phase, account being fetched, counters, IDLE state)
   ai_processor.py     ← OpenAI call + structured parsing
   local_classifier.py ← fast heuristics (before LLM)
   attachment_security.py
@@ -198,7 +203,8 @@ src/                  ← Python code
   secrets_store.py    ← OS-keyring wrapper for IMAP passwords + OpenAI key
                         (Credential Manager / Keychain / Secret Service)
   secrets_migration.py← one-shot move of clear-text secrets into the keyring
-  scheduler.py        ← apscheduler, periodic jobs
+  scheduler.py        ← fetch_pass (headers, every 2 min) and analysis_pass
+                        (hydration + AI, continuous) on separate locks
   notifier.py         ← ntfy push
   lifecycle.py        ← start/stop services
   updater.py          ← GitHub Releases poller + one-click install

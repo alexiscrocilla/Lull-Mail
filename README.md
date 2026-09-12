@@ -111,8 +111,10 @@ Here's how that compares.*
    mail accounts (one-click app-password shortcut for Gmail, Outlook,
    iCloud, Yahoo), and *(optional)* push notifications via
    [ntfy.sh](https://ntfy.sh).
-3. The first sync fetches the 500 most recent emails per mailbox.
-   After that, new mail is triaged in real time.
+3. The first sync fetches the 500 most recent emails per mailbox and
+   shows them as they download. After that, new mail lands within
+   seconds over IMAP IDLE (every 2 minutes at worst, on servers
+   without IDLE), then gets triaged.
 
 Full walkthrough: [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md).
 
