@@ -1550,6 +1550,13 @@ export async function mountMailbox(host, _opts) {
 
   const _BOLT_SVG = '<svg class="mb-sync-bolt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>';
 
+  // Server error strings have no length contract (an IMAP server can answer
+  // with a paragraph). Clip for the line, keep the whole thing in the title.
+  function _clip(str, max) {
+    const v = String(str || '').replace(/\s+/g, ' ').trim();
+    return v.length > max ? v.slice(0, max - 1) + '…' : v;
+  }
+
   function renderSyncLine(s) {
     const el = $('#mb-sync-line');
     if (!el) return;
@@ -1558,6 +1565,7 @@ export async function mountMailbox(host, _opts) {
     const fetching = accs.filter((a) => a.phase === 'fetching');
     let text = '';
     let cls = '';
+    let errDetail = '';
     if (s.fetching) {
       cls = 'is-busy';
       if (fetching.length === 1) text = t('mb.sync.line_fetching_one', { name: fetching[0].name });
@@ -1574,12 +1582,25 @@ export async function mountMailbox(host, _opts) {
       const errs = accs.filter((a) => a.error);
       if (errs.length) {
         cls = 'has-error';
-        text += ' · ' + t('mb.sync.line_errors', { n: errs.length });
+        // With one account failing, say WHY. The reason used to live only in
+        // a `title` on the per-account row — hover-only, unreachable by
+        // keyboard, and about to disappear entirely for people with a single
+        // account. This line is `aria-live="polite"`, so it is also the first
+        // route by which a screen reader hears about it at all.
+        const first = errs[0];
+        errDetail = first.error;
+        text += ' · ' + t('mb.sync.line_errors', {
+          n: errs.length,
+          name: first.name || first.email || '',
+          msg: _clip(first.error, 70),
+        });
       }
     }
     const push = accs.length > 0 && accs.some((a) => a.push && a.push.connected);
     el.className = 'mb-sync-line ' + cls;
-    el.title = push ? t('mb.sync.push_on') : '';
+    // A clipped message keeps its full text on hover; the line itself stays
+    // readable in a 240px sidebar either way.
+    el.title = errDetail || (push ? t('mb.sync.push_on') : '');
     el.innerHTML = `${push ? _BOLT_SVG : ''}<span>${escapeHtml(text)}</span>`;
   }
 
