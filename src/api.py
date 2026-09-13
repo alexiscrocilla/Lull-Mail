@@ -385,20 +385,43 @@ def get_email_thread(int_id: int, locale: str = Depends(get_locale)):
 
 
 def _lazy_hydrate_one(int_id: int, account_email: str, uid: str, message_id: str):
-    """Single-message IMAP fetch + body hydration + attachment persist."""
-    from src.email_fetcher import hydrate_single_email
-    acc = _account_for(account_email)
-    if not acc:
-        return
-    policy = att_sec.policy_from_config(cfg.get())
+    """Fetch one message's body now, because the user is looking at it.
+
+    The claim is what gives this priority: taking the row out of the
+    background round's reach is cheaper and safer than preempting a batch
+    already in flight. `claim_single_email_for_hydration` returns None when
+    the row is already in flight, which is the whole point — this used to
+    call the fetcher directly and open a second connection for a message
+    the round was already downloading.
+
+    A row that is full but never scanned for attachments still needs this
+    pass, and the claim returns it unchanged, so falling through is right.
+
+    Everything after the claim is inside try/finally: an account that has
+    left the config, or a fetch that raises, must give the row back rather
+    than park it in 'hydrating' where nothing can see it.
+    """
+    import src.email_fetcher as email_fetcher
+
+    claimed = db.claim_single_email_for_hydration(int_id)
+    if claimed is None:
+        return  # a background round already holds it
     try:
-        hydrate_single_email(
+        acc = _account_for(account_email)
+        if not acc:
+            return
+        policy = att_sec.policy_from_config(cfg.get())
+        email_fetcher.hydrate_single_email(
             acc,
             {"int_id": int_id, "account_email": account_email, "uid": uid, "message_id": message_id},
             policy,
         )
     except Exception as e:
         logger.warning(f"lazy hydration failed for {message_id}: {e}")
+    finally:
+        row = db.get_email_by_id(int_id)
+        if row and row.get("body_state") == "hydrating":
+            db.release_hydration_claims([message_id])
 
 
 def _lazy_scan_one(int_id: int, account_email: str, uid: str, message_id: str):

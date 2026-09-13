@@ -140,3 +140,122 @@ def test_a_permanently_failed_body_leaves_the_pending_queue(fresh_app):
     assert [p["int_id"] for p in pending] == [1], (
         "a failed body must still be classifiable from its envelope"
     )
+
+
+def test_opening_a_message_does_not_download_one_already_in_flight(fresh_app, monkeypatch):
+    """The read pane must not open a second connection for a row a round holds.
+
+    `claim_single_email_for_hydration` was written to return None for a row
+    already marked in flight, and had no caller anywhere. The lazy path
+    called the fetcher directly, so opening a message while the background
+    round held it downloaded the same message twice and wrote a second
+    attachment file that is never served.
+    """
+    from src import api, database as db
+
+    db.insert_email(_envelope())
+    claimed = db.claim_emails_for_body_hydration(limit=10, account="u@x.fr")
+    assert claimed, "the background round must hold the row"
+
+    calls = []
+    monkeypatch.setattr(api, "_account_for", lambda e: {"email": e, "imap_host": "h",
+                                                        "username": e, "password": "p"})
+    import src.email_fetcher as ef
+    monkeypatch.setattr(ef, "hydrate_single_email",
+                        lambda *a, **k: calls.append(a) or True)
+
+    api._lazy_hydrate_one(1, "u@x.fr", "1", "<m-1@x>")
+    assert calls == [], "the row was already in flight; no second download"
+    assert db.get_email_by_id(1)["body_state"] == "hydrating"
+
+
+def test_a_lazy_hydration_that_cannot_run_releases_its_claim(fresh_app, monkeypatch):
+    """Claiming first means every exit path has to give the row back.
+
+    Without that, a row whose account has vanished from the config, or
+    whose fetch raised, is parked in 'hydrating': invisible to the
+    analysable set and unclaimable until the stale reclaimer runs.
+    """
+    from src import api, database as db
+
+    db.insert_email(_envelope())
+    monkeypatch.setattr(api, "_account_for", lambda e: None)
+    api._lazy_hydrate_one(1, "u@x.fr", "1", "<m-1@x>")
+    assert db.get_email_by_id(1)["body_state"] == "envelope", "unknown account stranded the row"
+
+    monkeypatch.setattr(api, "_account_for", lambda e: {"email": e, "imap_host": "h",
+                                                        "username": e, "password": "p"})
+    import src.email_fetcher as ef
+
+    def boom(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(ef, "hydrate_single_email", boom)
+    api._lazy_hydrate_one(1, "u@x.fr", "1", "<m-1@x>")
+    assert db.get_email_by_id(1)["body_state"] == "envelope", "a raising fetch stranded the row"
+
+
+def test_analysis_classifies_before_the_whole_backlog_is_downloaded(fresh_app, monkeypatch):
+    """A first sync used to show no category at all until every body landed.
+
+    `_hydrate_round` drained an account to exhaustion, and the analysable
+    set only ever contained rows whose body was already there, so the two
+    halves of the pass could not interleave. One claim per account per
+    round makes the alternation the outer loop already writes real.
+    """
+    from src import database as db, scheduler as sched
+    from src.attachment_security import AttachmentPolicy
+    import time
+
+    for uid in range(100):
+        db.insert_email(_envelope(uid=uid))
+
+    def fake_hydrate(acc, targets, policy, on_each=None):
+        for t in targets:
+            db.update_email_body_hydrated(t["message_id"], body_text="body", body_html="")
+        return len(targets)
+
+    import src.email_fetcher as ef
+    monkeypatch.setattr(ef, "hydrate_email_bodies", fake_hydrate)
+
+    accounts = [{"email": "u@x.fr", "imap_host": "h", "username": "u@x.fr",
+                 "password": "p", "enabled": True}]
+    sched._hydrate_round(accounts, AttachmentPolicy(enabled=False),
+                         time.monotonic() + 30)
+
+    remaining = db.count_hydration_candidates("u@x.fr")
+    assert remaining > 0, "one round must not drain the whole backlog"
+    assert db.get_pending_emails(limit=200), "the first bodies must be analysable already"
+
+
+def test_a_failing_account_is_skipped_for_the_rest_of_the_pass(fresh_app, monkeypatch):
+    """Losing the inner drain loop must not turn into retrying a dead host.
+
+    The drain abandoned an account on its first failed connection. With one
+    batch per round, the outer hydrate/analyse alternation would come back
+    to it every iteration; the pass-level set restores the old bound.
+    """
+    from src import database as db, scheduler as sched
+    from src.attachment_security import AttachmentPolicy
+    import src.email_fetcher as ef
+    import time
+
+    for uid in range(50):
+        db.insert_email(_envelope(uid=uid))
+
+    calls = []
+
+    def dead(acc, targets, policy, on_each=None):
+        calls.append(acc["email"])
+        db.release_hydration_claims([t["message_id"] for t in targets])
+        return 0
+
+    monkeypatch.setattr(ef, "hydrate_email_bodies", dead)
+    accounts = [{"email": "u@x.fr", "imap_host": "h", "username": "u@x.fr",
+                 "password": "p", "enabled": True}]
+    unreachable: set = set()
+    for _ in range(5):
+        sched._hydrate_round(accounts, AttachmentPolicy(enabled=False),
+                             time.monotonic() + 30, unreachable)
+
+    assert calls == ["u@x.fr"], f"a dead host was retried {len(calls)} times in one pass"

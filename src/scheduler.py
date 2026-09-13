@@ -679,35 +679,50 @@ def fetch_pass(
 # Analysis pass
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _hydrate_round(accounts: List[Dict], att_policy, deadline: float) -> int:
-    """Download bodies for envelope rows, account by account, until nothing
-    is left or the time budget is spent. Returns the number of bodies fetched."""
+def _hydrate_round(accounts: List[Dict], att_policy, deadline: float,
+                   unreachable: Optional[set] = None) -> int:
+    """Download one batch of bodies per account. Returns how many landed.
+
+    `unreachable` is the caller's per-pass set of accounts whose connection
+    already failed this pass; a failing account is skipped for the rest of
+    it. The inner drain loop this replaced got that for free by abandoning
+    the account on the first failure — the outer alternation would
+    otherwise retry a dead host once per round.
+    """
     from src.email_fetcher import hydrate_email_bodies
 
     now_iso = datetime.now(timezone.utc).isoformat()
     hydrated = 0
     for acc in accounts:
+        if unreachable is not None and acc["email"] in unreachable:
+            continue
         state = db.get_sync_state(acc["email"])
         if state and state.get("backoff_until") and state["backoff_until"] > now_iso:
             # The account is unreachable right now: claiming rows would only
             # park them in 'hydrating' until the claim is released.
             continue
+        if time.monotonic() >= deadline:
+            break
         progress.analysis_phase(PHASE_HYDRATING, account=acc["email"])
-        while time.monotonic() < deadline:
-            targets = db.claim_emails_for_body_hydration(limit=HYDRATION_BATCH, account=acc["email"])
-            if not targets:
-                break
-            try:
-                got = hydrate_email_bodies(acc, targets, att_policy)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[{acc['email']}] Hydration error: {e}")
-                db.release_hydration_claims([t.get("message_id") for t in targets])
-                break
-            hydrated += got
-            if got == 0:
-                # Connection-level failure (claims already released) — stop
-                # hammering this account for the rest of the pass.
-                break
+        # One batch per account per round, not a drain. The caller already
+        # alternates hydrate → analyse; draining here made that alternation
+        # a lie, because the analysable set only ever holds rows whose body
+        # has landed. On a first sync that meant no message was classified
+        # until every message had been downloaded. Login count is unchanged:
+        # the fetcher opens and closes one connection per call either way.
+        targets = db.claim_emails_for_body_hydration(limit=HYDRATION_BATCH, account=acc["email"])
+        if not targets:
+            continue
+        try:
+            got = hydrate_email_bodies(acc, targets, att_policy)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[{acc['email']}] Hydration error: {e}")
+            db.release_hydration_claims([t.get("message_id") for t in targets])
+            got = 0
+        hydrated += got
+        if got == 0 and unreachable is not None:
+            # Connection-level failure; the claims are already back.
+            unreachable.add(acc["email"])
     return hydrated
 
 
@@ -1022,8 +1037,9 @@ def analysis_pass(*, time_budget_seconds: float = ANALYSIS_TIME_BUDGET_SECONDS) 
             logger.warning(f"Recherche des liens de désabonnement : {e}")
 
         # ── Rounds: hydrate → analyse, until idle or out of time ───────────
+        unreachable: set = set()
         while time.monotonic() < deadline:
-            hydrated = _hydrate_round(accounts, att_policy, deadline)
+            hydrated = _hydrate_round(accounts, att_policy, deadline, unreachable)
             settled = _analyse_round(conf, accounts, ai_on, deadline)
             if hydrated == 0 and settled == 0:
                 break
