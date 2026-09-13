@@ -2040,6 +2040,36 @@ button { font: inherit; }
 .mb-img-banner-btn-trust:hover { filter: brightness(1.08); }
 .mb-img-banner-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* The message is still coming. The bars alone read as a rendering hitch;
+   after a beat the line says what is actually happening. */
+.mb-body-loading-note {
+  margin-top: 14px;
+  font-size: 12.5px;
+  color: var(--muted);
+  opacity: 0;
+  animation: fade-in 200ms ease 2s forwards;
+}
+@keyframes fade-in { to { opacity: 1; } }
+
+/* The message is not coming. Same shape as the origin warning below, in the
+   neutral palette: this is a fact about the server, not about the sender. */
+.mb-body-failed {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 8px 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.mb-body-failed svg { flex: 0 0 auto; margin-top: 1px; color: var(--muted); }
+.mb-body-failed strong { display: block; font-weight: 600; }
+.mb-body-failed span { color: var(--muted); }
+
 /* Origin warning — the one authentication state worth showing. A block
    under the sender row, not a pill with a tooltip: the sentence is the
    whole point, and a `title` is invisible on a touch screen. */

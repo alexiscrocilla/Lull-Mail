@@ -3606,7 +3606,14 @@ export async function mountMailbox(host, _opts) {
     // est trusted, l'iframe rend le HTML original. Sinon rewriteRemoteImages
     // strippe + banner avec deux boutons (one-shot ou toujours pour ce
     // domaine).
-    const isHydrating = (em.body_state === 'envelope' || em.body_state === 'hydrating');
+    // Four states, not two. `body_failed` is between attempts and will be
+    // retried; `failed` has exhausted them. Both used to fall through to
+    // "(corps du mail vide)", which told the user their message was empty
+    // when the truth — the server refused it, and why — was sitting in the
+    // row's `body_error` column.
+    const isHydrating = (em.body_state === 'envelope' || em.body_state === 'hydrating'
+                         || em.body_state === 'body_failed');
+    const bodyFailed = em.body_state === 'failed';
     const hasHtml = em.body_html && em.body_html.trim().length;
     const hasText = em.body_text && em.body_text.trim().length;
     const body = isHydrating
@@ -3614,6 +3621,15 @@ export async function mountMailbox(host, _opts) {
            <div class="skeleton" style="height: 16px; width: 85%; margin-bottom: 12px; border-radius: 4px;"></div>
            <div class="skeleton" style="height: 16px; width: 95%; margin-bottom: 12px; border-radius: 4px;"></div>
            <div class="skeleton" style="height: 16px; width: 60%; margin-bottom: 12px; border-radius: 4px;"></div>
+           <div class="mb-body-loading-note">${t('mb.read.downloading')}</div>
+         </div>`
+      : bodyFailed
+      ? `<div class="mb-body-failed" role="note">
+           <i data-lucide="cloud-off" class="w-4 h-4" aria-hidden="true"></i>
+           <div>
+             <strong>${escapeHtml(t('mb.read.body_failed'))}</strong>
+             <span>${escapeHtml(em.body_error || t('mb.read.body_failed_generic'))}</span>
+           </div>
          </div>`
       : (hasHtml
          ? buildHtmlBodyBlock(em)

@@ -130,3 +130,21 @@ test('a message still downloading fills itself in when the body lands', async ({
   await expect(page.locator('#read-pane .mb-body-loading')).toHaveCount(0);
   await expect(page.locator('#read-pane')).toContainText('Corps arrivé par le flux');
 });
+
+test('a body the server will not hand over says so, instead of "empty message"', async ({ page }) => {
+  await page.goto('/#/inbox');
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(18);
+
+  const id = await page.$eval('#email-list .mb-card', (el) => Number(el.dataset.id));
+  await page.request.post(`/__test__/emit?kind=failed&int_id=${id}`);
+  await page.locator('#email-list .mb-card').first().click();
+  await expect(page.locator('#read-pane .mb-read-subject')).toBeVisible();
+
+  const pane = page.locator('#read-pane');
+  await expect(pane.locator('.mb-body-failed')).toBeVisible();
+  // The reason the server gave, not a guess about the message.
+  await expect(pane).toContainText('IMAP fetch empty response');
+  await expect(pane).not.toContainText('corps du mail vide');
+  // And the retry that is already on screen stays reachable.
+  await expect(page.locator('#btn-rescan-one')).toBeVisible();
+});
