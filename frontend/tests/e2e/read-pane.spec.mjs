@@ -102,3 +102,22 @@ test('in the trash the same button restores instead of deleting', async ({ page 
   await page.locator('#btn-trash').click();
   await expect(page.locator('#email-list .mb-card')).toHaveCount(0);
 });
+
+test('a failed origin check is stated, a passing one says nothing', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto('/#/inbox');
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(18);
+
+  // The second seeded message fails SPF, DKIM and DMARC.
+  await page.locator('#email-list .mb-card').nth(1).click();
+  await expect(page.locator('#read-pane .mb-read-subject')).toBeVisible();
+  const warning = page.locator('.mb-auth-warning');
+  await expect(warning).toBeVisible();
+  await expect(warning).toContainText('rivage-studio.fr');
+
+  // The first one passes every check and gets no badge at all — a badge on
+  // ordinary mail is what taught people to ignore the colour.
+  await page.locator('#email-list .mb-card').first().click();
+  await expect(page.locator('#read-pane .mb-read-subject')).toBeVisible();
+  await expect(page.locator('.mb-auth-warning')).toHaveCount(0);
+});

@@ -309,51 +309,45 @@ function attachImageBlockerHandlers(em) {
 }
 
 
-// Render the SPF/DKIM/DMARC verdict badge next to the sender name.
-// `auth_results` is the JSON string captured at ingest by
-// src/auth_results.py. Roll-up colour:
-//   green   → all three pass
-//   amber   → mixed (some pass, some none/neutral)
-//   red     → at least one fail / softfail / policy
-//   grey    → no Authentication-Results header
-function authBadgeHtml(authJson) {
-  const _t = window.t || ((k) => k);
+// Render a warning next to the sender name when the message failed its
+// origin checks — and nothing at all otherwise.
+//
+// Four states used to render, and three of them were noise. `unknown` means
+// the provider stamped no header. `pass` is the ordinary case, and a badge
+// on every ordinary message says nothing. `warn` fired on `dmarc=none`,
+// which is the default for every domain that never published a policy, so
+// mail from small senders was permanently amber and the colour taught
+// itself to be ignored.
+//
+// `softfail` is excluded on purpose: src/auth_results.py documents it as
+// "probably spoofed but not sure", which is the signature of mailing lists
+// and forwarding — ordinary legitimate mail. A red banner on every
+// forwarded newsletter would reproduce the amber problem in a louder
+// colour.
+//
+// The message is a visible line, not a `title`: this is the one state where
+// the text is the point, and a tooltip is invisible on a touch screen and
+// weak to a screen reader.
+function authBadgeHtml(authJson, domain) {
+  const _t = window.t || ((k, v) => k);
   let data = null;
   try { data = authJson ? JSON.parse(authJson) : null; } catch (_) {}
   const verdicts = data ? Object.entries(data).filter(([_, v]) => v) : [];
-  let kind, icon, label, tooltip;
-  if (!verdicts.length) {
-    kind = 'unknown';
-    icon = 'help-circle';
-    label = _t('mb.auth.unknown');
-    tooltip = _t('mb.auth.unknown_tip');
-  } else {
-    const allPass = verdicts.every(([_, v]) => v === 'pass');
-    const anyBad = verdicts.some(([_, v]) => v === 'fail' || v === 'softfail' || v === 'policy');
-    if (anyBad) {
-      kind = 'fail';
-      icon = 'shield-x';
-      label = _t('mb.auth.fail');
-      tooltip = _t('mb.auth.fail_tip');
-    } else if (allPass) {
-      kind = 'pass';
-      icon = 'shield-check';
-      label = _t('mb.auth.pass');
-      // No tooltip — the label already says it. Adding "DKIM: pass" etc.
-      // is jargon that doesn't help a non-technical reader.
-      tooltip = '';
-    } else {
-      kind = 'warn';
-      icon = 'shield-alert';
-      label = _t('mb.auth.partial');
-      tooltip = _t('mb.auth.partial_tip');
-    }
-  }
-  const titleAttr = tooltip ? ` title="${escapeHtml(tooltip)}"` : '';
-  return `<span class="mb-auth-badge mb-auth-${kind}"${titleAttr}>
-    <i data-lucide="${icon}" class="w-3 h-3"></i>
-    <span>${escapeHtml(label)}</span>
-  </span>`;
+  const bad = verdicts.filter(([_, v]) => v === 'fail' || v === 'policy');
+  if (!bad.length) return '';
+  // `sender_domain` is computed by GET /api/emails/{id} but not by the
+  // re-analyse route, which returns the bare row. Drop the sentence that
+  // names a domain rather than printing an empty one.
+  const body = domain
+    ? _t('mb.auth.fail_body', { domain })
+    : _t('mb.auth.fail_body_generic');
+  return `<div class="mb-auth-warning" role="note">
+    <i data-lucide="shield-x" class="w-4 h-4" aria-hidden="true"></i>
+    <div>
+      <strong>${escapeHtml(_t('mb.auth.fail'))}</strong>
+      <span>${escapeHtml(body)}</span>
+    </div>
+  </div>`;
 }
 
 
@@ -3813,7 +3807,7 @@ export async function mountMailbox(host, _opts) {
               ${logoImg}
             </div>
             <div>
-              <div class="name">${escapeHtml(sName || t('mb.unknown_sender'))}${authBadgeHtml(em.auth_results)}</div>
+              <div class="name">${escapeHtml(sName || t('mb.unknown_sender'))}</div>
               <div class="meta meta-route">
                 <i data-lucide="send" class="w-3 h-3 meta-icon"></i><span class="meta-addr">${escapeHtml(sEmail)}</span>
                 ${state.accounts.length > 1 ? `
@@ -3843,6 +3837,8 @@ export async function mountMailbox(host, _opts) {
               </button>
             </div>
           </div>
+
+          ${authBadgeHtml(em.auth_results, em.sender_domain || senderDomain(em.sender) || '')}
 
           ${aiBox}
         </div>

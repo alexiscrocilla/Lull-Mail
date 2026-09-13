@@ -2084,51 +2084,25 @@ button { font: inherit; }
 .mb-img-banner-btn-trust:hover { filter: brightness(1.08); }
 .mb-img-banner-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* SPF/DKIM/DMARC verdict badge — sits next to the sender name in
-   the read pane. Subtle, single line, hover for the per-mechanism
-   detail (e.g. "SPF: pass · DKIM: pass · DMARC: pass"). */
-.mb-auth-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 8px;
-  padding: 2px 7px 2px 6px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  vertical-align: 1px;
-  cursor: help;
-  border: 1px solid transparent;
-}
-.mb-auth-badge svg { width: 12px; height: 12px; flex: 0 0 auto; }
-/* Authentication badges. These were fixed rgb()/rgba() literals, so they kept
-   light-theme values on a dark surface: `pass` measured 3.02:1 in light, `warn`
-   3.12:1 in dark, and `unknown`'s rgba(0,0,0,.04) wash rendered as #131824 on a
-   #141925 surface — the badge simply vanished. Deriving from the theme tokens
-   makes each one flip with the theme. */
-.mb-auth-pass {
-  background: color-mix(in oklab, var(--success) 12%, transparent);
-  border-color: color-mix(in oklab, var(--success) 40%, transparent);
-  color: color-mix(in oklab, var(--success) 45%, var(--text));
-}
-.mb-auth-warn {
-  background: color-mix(in oklab, var(--warning) 12%, transparent);
-  border-color: color-mix(in oklab, var(--warning) 40%, transparent);
-  color: color-mix(in oklab, var(--warning) 45%, var(--text));
-}
-.mb-auth-fail {
-  background: color-mix(in oklab, var(--danger) 14%, transparent);
-  border-color: color-mix(in oklab, var(--danger) 45%, transparent);
+/* Origin warning — the one authentication state worth showing. A block
+   under the sender row, not a pill with a tooltip: the sentence is the
+   whole point, and a `title` is invisible on a touch screen. */
+.mb-auth-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  background: color-mix(in oklab, var(--danger) 10%, transparent);
+  border: 1px solid color-mix(in oklab, var(--danger) 35%, transparent);
   color: color-mix(in oklab, var(--danger) 45%, var(--text));
 }
-.mb-auth-unknown {
-  /* --text at 5%, not black: inverts with the theme instead of painting a
-     black wash onto an already-dark surface. */
-  background: color-mix(in oklab, var(--text) 5%, transparent);
-  border-color: var(--border);
-  color: var(--muted);
-}
+.mb-auth-warning svg { flex: 0 0 auto; margin-top: 1px; }
+.mb-auth-warning strong { display: block; font-weight: 700; }
+.mb-auth-warning span { color: inherit; opacity: .9; }
 
 /* Anti-phishing : URL contenant des caractères Cyrilliques/Grecs.
    Correspond à la règle homographe utilisée pour les pièces jointes

@@ -106,6 +106,12 @@ def _seed_mailbox() -> None:
             "body_text": "Bonjour,\n\nVoici un message de démonstration déterministe pour les tests LullMail.",
             "body_html": "<p>Bonjour,</p><p>Voici un message de démonstration déterministe pour les tests LullMail.</p>",
             "is_read": index % 3 != 0,
+            # One message fails its origin checks, so the read pane's warning
+            # has something to render. Every other message carries a normal
+            # verdict, which is now deliberately silent.
+            "auth_results": ('{"spf": "fail", "dkim": "fail", "dmarc": "fail"}'
+                             if index == 1 else
+                             '{"spf": "pass", "dkim": "pass", "dmarc": "pass"}'),
         })
         important = index % 4 == 0
         db.update_email_ai(message_id, {
