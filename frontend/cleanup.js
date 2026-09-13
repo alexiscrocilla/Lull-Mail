@@ -1,2737 +1,513 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Cleanup workspace : group inbox clutter by sender, run bulk actions.
+//
+// Nettoyage — one ranked list of at most three things worth doing.
+//
+// What this replaced: three tabs, sixteen regions, twenty distinct actions and
+// four different confirmation designs, landing on a red "Supprimer" with no
+// orientation. Nobody used it. Everything here is computed by the server from
+// columns already in SQLite, so the page is correct the moment it paints and
+// there is nothing to configure.
+//
+// Three rules hold the shape:
+//   * one request on mount (GET /api/cleanup/suggestions), and every mutation
+//     returns the recomputed payload, so a card can never still claim a pile
+//     the user just emptied;
+//   * a card is a sentence, a number, one button and a quiet link — the
+//     inspection list lives in the inbox, which already has search, selection
+//     and its own undo;
+//   * the undo lives in the card, not in the rail toast: railToast is
+//     single-slot and a background sync pass destroys the live toast within
+//     seconds.
 
-import {
-  api,
-  avatarColor, initials, senderDomain, avatarImgHtml,
-  shortDate, escapeHtml,
-  CATEGORY_COLOR,
-} from '/static/api.js';
+import { api, escapeHtml } from '/static/api.js';
 import { confirmAsync } from '/static/confirm.js';
 
-// confirmAsync now lives in /static/confirm.js (imported above) so the
-// mailbox can use the same dialog for bulk delete.
-
-// Labels are resolved at runtime via t() inside mountCleanup.
-// Kept as key references here so the array is still static at parse time.
-const TABS = [
-  { id: 'rules',       labelKey: 'cleanup.tab.rules',       icon: 'sliders',     enabled: true },
-  { id: 'unsubscribe', labelKey: 'cleanup.tab.unsubscribe',  icon: 'mail-x',      enabled: true },
-  { id: 'senders',     labelKey: 'cleanup.tab.senders',      icon: 'users',       enabled: true },
-];
-
-// Curated cleanup presets. The id is stable so jobs/state can key on it.
-// `default` is the action surfaced as the primary button; `also` lists
-// extra non-destructive actions exposed as secondary buttons.
-// Labels/descriptions resolved at runtime via t() in mountCleanup.
-const RULES = [
-  {
-    id: 'spam',
-    labelKey: 'cleanup.rule.spam.label',
-    descKey:  'cleanup.rule.spam.desc',
-    icon: 'shield-x',
-    accent: 'var(--danger)',
-    filter: { categories: ['spam'] },
-    actions: ['delete'],
-  },
-  {
-    id: 'newsletters-old',
-    labelKey: 'cleanup.rule.newsletters_old.label',
-    descKey:  'cleanup.rule.newsletters_old.desc',
-    icon: 'newspaper',
-    accent: '#93C5FD',
-    filter: { categories: ['newsletter'], older_than_days: 30 },
-    actions: ['delete', 'mark_read'],
-  },
-  {
-    id: 'low-score-unread',
-    labelKey: 'cleanup.rule.low_score.label',
-    descKey:  'cleanup.rule.low_score.desc',
-    icon: 'arrow-down-narrow-wide',
-    accent: '#C4B5FD',
-    filter: { max_score: 3, is_read: false },
-    actions: ['mark_read', 'delete'],
-  },
-  {
-    id: 'very-old-unread',
-    labelKey: 'cleanup.rule.very_old.label',
-    descKey:  'cleanup.rule.very_old.desc',
-    icon: 'archive',
-    accent: 'var(--muted-2)',
-    filter: { is_read: false, older_than_days: 180 },
-    actions: ['delete', 'mark_read'],
-  },
-  {
-    id: 'other-unread',
-    labelKey: 'cleanup.rule.other_unread.label',
-    descKey:  'cleanup.rule.other_unread.desc',
-    icon: 'inbox',
-    accent: '#FCD34D',
-    filter: { categories: ['other'], is_read: false },
-    actions: ['mark_read', 'delete'],
-  },
-];
-
-// Categories shown as a stacked breakdown bar on each sender row.
-// Order matters — it's the visual stacking order from left to right.
-const CAT_ORDER = ['important', 'transactional', 'newsletter', 'other', 'spam', 'pending'];
-
-function relativeFrench(iso) {
-  const _t = window.t || ((k) => k);
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return '—';
-  const diffMs = Date.now() - d.getTime();
-  const sec  = Math.max(1, Math.round(diffMs / 1000));
-  if (sec < 60)        return _t('cleanup.rel.sec',    { n: sec });
-  const min = Math.round(sec / 60);
-  if (min < 60)        return _t('cleanup.rel.min',    { n: min });
-  const h = Math.round(min / 60);
-  if (h < 24)          return _t('cleanup.rel.hour',   { n: h });
-  const days = Math.round(h / 24);
-  if (days < 30)       return _t('cleanup.rel.day',    { n: days });
-  const months = Math.round(days / 30);
-  if (months < 12)     return _t('cleanup.rel.month',  { n: months });
-  const years = Math.round(months / 12);
-  return _t('cleanup.rel.year', { n: years });
-}
+// Matches _CLEANUP_UNDO_DELAY_SECONDS in src/api.py: the queued IMAP move is
+// held for this long, so an undo inside the window cancels it outright and
+// the mail server never sees the deletion at all. Past it there is no untrash
+// operation, which is why the button is replaced rather than left enabled.
+const UNDO_SECONDS = 20;
+// A card's set is computed, described and previewable rather than
+// hand-selected, so the gate sits ten times higher than the inbox's 20.
+const CONFIRM_ABOVE = 200;
+const TRASH_CARDS = new Set(['spam', 'old_news', 'after_unsub']);
 
 export async function mountCleanup(host, opts = {}) {
-  const t = window.t || ((k) => k);
+  const t = window.t || ((k, v) => k);
+  const timers = new Set();
+  const later = (fn, ms) => { const id = setTimeout(fn, ms); timers.add(id); return id; };
+  const every = (fn, ms) => { const id = setInterval(fn, ms); timers.add(id); return id; };
 
-  // See the same helper in settings.js: document-level listeners survive the
-  // router's host.innerHTML = '', so they have to be registered somewhere the
-  // returned cleanup can reach.
-  const _docTeardown = [];
-  const onDoc = (type, fn, opt) => {
-    document.addEventListener(type, fn, opt);
-    _docTeardown.push(() => document.removeEventListener(type, fn, opt));
-  };
+  let state = null;      // last payload
+  let destroyed = false;
 
-  // Resolve translated labels for static arrays (TABS + RULES).
-  const TABS_L  = TABS.map((tab) => ({ ...tab, label: t(tab.labelKey) }));
-  const RULES_L = RULES.map((r)   => ({ ...r,  label: t(r.labelKey), description: t(r.descKey) }));
-
-  host.innerHTML = `
-    <div class="cln">
-      <div class="cln-head">
-        <div class="cln-head-titles">
-          <h1>${t('cleanup.title')}</h1><div class="sub" id="cln-sub">${t('cleanup.loading')}</div>
-        </div>
-        <div class="cln-head-actions">
-        </div>
-      </div>
-
-      <nav class="cln-tabs" role="tablist" aria-label="${t('cleanup.tabs_aria')}">
-        ${TABS_L.map((tab, i) => `
-          <button class="cln-tab ${i === 0 ? 'active' : ''} ${tab.enabled ? '' : 'is-disabled'}"
-                  role="tab" data-tab="${tab.id}" ${tab.enabled ? '' : 'aria-disabled="true"'}
-                  aria-selected="${i === 0}">
-            <i data-lucide="${tab.icon}" class="w-4 h-4"></i>
-            <span>${escapeHtml(tab.label)}</span>
-            ${tab.enabled ? '' : `<span class="cln-tab-soon">${t('cleanup.tab.soon')}</span>`}
-          </button>
-        `).join('')}
-      </nav>
-
-      <section class="cln-pane" id="cln-pane">
-        <!-- Pane content gets injected per-tab below -->
-      </section>
-
-      <!-- Custom-rule side panel + overlay live at the .cln level
-           (NOT inside .cln-pane) so position:fixed actually anchors
-           to the viewport. .cln-pane has a fade-up animation whose
-           non-none transform creates a containing block for fixed
-           descendants — moving the panel outside is the only way to
-           keep it overlaying the head/tabs too. -->
-      <div class="cln-custom-panel-overlay" id="cln-custom-overlay"></div>
-      <div class="cln-custom-panel" id="cln-custom-panel" hidden></div>
-    </div>
-  `;
-
-  const $ = (sel) => host.querySelector(sel);
-  const state = {
-    tab: TABS[0].id,
-    senders: [],
-    accounts: [],
-    accountFilter: '',
-    sortMode: 'total',  // total | unread | newsletter | recent | oldest
-    busy: new Set(),    // sender emails currently being processed
-    jobs: new Map(),    // sender email -> { id, action, total, done, failed, finished }
-    ruleStats: new Map(),    // ruleId -> { total, unread, sample, loading, error }
-    ruleBusy: new Set(),     // ruleIds currently being applied
-    ruleJobs: new Map(),     // ruleId -> { id, action, total, done, failed, finished }
-    selectedRule: RULES[0]?.id || null, // master-detail: which rule is open in the right pane
-    sendersStale: false,     // a rule deleted mails -> senders cache is outdated
-
-    // Custom ("plugin") rules
-    customRules: [],          // loaded from DB
-    customStats: new Map(),   // custom rule id (string "c-<id>") -> stats
-    customBusy: new Set(),
-    customJobs: new Map(),
-    selectedCustomRule: null, // master-detail: which custom rule is open
-    customPanel: false,       // template/new-rule side-panel is open
-    customEditing: null,      // rule object being edited, or null (= new rule)
-
-    // Désabonnement tab
-    unsubSenders: [],
-    unsubStats: null,
-    selectedUnsub: null,
-    unsubBusy: new Set(),
-    unsubJobs: new Map(),
-    backfillJob: null,
-    unsubPurge: false,
-  };
-
-  // ── Tabs ──────────────────────────────────────────────────
-  host.querySelectorAll('.cln-tab').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = btn.dataset.tab;
-      const tab = TABS_L.find((tab) => tab.id === id);
-      if (!tab) return;
-      if (!tab.enabled) {
-        window.toast(t('cleanup.tab.soon_toast', { label: tab.label }));
-        return;
-      }
-      if (id === state.tab) return;
-      // Close the rule-edit side panel when leaving the Rules tab —
-      // it now lives at the .cln level (so position:fixed works) and
-      // would otherwise stay visible over an unrelated tab.
-      if (state.tab === 'rules' && state.customPanel) {
-        closeCustomPanel();
-      }
-      state.tab = id;
-      host.querySelectorAll('.cln-tab').forEach((b) => {
-        const on = b.dataset.tab === id;
-        b.classList.toggle('active', on);
-        b.setAttribute('aria-selected', on ? 'true' : 'false');
-      });
-
-      renderPane();
-      // Refresh senders if a rule modified the dataset since last load.
-      if (id === 'senders' && state.sendersStale) {
-        state.sendersStale = false;
-        loadSenders();
-      }
-    });
-  });
-
-  // ── Pane rendering ────────────────────────────────────────
-  function renderPane() {
-    if (state.tab === 'senders')     renderSendersPane();
-    else if (state.tab === 'rules')       renderRulesPane();
-    else if (state.tab === 'unsubscribe') renderUnsubscribePane();
-    else $('#cln-pane').innerHTML = '';
-    // Restart the CSS animation so the pane re-animates on every tab switch.
-    const pane = $('#cln-pane');
-    if (pane) {
-      pane.style.animation = 'none';
-      void pane.offsetHeight; // force reflow
-      pane.style.animation = '';
-    }
-  }
-
-  function renderSendersPane() {
-    const pane = $('#cln-pane');
-    pane.innerHTML = `
-      <div class="cln-toolbar">
-        <div class="cln-toolbar-left">
-          <div class="cln-acc-select" id="cln-acc-wrap">
-            <button class="cln-acc-btn" id="cln-acc-btn" type="button">
-              <i data-lucide="users" class="w-4 h-4"></i>
-              <span id="cln-acc-label">${t('cleanup.all_accounts')}</span>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-            </button>
-            <div class="cln-acc-drop" id="cln-acc-drop" role="listbox" hidden></div>
-          </div>
-          <div class="cln-sort">
-            ${[
-              { v: 'total',      labelKey: 'cleanup.sort.total' },
-              { v: 'unread',     labelKey: 'cleanup.sort.unread' },
-              { v: 'newsletter', labelKey: 'cleanup.sort.newsletter' },
-              { v: 'recent',     labelKey: 'cleanup.sort.recent' },
-              { v: 'oldest',     labelKey: 'cleanup.sort.oldest' },
-            ].map((o) => `
-              <button class="cln-sort-btn ${state.sortMode === o.v ? 'active' : ''}" data-sort="${o.v}">${t(o.labelKey)}</button>
-            `).join('')}
-          </div>
-        </div>
-        <div class="cln-toolbar-right">
-          <span class="cln-toolbar-count" id="cln-count">—</span>
-        </div>
-      </div>
-
-      <div class="cln-senders" id="cln-senders" role="list"></div>
-    `;
-
-    pane.querySelectorAll('.cln-sort-btn').forEach((b) => {
-      b.addEventListener('click', () => {
-        state.sortMode = b.dataset.sort;
-        pane.querySelectorAll('.cln-sort-btn').forEach((x) => x.classList.toggle('active', x === b));
-        renderSenderList();
-      });
-    });
-
-    setupAccountDropdown();
-    renderSenderList();
-  }
-
-  // ── Account filter (custom dropdown that matches the rest of the UI) ─
-  function setupAccountDropdown() {
-    const btn = $('#cln-acc-btn');
-    const drop = $('#cln-acc-drop');
-    const label = $('#cln-acc-label');
-    if (!btn || !drop) return;
-
-    function paint() {
-      const allAccLabel = t('cleanup.all_accounts');
-      const items = [{ email: '', name: allAccLabel }, ...state.accounts];
-      drop.innerHTML = items.map((a) => `
-        <div class="acc-select-opt ${state.accountFilter === a.email ? 'active' : ''}"
-             role="option" data-acc="${escapeHtml(a.email)}">
-          ${escapeHtml(a.name || a.email || allAccLabel)}
-        </div>
-      `).join('');
-      const cur = state.accountFilter
-        ? (state.accounts.find((a) => a.email === state.accountFilter)?.name || state.accountFilter)
-        : allAccLabel;
-      label.textContent = cur;
-    }
-    paint();
-
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const open = drop.hidden;
-      drop.hidden = !open;
-    });
-    drop.addEventListener('click', (e) => {
-      const opt = e.target.closest('.acc-select-opt');
-      if (!opt) return;
-      state.accountFilter = opt.dataset.acc;
-      drop.hidden = true;
-      paint();
-      loadSenders();
-    });
-    onDoc('click', (e) => {
-      if (!drop.contains(e.target) && !btn.contains(e.target)) drop.hidden = true;
-    });
-  }
-
-  // ── Senders list ─────────────────────────────────────────
-  function sortSenders(arr) {
-    const copy = [...arr];
-    switch (state.sortMode) {
-      case 'unread':     return copy.sort((a, b) => b.unread - a.unread || b.total - a.total);
-      case 'newsletter': return copy.sort((a, b) => b.newsletter - a.newsletter || b.total - a.total);
-      case 'recent':     return copy.sort((a, b) => (b.last_seen || '').localeCompare(a.last_seen || ''));
-      case 'oldest':     return copy.sort((a, b) => (a.first_seen || '').localeCompare(b.first_seen || ''));
-      default:           return copy.sort((a, b) => b.total - a.total || b.unread - a.unread);
-    }
-  }
-
-  function renderSenderList() {
-    const list = $('#cln-senders');
-    if (!list) return;
-    const items = sortSenders(state.senders);
-    // The string takes {n}; passing {senders, emails, unread} left the literal
-    // "{n} expéditeurs analysés" on screen, placeholder and all.
-    $('#cln-count').textContent = t('cleanup.senders.count', { n: items.length });
-
-    if (!items.length) {
-      list.innerHTML = `
-        <div class="cln-empty">
-          <div class="cln-empty-ico"><i data-lucide="sparkles" class="w-7 h-7"></i></div>
-          <div class="cln-empty-title">${t('cleanup.senders.empty_title')}</div>
-          <div class="cln-empty-sub">${t('cleanup.senders.empty_sub')}</div>
-        </div>`;
-      window.lucide?.createIcons();
-      return;
-    }
-
-    list.innerHTML = items.map((s) => senderRowHtml(s)).join('');
-
-    list.querySelectorAll('.cln-row').forEach((row) => {
-      const email = row.dataset.email;
-      row.querySelector('[data-act="delete"]')?.addEventListener('click', () => act(email, 'delete', row));
-      row.querySelector('[data-act="mark_read"]')?.addEventListener('click', () => act(email, 'mark_read', row));
-      row.querySelector('[data-act="view"]')?.addEventListener('click', () => viewInInbox(email));
-    });
-
-    // If a job was running for a sender that survives in the list (e.g. a
-    // mark-read job, or a delete that hasn't dropped the row yet), reattach
-    // the progress UI to the new DOM node.
-    for (const job of state.jobs.values()) {
-      const row = list.querySelector(`.cln-row[data-email="${cssEscape(job.sender)}"]`);
-      if (row) renderProgress(row, job);
-    }
-
-    window.lucide?.createIcons();
-  }
-
-  // Robust escape for use inside an attribute selector. CSS.escape handles
-  // dots, @, dashes and other punctuation that would break a naive selector.
-  function cssEscape(v) {
-    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
-      return CSS.escape(String(v));
-    }
-    return String(v).replace(/["\\]/g, '\\$&');
-  }
-
-  function senderRowHtml(s) {
-    const display = s.name || s.email;
-    const ini = initials(display);
-    const col = avatarColor(s.email || display);
-    const logoImg = avatarImgHtml(s.email);
-    const domain = senderDomain(s.email);
-
-    // Build the breakdown stack: only categories with count>0 contribute.
-    const segs = CAT_ORDER
-      .filter((k) => (s[k] || 0) > 0)
-      .map((k) => ({
-        key: k,
-        count: s[k],
-        color: CATEGORY_COLOR[k] || 'var(--muted-2)',
-        pct: (s[k] / s.total) * 100,
-      }));
-
-    const breakdownBar = '';
-
-    const isBusy = state.busy.has(s.email);
-    const isAllRead = s.unread === 0 && s.total > 0;
-
-    return `
-      <article class="cln-row ${isBusy ? 'is-busy' : ''} ${isAllRead ? 'is-all-read' : ''}" role="listitem" data-email="${escapeHtml(s.email)}">
-        <div class="cln-av" style="background:${col}">
-          <span class="av-text">${escapeHtml(ini)}</span>
-          ${logoImg}
-        </div>
-        <div class="cln-row-main">
-          <div class="cln-row-top">
-            <span class="cln-row-name">${escapeHtml(display)}</span>
-            <span class="cln-row-mail">${escapeHtml(s.email)}</span>
-            ${domain ? `<a class="cln-row-domain" href="https://${escapeHtml(domain)}" target="_blank" rel="noopener noreferrer" title="${t('cleanup.sender.open_domain', { domain: escapeHtml(domain) })}"><i data-lucide="external-link" class="w-3 h-3"></i></a>` : ''}
-          </div>
-          <div class="cln-row-stats">
-            <span class="cln-stat"><strong>${s.total}</strong> msg</span>
-            ${s.unread > 0 ? `<span class="cln-stat cln-stat-unread"><strong>${s.unread}</strong> ${t('cleanup.sender.unread')}</span>` : ''}
-            ${s.newsletter > 0 ? `<span class="cln-stat" style="color:${CATEGORY_COLOR.newsletter}"><strong>${s.newsletter}</strong> news</span>` : ''}
-            ${s.important > 0 ? `<span class="cln-stat" style="color:${CATEGORY_COLOR.important}"><strong>${s.important}</strong> imp.</span>` : ''}
-            <span class="cln-stat cln-stat-date">${t('cleanup.sender.last_seen', { rel: escapeHtml(relativeFrench(s.last_seen)) })}</span>
-          </div>
-        </div>
-        <div class="cln-row-actions">
-          <button class="cln-act" data-act="view" title="${t('cleanup.act.view_title')}" aria-label="${t('cleanup.act.view_aria')}" ${isBusy ? 'disabled' : ''}>
-            <i data-lucide="inbox" class="w-4 h-4"></i><span>${t('cleanup.act.view')}</span>
-          </button>
-          <button class="cln-act" data-act="mark_read" title="${t('cleanup.act.mark_read_title')}" aria-label="${t('cleanup.act.mark_read_title')}" ${isBusy ? 'disabled' : ''}>
-            <i data-lucide="mail-open" class="w-4 h-4"></i><span>${t('cleanup.act.mark_read')}</span>
-          </button>
-          <button class="cln-act cln-act-danger" data-act="delete" title="${t('cleanup.act.delete_title')}" aria-label="${t('cleanup.act.delete_title')}" ${isBusy ? 'disabled' : ''}>
-            <i data-lucide="trash-2" class="w-4 h-4"></i><span>${t('cleanup.act.delete')}</span>
-          </button>
-        </div>
-        ${breakdownBar}
-        <div class="cln-progress" hidden>
-          <div class="cln-progress-track"><div class="cln-progress-fill" style="width:0%"></div></div>
-          <div class="cln-progress-meta">
-            <span class="cln-progress-label">—</span>
-            <span class="cln-progress-count">0 / 0</span>
-          </div>
-        </div>
-      </article>
-    `;
-  }
-
-  // ── Actions ──────────────────────────────────────────────
-  async function act(email, action, row) {
-    if (state.busy.has(email)) return;
-    const sender = state.senders.find((s) => s.email === email);
-    if (!sender) return;
-
-    if (action === 'delete') {
-      const ok = await confirmAsync({
-        title: t('cleanup.confirm.delete_title'),
-        message: t('cleanup.confirm.delete_msg', { n: sender.total, name: sender.name || sender.email }),
-        confirmLabel: t('cleanup.act.delete'),
-        danger: true,
-      });
-      if (!ok) return;
-    }
-
-    state.busy.add(email);
-    if (row) {
-      row.classList.add('is-busy');
-      row.querySelectorAll('.cln-act').forEach((b) => (b.disabled = true));
-    }
-
-    let res;
-    try {
-      const acc = state.accountFilter || undefined;
-      res = await api.cleanupSender(email, action, acc);
-    } catch (err) {
-      window.toast(t('cleanup.toast.fail', { msg: err.message }));
-      state.busy.delete(email);
-      if (row) {
-        row.classList.remove('is-busy');
-        row.querySelectorAll('.cln-act').forEach((b) => (b.disabled = false));
-      }
-      return;
-    }
-
-    const affected = res?.affected ?? 0;
-    const total = res?.total ?? 0;
-    const jobId = res?.job_id;
-
-    if (!jobId || total === 0) {
-      // Always taken now: the server queues the IMAP move behind a delay
-      // instead of running it as a tracked job, which is what lets the undo
-      // below cancel it outright. The job branch under this one is dead and
-      // goes away with the page redesign.
-      toastWithUndo(_bulkResultMessage(action, affected), res?.undo);
-      finishLocalUpdate(email, action);
-      return;
-    }
-
-    // Stream the IMAP propagation progress. The DB is already updated, so
-    // for `delete` we keep the row in place during the IMAP push (with the
-    // progress bar showing) instead of removing it immediately. The row is
-    // dropped when the job finishes.
-    const job = {
-      id: jobId,
-      sender: email,
-      action,
-      total,
-      done: 0,
-      failed: 0,
-      finished: false,
-    };
-    state.jobs.set(email, job);
-    if (row) renderProgress(row, job);
-
-    pollJob(job);
-  }
-
-  // Shared undo affordance, same shape as the inbox's. The server returns
-  // everything needed to put things back — including the folder each message
-  // actually came from — and cancels the queued IMAP move when we call it
-  // inside the delay window, so the mail server never sees the deletion.
-  function _hasUndo(undo) {
-    if (!undo) return false;
-    return Object.keys(undo.folders || {}).length > 0 || (undo.unread_ids || []).length > 0;
-  }
-
-  function toastWithUndo(message, undo) {
-    if (!_hasUndo(undo)) { window.toast(message); return; }
-    window.toast({
-      variant: 'success',
-      message,
-      duration: 8000,
-      action: {
-        // Same three strings the inbox uses. One wording, no drift.
-        label: t('mb.toast.undo'),
-        onClick: async () => {
-          try {
-            await api.cleanupUndo(undo);
-            window.toast(t('mb.toast.undone'));
-          } catch (err) {
-            window.toast({ variant: 'error', message: t('mb.toast.undo_failed') });
-          }
-          await refreshAfterMutation();
-        },
-      },
-    });
-  }
-
-  // Counts everywhere are stale after a mutation or its undo: deleting the
-  // low-score mails also empties "Autres non lus", and the senders list shifts.
-  async function refreshAfterMutation() {
-    for (const r of RULES_L) state.ruleStats.delete(r.id);
-    for (const r of state.customRules) state.customStats.delete(`c-${r.id}`);
-    state.sendersStale = true;
-    if (state.tab === 'senders') {
-      await loadSenders();
-    } else if (state.tab === 'rules') {
-      for (const r of RULES_L) loadRuleStats(r.id);
-      for (const r of state.customRules) loadCustomRuleStats(r.id);
-      if (state.selectedRule) renderRuleDetail(state.selectedRule);
-      if (state.selectedCustomRule != null) renderCustomRuleDetail(state.selectedCustomRule);
-    } else {
-      loadUnsubStats().then(paintUnsubStatus).catch(() => {});
-    }
-  }
-
-  // The message for a finished bulk action, with the honest count.
-  function _bulkResultMessage(action, affected) {
-    if (action === 'delete') {
-      return affected ? t('cleanup.toast.deleted', { n: affected }) : t('cleanup.toast.nothing_to_delete');
-    }
-    return affected ? t('cleanup.toast.marked_read', { n: affected }) : t('cleanup.toast.already_read');
-  }
-
-  function finishLocalUpdate(email, action) {
-    if (action === 'delete') {
-      state.senders = state.senders.filter((s) => s.email !== email);
-      renderSenderList();
-    } else {
-      // Drop unread/pending counts to zero on the local sender to reflect
-      // the just-issued mark-read; saves a full reload roundtrip.
-      const s = state.senders.find((x) => x.email === email);
-      if (s) s.unread = 0;
-      renderSenderList();
-    }
-    state.busy.delete(email);
-  }
-
-  function renderProgress(row, job) {
-    const progress = row.querySelector('.cln-progress');
-    const actions = row.querySelector('.cln-row-actions');
-    if (!progress || !actions) return;
-    progress.hidden = false;
-    actions.style.display = 'none';
-    const fill = progress.querySelector('.cln-progress-fill');
-    const label = progress.querySelector('.cln-progress-label');
-    const count = progress.querySelector('.cln-progress-count');
-    const ratio = job.total ? ((job.done + job.failed) / job.total) : 0;
-    fill.style.width = `${(ratio * 100).toFixed(1)}%`;
-    const verb = job.action === 'delete' ? t('cleanup.progress.deleting') : t('cleanup.progress.marking');
-    if (job.finished) {
-      label.textContent = job.failed
-        ? t('cleanup.progress.done_errors', { n: job.failed })
-        : t('cleanup.progress.done');
-    } else {
-      label.textContent = verb;
-    }
-    count.textContent = `${job.done + job.failed} / ${job.total}`;
-  }
-
-  async function pollJob(job) {
-    const tick = async () => {
-      let snap;
-      try {
-        snap = await api.getCleanupJob(job.id);
-      } catch (_) {
-        // Job lost (server restart?) — give up gracefully.
-        state.jobs.delete(job.sender);
-        finishLocalUpdate(job.sender, job.action);
-        return;
-      }
-      job.done = snap.done;
-      job.failed = snap.failed;
-      job.finished = snap.finished;
-      const row = $(`.cln-row[data-email="${cssEscape(job.sender)}"]`);
-      if (row) renderProgress(row, job);
-      if (snap.finished) {
-        state.jobs.delete(job.sender);
-        window.toast(snap.failed
-          ? t('cleanup.toast.job_errors', { done: snap.done, failed: snap.failed })
-          : t('cleanup.toast.job_done', { done: snap.done, total: snap.total }));
-        finishLocalUpdate(job.sender, job.action);
-        return;
-      }
-      // Adaptive cadence: faster while moving, slower while waiting.
-      const delay = (snap.done + snap.failed) > 0 ? 600 : 1200;
-      setTimeout(tick, delay);
-    };
-    tick();
-  }
-
-  // Single navigation helper. The router hands us onRouteChange, but the page
-  // has to work when mounted without options too — the read-pane row handler
-  // called `opts.onRouteChange` directly and threw on every click.
   function navigateTo(hash) {
     if (typeof opts.onRouteChange === 'function') opts.onRouteChange(hash);
     else location.hash = hash;
   }
 
-  // Pre-fill the Inbox search with this sender's email so the user lands
-  // on a filtered view of just their messages.
-  function viewInInbox(email) {
-    navigateTo(`#/inbox?q=${encodeURIComponent(email)}`);
+  host.innerHTML = `
+    <section class="cln" role="region" aria-labelledby="cln-title">
+      <header class="cln-head">
+        <h1 id="cln-title">${escapeHtml(t('cleanup.title'))}</h1>
+        <p class="cln-head-sub" id="cln-sub"></p>
+      </header>
+      <p class="cln-live sr-only" aria-live="polite" id="cln-live"></p>
+      <div class="cln-banner" id="cln-banner" hidden></div>
+      <ol class="cln-list" id="cln-list" aria-labelledby="cln-title"></ol>
+      <div class="cln-state" id="cln-state" hidden></div>
+      <footer class="cln-foot">
+        <button type="button" class="cln-more" id="cln-more" hidden></button>
+        <button type="button" class="cln-unhide" id="cln-unhide" hidden></button>
+        <span class="cln-stamp" id="cln-stamp"></span>
+        <span class="cln-guard">${escapeHtml(t('cleanup.guard'))}</span>
+      </footer>
+    </section>`;
+
+  const $ = (sel) => host.querySelector(sel);
+  const listEl = $('#cln-list');
+  const stateEl = $('#cln-state');
+  const bannerEl = $('#cln-banner');
+  const liveEl = $('#cln-live');
+
+  const announce = (msg) => { if (liveEl) liveEl.textContent = msg; };
+
+  // ── rendering ─────────────────────────────────────────────────────────
+
+  function cardTitle(card) {
+    return t(`cleanup.card.${card.id}.title`, card.vars);
   }
 
-  // ── Rules tab (master-detail layout) ─────────────────────
-  function renderRulesPane() {
-    const pane = $('#cln-pane');
-    pane.innerHTML = `
-      <div class="cln-rules-layout">
-        <aside class="cln-rules-rail" aria-label="${t('cleanup.rules.rail_aria')}">
-          <div class="cln-rules-rail-head">${t('cleanup.tab.rules')}</div>
-          <div class="cln-rules-rail-list" id="cln-rules-rail"></div>
-        </aside>
-        <section class="cln-rules-detail" id="cln-rules-detail" aria-live="polite"></section>
-      </div>
-    `;
-    renderRulesRail();
-    if (state.selectedRule) openRuleDetail(state.selectedRule);
-    // Lazily fetch counts for each rule. Cached in state.ruleStats so
-    // switching tabs doesn't re-roundtrip every preset.
-    for (const r of RULES_L) {
-      if (!state.ruleStats.has(r.id)) loadRuleStats(r.id);
+  function cardGain(card) {
+    let text = t(`cleanup.card.${card.id}.gain`, card.vars);
+    if (card.vars.matched && card.vars.matched > card.vars.n) {
+      text += ' ' + t('cleanup.card.capped', card.vars);
     }
-    // Load custom rules
-    if (state.customRules.length === 0) loadCustomRules();
+    return text;
   }
 
-  function renderRulesRail() {
-    const rail = $('#cln-rules-rail');
-    if (!rail) return;
-    const customItems = state.customRules.map((r) => customRailItemHtml(r)).join('');
-    rail.innerHTML = `
-      ${RULES_L.map((r) => ruleRailItemHtml(r)).join('')}
-      <div class="cln-rail-sep" id="cln-rail-sep-custom">
-        <span>${t('cleanup.rules.my_rules')}</span>
+  function renderCard(card) {
+    const li = document.createElement('li');
+    li.className = 'cln-card';
+    li.dataset.card = card.id;
+    li.dataset.state = 'idle';
+    const peek = card.peek?.query
+      ? `<a class="cln-card-peek" href="#/inbox?q=${encodeURIComponent(card.peek.query)}"
+            aria-label="${escapeHtml(t('cleanup.peek_aria'))}">${escapeHtml(t('cleanup.peek'))}</a>`
+      : '';
+    li.innerHTML = `
+      <h2 class="cln-card-title">${escapeHtml(cardTitle(card))}</h2>
+      <p class="cln-card-gain">${escapeHtml(cardGain(card))}</p>
+      <div class="cln-card-foot">
+        <button type="button" class="cln-card-go">${escapeHtml(t(`cleanup.card.${card.id}.btn`, card.vars))}</button>
+        ${peek}
+        <button type="button" class="cln-card-hide"
+                aria-label="${escapeHtml(t('cleanup.hide_aria'))}">${escapeHtml(t('cleanup.hide'))}</button>
       </div>
-      <div id="cln-custom-rail-list">
-        ${customItems || `<div class="cln-rail-empty-hint">${t('cleanup.rules.no_custom')}</div>`}
+      <div class="cln-card-run" hidden>
+        <div class="cln-bar"><div class="cln-bar-fill" style="width:0%"></div></div>
+        <p class="cln-card-run-text"></p>
       </div>
-      <button class="cln-rail-add-btn" id="btn-add-custom-rule" type="button"
-              title="${t('cleanup.rules.add_title')}">
-        <i data-lucide="plus" class="w-4 h-4"></i>
-        <span>${t('cleanup.rules.new_rule')}</span>
-      </button>
-    `;
-    rail.querySelectorAll('.cln-rail-item[data-rule]').forEach((el) => {
-      el.addEventListener('click', () => selectRule(el.dataset.rule));
-      el.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          selectRule(el.dataset.rule);
-        }
-      });
-    });
-    rail.querySelectorAll('.cln-rail-item[data-custom-id]').forEach((el) => {
-      el.addEventListener('click', () => selectCustomRule(Number(el.dataset.customId)));
-      el.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          selectCustomRule(Number(el.dataset.customId));
-        }
-      });
-    });
-    rail.querySelector('#btn-add-custom-rule')?.addEventListener('click', () => openCustomPanel(null));
-    window.lucide?.createIcons();
+      <div class="cln-card-done" hidden></div>
+      <p class="cln-card-err" hidden></p>`;
+
+    li.querySelector('.cln-card-go').addEventListener('click', () => runCard(card, li));
+    li.querySelector('.cln-card-hide').addEventListener('click', () => hideCard(card, li));
+    return li;
   }
 
-  function ruleRailItemHtml(r) {
-    const stats = state.ruleStats.get(r.id);
-    const isActive = state.selectedRule === r.id;
-    const isBusy = state.ruleBusy.has(r.id);
-    const total = stats && !stats.loading ? stats.total : null;
-    const isEmpty = total === 0;
-    return `
-      <button class="cln-rail-item ${isActive ? 'is-active' : ''} ${isEmpty ? 'is-empty' : ''} ${isBusy ? 'is-busy' : ''}"
-              data-rule="${r.id}" type="button" role="tab" aria-selected="${isActive}">
-        <span class="cln-rail-icn" style="background:color-mix(in oklab, ${r.accent} 18%, transparent); color: ${r.accent}">
-          <i data-lucide="${r.icon}" class="w-4 h-4"></i>
-        </span>
-        <span class="cln-rail-text">
-          <span class="cln-rail-name">${escapeHtml(r.label)}</span>
-          <span class="cln-rail-desc">${escapeHtml(r.description)}</span>
-        </span>
-        <span class="cln-rail-count">${
-          stats == null || stats.loading
-            ? '…'
-            : (stats.error ? '!' : String(stats.total))
-        }</span>
-      </button>
-    `;
-  }
-
-  function selectRule(ruleId) {
-    if (!RULES_L.some((r) => r.id === ruleId)) return;
-    if (state.selectedRule === ruleId) return;
-    state.selectedRule = ruleId;
-    state.selectedCustomRule = null;
-    // Update active state on rail items without rebuilding the whole rail
-    $('#cln-rules-rail')?.querySelectorAll('.cln-rail-item').forEach((el) => {
-      const on = el.dataset.rule === ruleId;
-      el.classList.toggle('is-active', on);
-      el.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-    renderRuleDetail(ruleId);
-  }
-
-  function selectCustomRule(customId) {
-    const r = state.customRules.find((x) => x.id === customId);
-    if (!r) return;
-    state.selectedRule = null;
-    state.selectedCustomRule = customId;
-    $('#cln-rules-rail')?.querySelectorAll('.cln-rail-item').forEach((el) => {
-      const on = Number(el.dataset.customId) === customId;
-      el.classList.toggle('is-active', on);
-      el.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-    renderCustomRuleDetail(customId);
-  }
-
-  // Helper used by both preset and custom rule detail opening
-  function openRuleDetail(ruleId) {
-    if (ruleId) renderRuleDetail(ruleId);
-  }
-
-  function paintRailItem(ruleId) {
-    const rail = $('#cln-rules-rail');
-    if (!rail) return;
-    const item = rail.querySelector(`.cln-rail-item[data-rule="${ruleId}"]`);
-    if (!item) return;
-    const r = RULES_L.find((x) => x.id === ruleId);
-    if (!r) return;
-    item.outerHTML = ruleRailItemHtml(r);
-    // Re-bind handlers on the replaced node
-    const fresh = rail.querySelector(`.cln-rail-item[data-rule="${ruleId}"]`);
-    if (fresh) {
-      fresh.addEventListener('click', () => selectRule(ruleId));
-      fresh.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          selectRule(ruleId);
-        }
-      });
-      window.lucide?.createIcons();
-    }
-  }
-
-  function paintCustomRailList() {
-    const listEl = $('#cln-custom-rail-list');
-    if (!listEl) return;
-    const customItems = state.customRules.map((r) => customRailItemHtml(r)).join('');
-    listEl.innerHTML = customItems || `<div class="cln-rail-empty-hint">${t('cleanup.rules.no_custom')}</div>`;
-    listEl.querySelectorAll('.cln-rail-item[data-custom-id]').forEach((el) => {
-      el.addEventListener('click', () => selectCustomRule(Number(el.dataset.customId)));
-      el.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectCustomRule(Number(el.dataset.customId)); }
-      });
-    });
-    window.lucide?.createIcons();
-  }
-
-  async function loadRuleStats(ruleId) {
-    const r = RULES_L.find((x) => x.id === ruleId);
-    if (!r) return;
-    state.ruleStats.set(ruleId, { loading: true, total: 0, unread: 0, sample: [] });
-    paintRailItem(ruleId);
-    if (state.selectedRule === ruleId) renderRuleDetail(ruleId);
-    try {
-      const res = await api.previewCleanupRule(r.filter);
-      state.ruleStats.set(ruleId, {
-        loading: false, error: null,
-        total: res.total, unread: res.unread,
-        by_account: res.by_account, sample: res.sample,
-        top_senders: res.top_senders, date_oldest: res.date_oldest, date_newest: res.date_newest,
-      });
-    } catch (err) {
-      state.ruleStats.set(ruleId, { loading: false, error: err.message, total: 0, unread: 0, sample: [] });
-    }
-    paintRailItem(ruleId);
-    if (state.selectedRule === ruleId) renderRuleDetail(ruleId);
-  }
-
-  function renderRuleDetail(ruleId) {
-    const detail = $('#cln-rules-detail');
-    if (!detail) return;
-    const r = RULES_L.find((x) => x.id === ruleId);
-    if (!r) {
-      detail.innerHTML = `<div class="cln-empty"><div class="cln-empty-title">${t('cleanup.rules.none_selected')}</div></div>`;
+  function renderState(kind, payload) {
+    listEl.hidden = true;
+    stateEl.hidden = false;
+    if (kind === 'loading') {
+      stateEl.innerHTML =
+        `<p class="cln-state-title">${escapeHtml(t('cleanup.state.loading'))}</p>` +
+        '<div class="cln-skeletons" aria-hidden="true">' +
+        '<div class="cln-skel"></div><div class="cln-skel"></div><div class="cln-skel"></div></div>';
       return;
     }
-    const stats = state.ruleStats.get(ruleId);
-    const isBusy = state.ruleBusy.has(ruleId);
-    const job = state.ruleJobs.get(ruleId);
-
-    // ── Action buttons (top-right of header)
-    const actionsBtns = r.actions.map((a, i) => {
-      const isPrimary = i === 0;
-      const danger = a === 'delete';
-      const actLabel = a === 'delete' ? t('cleanup.act.delete') : t('cleanup.act.mark_all_read');
-      const icon  = a === 'delete' ? 'trash-2' : 'mail-open';
-      const empty = !stats || stats.total === 0 || stats.loading;
-      return `<button class="cln-rule-act ${isPrimary ? 'cln-rule-act-primary' : ''} ${danger ? 'cln-rule-act-danger' : ''}"
-                      data-rule-act="${a}" ${(isBusy || empty) ? 'disabled' : ''}>
-                <i data-lucide="${icon}" class="w-3.5 h-3.5"></i>${actLabel}
-              </button>`;
-    }).join('');
-
-    // Header (always rendered, regardless of loading state)
-    const header = `
-      <header class="cln-detail-head">
-        <span class="cln-rule-icn cln-detail-icn"
-              style="background:color-mix(in oklab, ${r.accent} 18%, transparent); color: ${r.accent}">
-          <i data-lucide="${r.icon}" class="w-5 h-5"></i>
-        </span>
-        <div class="cln-detail-titles">
-          <h2 class="cln-detail-name">${escapeHtml(r.label)}</h2>
-          <p class="cln-detail-desc">${escapeHtml(r.description)}</p>
-        </div>
-        <div class="cln-detail-actions">
-          ${actionsBtns}
-        </div>
-      </header>
-    `;
-
-    // Body switches based on loading / empty / data
-    let body = '';
-    if (!stats || stats.loading) {
-      body = `<div class="cln-detail-empty">${t('cleanup.detail.loading')}</div>`;
-    } else if (stats.error) {
-      body = `<div class="cln-detail-empty cln-error">${t('cleanup.detail.error', { msg: escapeHtml(stats.error) })}</div>`;
-    } else if (stats.total === 0) {
-      body = `
-        <div class="cln-detail-empty">
-          <div class="cln-empty-ico"><i data-lucide="check" class="w-7 h-7"></i></div>
-          <div class="cln-empty-title">${t('cleanup.detail.empty_title')}</div>
-          <div class="cln-empty-sub">${t('cleanup.detail.empty_sub')}</div>
-        </div>`;
-    } else {
-      body = renderRuleDetailBody(stats);
+    if (kind === 'firstrun') {
+      stateEl.innerHTML =
+        `<p class="cln-state-title">${escapeHtml(t('cleanup.state.firstrun.title'))}</p>` +
+        `<p class="cln-state-body">${escapeHtml(t('cleanup.state.firstrun.body', { n: payload.analysing }))}</p>`;
+      return;
     }
-
-    detail.innerHTML = `
-      ${header}
-      <div class="cln-detail-progress" data-progress hidden>
-        <div class="cln-progress-track"><div class="cln-progress-fill" style="width:0%"></div></div>
-        <div class="cln-progress-meta">
-          <span class="cln-progress-label">—</span>
-          <span class="cln-progress-count">0 / 0</span>
-        </div>
-      </div>
-      <div class="cln-detail-body">${body}</div>
-    `;
-
-    // Wire up action buttons
-    detail.querySelectorAll('[data-rule-act]').forEach((b) => {
-      b.addEventListener('click', () => runRule(ruleId, b.dataset.ruleAct));
-    });
-    // Wire up sender chips → inbox filter
-    detail.querySelectorAll('.cln-prv-sender').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        viewInInbox(btn.dataset.sender);
-      });
-    });
-    // Sample row → open mail in inbox
-    detail.querySelectorAll('.cln-prv-row[data-int-id]').forEach((row) => {
-      const open = () => { location.hash = `#/inbox?focus=${encodeURIComponent(row.dataset.intId)}`; };
-      row.addEventListener('click', open);
-      row.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
-      });
-    });
-
-    // Re-attach in-flight progress UI
-    if (job) {
-      const card = detail; // progress lives on the detail container
-      renderRuleProgress(card, job);
+    if (kind === 'clean') {
+      const extra = payload.unsubscribed_total > 0
+        ? `<p class="cln-state-body">${escapeHtml(t('cleanup.state.clean.unsub', { n: payload.unsubscribed_total }))}</p>`
+        : '';
+      stateEl.innerHTML =
+        `<p class="cln-state-title">${escapeHtml(t('cleanup.state.clean.title'))}</p>` +
+        `<p class="cln-state-body">${escapeHtml(t('cleanup.state.clean.body', {
+          n: payload.mailbox.live, unread: payload.mailbox.unread }))}</p>` + extra;
+      return;
     }
-
-    window.lucide?.createIcons();
+    // error
+    stateEl.innerHTML =
+      `<p class="cln-state-title">${escapeHtml(t('cleanup.state.error.title'))}</p>` +
+      `<p class="cln-state-body">${escapeHtml(t('cleanup.state.error.body'))}</p>` +
+      `<button type="button" class="cln-retry">${escapeHtml(t('cleanup.state.retry'))}</button>`;
+    stateEl.querySelector('.cln-retry').addEventListener('click', () => load());
   }
 
-  function renderRuleDetailBody(stats) {
-    // ── Summary strip
-    const accEntries = stats.by_account
-      ? Object.entries(stats.by_account).sort((a, b) => b[1] - a[1])
-      : [];
-    const TOP_ACC = 3;
-    const accChipsVisible = accEntries.slice(0, TOP_ACC)
-      .map(([acc, n]) => `<span class="cln-prv-chip" title="${escapeHtml(acc)}">${escapeHtml(acc.split('@')[0])} · ${n}</span>`)
-      .join('');
-    const accHidden = accEntries.length - TOP_ACC;
-    const accChips = accChipsVisible
-      + (accHidden > 0 ? `<span class="cln-prv-chip cln-prv-chip-more">+${accHidden}</span>` : '');
-    const dateSpanLabel = (stats.date_oldest && stats.date_newest)
-      ? (stats.date_oldest === stats.date_newest
-         ? t('cleanup.detail.date_single', { rel: escapeHtml(relativeFrench(stats.date_oldest)) })
-         : t('cleanup.detail.date_range',  { from: escapeHtml(relativeFrench(stats.date_oldest)), to: escapeHtml(relativeFrench(stats.date_newest)) }))
-      : '';
-
-    // ── Top senders within the rule
-    const topSenders = (stats.top_senders || []).slice(0, 6);
-    const topSendersHtml = topSenders.length
-      ? `
-        <div class="cln-detail-section">
-          <h4 class="cln-detail-section-title">${t('cleanup.detail.top_senders')}</h4>
-          <div class="cln-prv-senders">
-            ${topSenders.map((s) => {
-              const display = s.name || s.email;
-              const ini = initials(display);
-              const col = avatarColor(s.email || display);
-              const img = avatarImgHtml(s.email, 22);
-              return `
-                <button class="cln-prv-sender" type="button"
-                        data-sender="${escapeHtml(s.email)}"
-                        title="${t('cleanup.detail.sender_view', { name: escapeHtml(display) })}">
-                  <span class="cln-prv-sender-av" style="background:${col}">
-                    <span class="av-text">${escapeHtml(ini)}</span>
-                    ${img}
-                  </span>
-                  <span class="cln-prv-sender-name">${escapeHtml(display)}</span>
-                  <span class="cln-prv-sender-n">${s.count}</span>
-                </button>
-              `;
-            }).join('')}
-          </div>
-        </div>`
-      : '';
-
-    // ── Sample list
-    const sampleHtml = stats.sample.map((em) => {
-      const sName = senderShort(em.sender);
-      const sEmail = (em.sender || '').match(/<([^>]+)>/)?.[1] || em.sender || '';
-      const ini = initials(sName);
-      const col = avatarColor(sEmail || sName);
-      const img = avatarImgHtml(sEmail, 28);
-      const score = em.importance_score || 0;
-      const cat = em.category || 'pending';
-      const showId = em.int_id != null;
-      return `
-        <div class="cln-prv-row ${em.is_read ? '' : 'is-unread'}"
-             ${showId ? `data-int-id="${em.int_id}" role="button" tabindex="0" title="${t('cleanup.detail.open_email')}"` : ''}>
-          <span class="cln-prv-av" style="background:${col}">
-            <span class="av-text">${escapeHtml(ini)}</span>
-            ${img}
-          </span>
-          <div class="cln-prv-body">
-            <div class="cln-prv-r1">
-              <span class="cln-prv-from">${escapeHtml(sName || sEmail || t('cleanup.unknown_sender'))}</span>
-              <span class="cln-prv-cat" style="background:${CATEGORY_COLOR[cat] || 'var(--muted-2)'}" title="${escapeHtml(cat)}"></span>
-              ${score > 0 ? `<span class="cln-prv-score s-${score >= 7 ? 'hi' : (score >= 4 ? 'md' : 'lo')}">${score}</span>` : ''}
-              <span class="cln-prv-date">${escapeHtml(relativeFrench(em.date_received))}</span>
-            </div>
-            <div class="cln-prv-subj">${escapeHtml(em.subject || t('cleanup.no_subject'))}</div>
-          </div>
-        </div>
-      `;
-    }).join('');
-
-    const remaining = stats.total - stats.sample.length;
-
-    return `
-      <div class="cln-prv-summary">
-        <div class="cln-prv-summary-row">
-          <span class="cln-prv-kpi"><strong>${stats.total}</strong>&nbsp;message${stats.total > 1 ? 's' : ''}</span>
-          <span class="cln-prv-kpi cln-prv-kpi-muted"><strong>${stats.unread}</strong>&nbsp;non&nbsp;lu${stats.unread > 1 ? 's' : ''}</span>
-          ${(dateSpanLabel || accChips) ? `<div class="cln-prv-row-right">
-            ${dateSpanLabel ? `<span class="cln-prv-span">${dateSpanLabel}</span>` : ''}
-            ${accChips ? `<div class="cln-prv-chips">${accChips}</div>` : ''}
-          </div>` : ''}
-        </div>
-      </div>
-      ${topSendersHtml}
-      <div class="cln-detail-section">
-        <h4 class="cln-detail-section-title">${stats.sample.length === stats.total
-          ? t('cleanup.detail.all_messages', { n: stats.total })
-          : t('cleanup.detail.recent_messages', { n: stats.sample.length })
-        }</h4>
-        <div class="cln-prv-list cln-prv-list-tall">${sampleHtml}</div>
-        ${remaining > 0
-          ? `<div class="cln-prv-more">${t('cleanup.detail.more', { n: remaining })}</div>`
-          : ''}
-      </div>
-    `;
-  }
-
-  function senderShort(raw) {
-    if (!raw) return (window.t || ((k) => k))('cleanup.unknown_sender');
-    const m = /<([^>]+)>/.exec(raw);
-    if (m) {
-      const name = raw.split('<', 1)[0].trim().replace(/^"|"$/g, '').trim();
-      return name || m[1];
+  function renderBanner(payload) {
+    // At most one line, and never a substitute for the cards: on a big
+    // mailbox the queue can sit at thousands while the mail already read
+    // produces perfectly good suggestions.
+    let html = '';
+    if (window.aiEnabled === false) {
+      html = escapeHtml(t('cleanup.banner.noai'));
+    } else if (payload.analysing > 0 && payload.cards.length) {
+      html = escapeHtml(t('cleanup.banner.analysing', { n: payload.analysing }));
+    } else if (payload.missing_headers > 0 && !payload.cards.some(
+      (c) => c.id === 'unsub_bulk' || c.id === 'unsub_one')) {
+      html =
+        `<span>${escapeHtml(t('cleanup.banner.scan.title', { n: payload.missing_headers }))} ` +
+        `${escapeHtml(t('cleanup.banner.scan.body'))}</span>` +
+        `<button type="button" class="cln-banner-btn" id="cln-scan">${escapeHtml(t('cleanup.banner.scan.btn'))}</button>`;
     }
-    return raw;
+    bannerEl.innerHTML = html;
+    bannerEl.hidden = !html;
+    bannerEl.querySelector('#cln-scan')?.addEventListener('click', runHeaderScan);
   }
 
-  // A bespoke delete modal used to live here, making three different
-  // confirmation designs on one page — and it pre-focused its own destructive
-  // button, so Enter deleted. Both callers now use the shared confirmAsync,
-  // which focuses Cancel on a dangerous action.
+  function render(payload) {
+    state = payload;
+    const cards = payload.cards || [];
 
-  async function runRule(ruleId, action) {
-    if (state.ruleBusy.has(ruleId)) return;
-    const rule = RULES_L.find((r) => r.id === ruleId);
-    const stats = state.ruleStats.get(ruleId);
-    if (!rule || !stats || stats.total === 0) return;
+    $('#cln-sub').textContent = cards.length ? t('cleanup.sub', { n: cards.length }) : '';
+    $('#cln-stamp').textContent = t('cleanup.stamp', {
+      time: new Date(payload.generated_at).toLocaleTimeString([], {
+        hour: '2-digit', minute: '2-digit' }),
+    });
 
-    if (action === 'delete') {
+    const more = $('#cln-more');
+    more.hidden = !payload.more;
+    if (payload.more) {
+      more.textContent = t('cleanup.more', { n: payload.more });
+      more.onclick = () => { more.hidden = true; renderAll(payload, true); };
+    }
+    const unhide = $('#cln-unhide');
+    unhide.hidden = !payload.hidden;
+    if (payload.hidden) {
+      unhide.textContent = t('cleanup.unhide', { n: payload.hidden });
+      unhide.onclick = async () => {
+        try { render((await api.unhideCleanupCards()).suggestions); }
+        catch (_) { /* the next mount will pick it up */ }
+      };
+    }
+
+    renderBanner(payload);
+    renderAll(payload, false);
+  }
+
+  function renderAll(payload, _showAll) {
+    const cards = payload.cards || [];
+    listEl.innerHTML = '';
+    if (!cards.length) {
+      renderState(payload.analysing > 0 ? 'firstrun' : 'clean', payload);
+      announce(t('cleanup.sr.loaded', { n: 0 }));
+      return;
+    }
+    stateEl.hidden = true;
+    listEl.hidden = false;
+    for (const card of cards) listEl.appendChild(renderCard(card));
+    announce(t('cleanup.sr.loaded', { n: cards.length }));
+    resumeRunningJobs();
+  }
+
+  // ── actions ───────────────────────────────────────────────────────────
+
+  function showError(li, err) {
+    const el = li.querySelector('.cln-card-err');
+    // Nothing is queued client-side: if the fetch to 127.0.0.1 failed, the
+    // handler never ran, so saying "we saved your action" would be a lie.
+    const key = err?.timeout ? 'cleanup.err.timeout'
+      : err?.network ? 'cleanup.err.offline' : 'cleanup.err.generic';
+    el.textContent = t(key);
+    el.hidden = false;
+    li.dataset.state = 'idle';
+    li.querySelector('.cln-card-go').disabled = false;
+  }
+
+  async function runCard(card, li) {
+    if (li.dataset.state !== 'idle') return;
+    if (card.id === 'unsub_bulk') return runBulkUnsubscribe(card, li);
+    if (card.id === 'unsub_one') return runManualUnsubscribe(card, li);
+
+    if (card.confirm) {
       const ok = await confirmAsync({
-        title: t('cleanup.confirm.delete_count_title', { n: stats.total }),
-        message: t('cleanup.confirm.delete_rule_msg', { label: rule.label }),
-        confirmLabel: t('cleanup.act.delete_n', { n: stats.total }),
-        danger: true,
+        title: cardTitle(card),
+        message: t(`cleanup.card.${card.id}.gain`, card.vars),
+        confirmLabel: t(`cleanup.card.${card.id}.btn`, card.vars),
+        danger: TRASH_CARDS.has(card.id),
       });
-      if (!ok) return;
+      if (!ok || destroyed) return;
     }
 
-    state.ruleBusy.add(ruleId);
-    const detail = $('#cln-rules-detail');
-    if (detail) detail.querySelectorAll('button').forEach((b) => (b.disabled = true));
+    const go = li.querySelector('.cln-card-go');
+    go.disabled = true;
+    li.dataset.state = 'running';
+    li.querySelector('.cln-card-err').hidden = true;
 
     let res;
     try {
-      res = await api.runCleanupRule(rule.filter, action);
+      res = await api.applyCleanupCard(card.id, state?.account || undefined);
     } catch (err) {
-      window.toast(t('cleanup.toast.fail', { msg: err.message }));
-      state.ruleBusy.delete(ruleId);
-      if (detail) detail.querySelectorAll('button').forEach((b) => (b.disabled = false));
+      showError(li, err);
       return;
     }
-
-    const total = res?.total ?? 0;
-    const jobId = res?.job_id;
-    if (!jobId || total === 0) {
-      toastWithUndo(_bulkResultMessage(action, res?.affected ?? 0), res?.undo);
-      finishRule(ruleId, action);
+    if (destroyed) return;
+    if (!res.affected) {
+      li.querySelector('.cln-card-err').textContent = t('cleanup.err.gone');
+      li.querySelector('.cln-card-err').hidden = false;
+      later(() => { if (res.suggestions) render(res.suggestions); }, 1200);
       return;
     }
-
-    const job = {
-      id: jobId,
-      ruleId,
-      action,
-      total,
-      done: 0,
-      failed: 0,
-      finished: false,
-    };
-    state.ruleJobs.set(ruleId, job);
-    if (detail && state.selectedRule === ruleId) renderRuleProgress(detail, job);
-    pollRuleJob(job);
+    showDone(card, li, res);
   }
 
-  function renderRuleProgress(host, job) {
-    const wrap = host.querySelector('[data-progress]');
-    const actions = host.querySelector('.cln-detail-actions');
-    if (!wrap) return;
-    wrap.hidden = false;
-    if (actions) actions.style.visibility = 'hidden';
-    const fill = wrap.querySelector('.cln-progress-fill');
-    const label = wrap.querySelector('.cln-progress-label');
-    const count = wrap.querySelector('.cln-progress-count');
-    const ratio = job.total ? ((job.done + job.failed) / job.total) : 0;
-    fill.style.width = `${(ratio * 100).toFixed(1)}%`;
-    const verb = job.action === 'delete' ? t('cleanup.progress.deleting') : t('cleanup.progress.marking');
-    label.textContent = job.finished
-      ? (job.failed ? t('cleanup.progress.done_errors', { n: job.failed }) : t('cleanup.progress.done'))
-      : verb;
-    count.textContent = `${job.done + job.failed} / ${job.total}`;
-  }
+  function showDone(card, li, res) {
+    li.dataset.state = 'done';
+    li.querySelector('.cln-card-foot').hidden = true;
+    const isRead = card.verb === 'mark_read';
+    const msg = t(isRead ? 'cleanup.card.done.read' : 'cleanup.card.done.trashed',
+                  { n: res.affected });
+    const done = li.querySelector('.cln-card-done');
+    done.hidden = false;
+    done.innerHTML =
+      `<p class="cln-card-done-msg">${escapeHtml(msg)}</p>` +
+      '<button type="button" class="cln-card-undo"></button>';
+    const undoBtn = done.querySelector('.cln-card-undo');
 
-  async function pollRuleJob(job) {
-    const tick = async () => {
-      let snap;
-      try { snap = await api.getCleanupJob(job.id); }
-      catch (_) {
-        state.ruleJobs.delete(job.ruleId);
-        finishRule(job.ruleId, job.action);
-        return;
-      }
-      job.done = snap.done;
-      job.failed = snap.failed;
-      job.finished = snap.finished;
-      const detail = $('#cln-rules-detail');
-      if (detail && state.selectedRule === job.ruleId) renderRuleProgress(detail, job);
-      if (snap.finished) {
-        window.toast(snap.failed
-          ? t('cleanup.toast.job_errors', { done: snap.done, failed: snap.failed })
-          : t('cleanup.toast.job_done', { done: snap.done, total: snap.total }));
-        state.ruleJobs.delete(job.ruleId);
-        finishRule(job.ruleId, job.action);
-        return;
-      }
-      const delay = (snap.done + snap.failed) > 0 ? 600 : 1200;
-      setTimeout(tick, delay);
-    };
-    tick();
-  }
+    let left = UNDO_SECONDS;
+    const paint = () => { undoBtn.textContent = t('cleanup.card.undo', { s: left }); };
+    paint();
+    undoBtn.focus();
+    announce(t('cleanup.sr.done', { msg, s: UNDO_SECONDS }));
 
-  function finishRule(ruleId, _action) {
-    state.ruleBusy.delete(ruleId);
-    // Invalidate the cached counts — every rule's selection may have
-    // shifted (deleting low-score also empties "Other unread", etc.),
-    // and the senders tab is also stale.
-    for (const r of RULES_L) state.ruleStats.delete(r.id);
-    state.sendersStale = true;
-    // Refetch counts in the background; rail badges go to "…" then update.
-    for (const r of RULES_L) loadRuleStats(r.id);
-    // Repaint detail immediately to lift the disabled state and progress.
-    if (state.selectedRule) renderRuleDetail(state.selectedRule);
-  }
+    const tick = every(() => {
+      left -= 1;
+      if (left > 0) { paint(); return; }
+      clearInterval(tick);
+      timers.delete(tick);
+      // Replaced, not disabled: past the window the queued move has fired and
+      // there is no untrash, so an enabled-looking button would be a lie.
+      done.innerHTML =
+        `<p class="cln-card-done-msg">${escapeHtml(msg)}</p>` +
+        `<p class="cln-card-after">${escapeHtml(t(isRead ? 'cleanup.card.after_read' : 'cleanup.card.after_trash'))}</p>` +
+        (isRead ? '' : `<a class="cln-card-peek" href="#/inbox?folder=deleted">${escapeHtml(t('cleanup.card.open_trash'))}</a>`);
+    }, 1000);
 
-  // ── Custom rules ──────────────────────────────────────────────────────────
-
-  // Template names/descriptions resolved at runtime.
-  const CUSTOM_TEMPLATES = [
-    {
-      id: 'job-search',
-      nameKey: 'cleanup.tpl.job_search.name',
-      descKey: 'cleanup.tpl.job_search.desc',
-      icon: 'briefcase',
-      accent: '#34D399',
-      filter: {
-        subject_keywords: ['candidature', 'entretien', 'recrutement', 'CV', 'offre d\'emploi', 'poste'],
-        sender_keywords: ['linkedin', 'indeed', 'welcometothejungle', 'hellowork', 'glassdoor'],
-      },
-      actions: ['mark_read'],
-    },
-    {
-      id: 'security-codes',
-      nameKey: 'cleanup.tpl.security_codes.name',
-      descKey: 'cleanup.tpl.security_codes.desc',
-      icon: 'shield-check',
-      accent: '#F59E0B',
-      filter: {
-        subject_keywords: ['code', 'OTP', 'vérification', '2FA', 'authentification', 'sécurité', 'connexion'],
-      },
-      actions: ['mark_read'],
-    },
-    {
-      id: 'social-networks',
-      nameKey: 'cleanup.tpl.social.name',
-      descKey: 'cleanup.tpl.social.desc',
-      icon: 'share-2',
-      accent: '#818CF8',
-      filter: {
-        sender_keywords: ['twitter', 'instagram', 'facebook', 'tiktok', 'snapchat', 'linkedin'],
-      },
-      actions: ['mark_read', 'delete'],
-    },
-    {
-      id: 'app-notifications',
-      nameKey: 'cleanup.tpl.app_notifs.name',
-      descKey: 'cleanup.tpl.app_notifs.desc',
-      icon: 'bell',
-      accent: '#94A3B8',
-      filter: {
-        sender_keywords: ['noreply', 'no-reply', 'donotreply', 'notifications'],
-      },
-      actions: ['mark_read'],
-    },
-    {
-      id: 'promotions',
-      // i18n defines these under `promo`, not `promotions`: the card and every
-      // rule created from it showed the raw key.
-      nameKey: 'cleanup.tpl.promo.name',
-      descKey: 'cleanup.tpl.promo.desc',
-      icon: 'tag',
-      accent: '#F472B6',
-      filter: {
-        subject_keywords: ['promo', 'soldes', 'réduction', '% de réduction', 'offre spéciale', 'bon plan'],
-      },
-      actions: ['delete', 'mark_read'],
-    },
-  ].map((tpl) => ({ ...tpl, name: t(tpl.nameKey), description: t(tpl.descKey) }));
-
-  async function loadCustomRules() {
-    try {
-      const rules = await api.getCustomRules();
-      state.customRules = rules.map((r) => ({
-        ...r,
-        filter: typeof r.filter_json === 'string' ? JSON.parse(r.filter_json || '{}') : (r.filter_json || {}),
-        actions: typeof r.actions_json === 'string' ? JSON.parse(r.actions_json || '["mark_read"]') : (r.actions_json || ['mark_read']),
-      }));
-      paintCustomRailList();
-      // Load stats for newly loaded rules
-      for (const r of state.customRules) {
-        const key = `c-${r.id}`;
-        if (!state.customStats.has(key)) loadCustomRuleStats(r.id);
-      }
-    } catch (err) {
-      console.warn('Custom rules load failed:', err);
-    }
-  }
-
-  async function loadCustomRuleStats(customId) {
-    const r = state.customRules.find((x) => x.id === customId);
-    if (!r) return;
-    const key = `c-${customId}`;
-    state.customStats.set(key, { loading: true, total: 0, unread: 0, sample: [] });
-    paintCustomRailList();
-    try {
-      const res = await api.previewCleanupRule(r.filter);
-      state.customStats.set(key, {
-        loading: false, error: null,
-        total: res.total, unread: res.unread,
-        by_account: res.by_account, sample: res.sample,
-        top_senders: res.top_senders, date_oldest: res.date_oldest, date_newest: res.date_newest,
-      });
-    } catch (err) {
-      state.customStats.set(key, { loading: false, error: err.message, total: 0, unread: 0, sample: [] });
-    }
-    paintCustomRailList();
-    if (state.selectedCustomRule === customId) renderCustomRuleDetail(customId);
-  }
-
-  function customRailItemHtml(r) {
-    const key = `c-${r.id}`;
-    const stats = state.customStats.get(key);
-    const isActive = state.selectedCustomRule === r.id;
-    const isEnabled = r.enabled !== 0;
-    const total = stats && !stats.loading ? stats.total : null;
-    const isEmpty = total === 0;
-    const accent = r.accent || 'var(--accent)';
-
-    // Build a compact filter summary (keywords preview, not raw counts)
-    const filter = r.filter || {};
-    const kwPreview = [
-      ...(filter.subject_keywords || []),
-      ...(filter.sender_keywords  || []),
-    ].slice(0, 3).join(', ');
-    const subtitle = r.description || kwPreview || '';
-
-    const countStr = stats == null || stats.loading ? '…' : (stats.error ? '!' : String(stats.total));
-
-    return `
-      <button class="cln-rail-item cln-custom-item ${isActive ? 'is-active' : ''} ${isEmpty ? 'is-empty' : ''} ${!isEnabled ? 'is-disabled-rule' : ''}"
-              data-custom-id="${r.id}" type="button" role="tab" aria-selected="${isActive}">
-        <span class="cln-rail-icn" style="background:color-mix(in oklab,${accent} 18%,transparent);color:${accent}">
-          <i data-lucide="${r.icon || 'filter'}" class="w-4 h-4"></i>
-        </span>
-        <span class="cln-rail-text">
-          <span class="cln-rail-name">
-            ${escapeHtml(r.name)}
-            ${!isEnabled ? `<span class="cln-custom-off-badge">off</span>` : ''}
-          </span>
-          ${subtitle ? `<span class="cln-rail-desc">${escapeHtml(subtitle)}</span>` : ''}
-        </span>
-        <span class="cln-rail-count">${countStr}</span>
-      </button>
-    `;
-  }
-
-  function renderCustomRuleDetail(customId) {
-    const detail = $('#cln-rules-detail');
-    if (!detail) return;
-    const r = state.customRules.find((x) => x.id === customId);
-    if (!r) {
-      detail.innerHTML = `<div class="cln-empty"><div class="cln-empty-title">${t('cleanup.custom.not_found')}</div></div>`;
-      return;
-    }
-    const key = `c-${customId}`;
-    const stats = state.customStats.get(key);
-    const isBusy = state.customBusy.has(customId);
-    const isEnabled = r.enabled !== 0;
-    const job = state.customJobs.get(customId);
-    const filter = r.filter || {};
-
-    const actionsBtns = (r.actions || ['mark_read']).map((a, i) => {
-      const isPrimary = i === 0;
-      const danger = a === 'delete';
-      const actLabel = a === 'delete' ? t('cleanup.act.delete') : t('cleanup.act.mark_all_read');
-      const icon  = a === 'delete' ? 'trash-2' : 'mail-open';
-      const empty = !isEnabled || !stats || stats.total === 0 || stats.loading;
-      return `<button class="cln-rule-act ${isPrimary ? 'cln-rule-act-primary' : ''} ${danger ? 'cln-rule-act-danger' : ''}"
-                      data-custom-act="${a}" ${(isBusy || empty) ? 'disabled' : ''}>
-                <i data-lucide="${icon}" class="w-3.5 h-3.5"></i>${actLabel}
-              </button>`;
-    }).join('');
-
-    let body = '';
-    if (!isEnabled) {
-      body = `<div class="cln-detail-empty cln-custom-disabled-msg">
-        <i data-lucide="power-off" class="w-7 h-7"></i>
-        <div>${t('cleanup.custom.disabled_msg')}</div>
-        <button class="cln-rule-act cln-rule-act-primary" id="btn-custom-enable">${t('cleanup.custom.enable')}</button>
-      </div>`;
-    } else if (!stats || stats.loading) {
-      body = `<div class="cln-detail-empty">${t('cleanup.detail.loading')}</div>`;
-    } else if (stats.error) {
-      body = `<div class="cln-detail-empty cln-error">${t('cleanup.detail.error', { msg: escapeHtml(stats.error) })}</div>`;
-    } else if (stats.total === 0) {
-      body = `<div class="cln-detail-empty">
-        <div class="cln-empty-ico"><i data-lucide="check" class="w-7 h-7"></i></div>
-        <div class="cln-empty-title">${t('cleanup.detail.empty_title')}</div>
-        <div class="cln-empty-sub">${t('cleanup.detail.empty_sub')}</div>
-      </div>`;
-    } else {
-      body = renderRuleDetailBody(stats);
-    }
-
-    detail.innerHTML = `
-      <header class="cln-detail-head">
-        <span class="cln-rule-icn cln-detail-icn"
-              style="background:color-mix(in oklab, ${r.accent || 'var(--accent)'} 18%, transparent); color: ${r.accent || 'var(--accent)'}">
-          <i data-lucide="${r.icon || 'filter'}" class="w-5 h-5"></i>
-        </span>
-        <div class="cln-detail-title">
-          <div class="cln-detail-title-left">
-            <h2 class="cln-detail-name">${escapeHtml(r.name)}</h2>
-            ${r.description ? `<p class="cln-detail-desc">${escapeHtml(r.description)}</p>` : ''}
-          </div>
-        </div>
-        <div class="cln-detail-actions">
-          <button class="cln-rule-act" id="btn-custom-edit-detail" title="${t('cleanup.custom.edit_title')}">
-            <i data-lucide="pencil" class="w-3.5 h-3.5"></i>${t('cleanup.custom.edit')}
-          </button>
-          <button class="cln-rule-act cln-custom-toggle-btn ${isEnabled ? 'is-enabled' : ''}"
-                  id="btn-custom-toggle-detail"
-                  title="${isEnabled ? t('cleanup.custom.disable_title') : t('cleanup.custom.enable_title')}">
-            <i data-lucide="${isEnabled ? 'power' : 'power-off'}" class="w-3.5 h-3.5"></i>
-            ${isEnabled ? t('cleanup.custom.enabled') : t('cleanup.custom.disabled')}
-          </button>
-          <button class="cln-rule-act cln-rule-act-danger" id="btn-custom-delete-detail" title="${t('cleanup.custom.delete_rule_title')}">
-            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>${t('cleanup.custom.delete_rule')}
-          </button>
-          ${actionsBtns}
-        </div>
-      </header>
-      <div class="cln-detail-progress" data-progress hidden>
-        <div class="cln-progress-track"><div class="cln-progress-fill" style="width:0%"></div></div>
-        <div class="cln-progress-meta">
-          <span class="cln-progress-label">—</span>
-          <span class="cln-progress-count">0 / 0</span>
-        </div>
-      </div>
-      <div class="cln-detail-body">${body}</div>
-    `;
-
-    detail.querySelector('#btn-custom-edit-detail')?.addEventListener('click', () => openCustomPanel(r));
-    detail.querySelector('#btn-custom-toggle-detail')?.addEventListener('click', () => toggleCustomRule(r.id));
-    detail.querySelector('#btn-custom-delete-detail')?.addEventListener('click', () => deleteCustomRulePrompt(r.id));
-    detail.querySelector('#btn-custom-enable')?.addEventListener('click', () => toggleCustomRule(r.id));
-    detail.querySelectorAll('[data-custom-act]').forEach((b) => {
-      b.addEventListener('click', () => runCustomRule(customId, b.dataset.customAct));
-    });
-    detail.querySelectorAll('.cln-prv-sender').forEach((btn) => {
-      btn.addEventListener('click', (e) => { e.stopPropagation(); viewInInbox(btn.dataset.sender); });
-    });
-    detail.querySelectorAll('.cln-prv-row[data-int-id]').forEach((row) => {
-      const open = () => { location.hash = `#/inbox?focus=${encodeURIComponent(row.dataset.intId)}`; };
-      row.addEventListener('click', open);
-      row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
-    });
-    if (job) renderRuleProgress(detail, job);
-    window.lucide?.createIcons();
-  }
-
-  async function toggleCustomRule(customId) {
-    const r = state.customRules.find((x) => x.id === customId);
-    if (!r) return;
-    const newEnabled = r.enabled === 0;
-    try {
-      await api.updateCustomRule(customId, { enabled: newEnabled });
-      r.enabled = newEnabled ? 1 : 0;
-      if (newEnabled) loadCustomRuleStats(customId);
-      paintCustomRailList();
-      if (state.selectedCustomRule === customId) renderCustomRuleDetail(customId);
-    } catch (err) {
-      window.toast(t('cleanup.toast.error', { msg: err.message }));
-    }
-  }
-
-  async function deleteCustomRulePrompt(customId) {
-    const r = state.customRules.find((x) => x.id === customId);
-    if (!r) return;
-    const okRule = await confirmAsync({
-      title: t('cleanup.custom.delete_rule_confirm_title'),
-      message: t('cleanup.custom.delete_rule_confirm_msg', { name: r.name }),
-      confirmLabel: t('cleanup.custom.delete_rule'),
-      danger: true,
-    });
-    if (!okRule) return;
-    try {
-      await api.deleteCustomRule(customId);
-      state.customRules = state.customRules.filter((x) => x.id !== customId);
-      state.customStats.delete(`c-${customId}`);
-      if (state.selectedCustomRule === customId) {
-        state.selectedCustomRule = null;
-        const detail = $('#cln-rules-detail');
-        if (detail) detail.innerHTML = '';
-      }
-      paintCustomRailList();
-    } catch (err) {
-      window.toast(t('cleanup.toast.error', { msg: err.message }));
-    }
-  }
-
-  async function runCustomRule(customId, action) {
-    if (state.customBusy.has(customId)) return;
-    const r = state.customRules.find((x) => x.id === customId);
-    const key = `c-${customId}`;
-    const stats = state.customStats.get(key);
-    if (!r || !stats || stats.total === 0) return;
-    if (action === 'delete') {
-      const ok = await confirmAsync({
-        title: t('cleanup.confirm.delete_count_title', { n: stats.total }),
-        message: t('cleanup.confirm.delete_rule_msg', { label: r.name }),
-        confirmLabel: t('cleanup.act.delete_n', { n: stats.total }),
-        danger: true,
-      });
-      if (!ok) return;
-    }
-    state.customBusy.add(customId);
-    const detail = $('#cln-rules-detail');
-    if (detail) detail.querySelectorAll('button').forEach((b) => (b.disabled = true));
-    let res;
-    try {
-      res = await api.runCleanupRule(r.filter, action);
-    } catch (err) {
-      window.toast(t('cleanup.toast.fail', { msg: err.message }));
-      state.customBusy.delete(customId);
-      if (detail) detail.querySelectorAll('button').forEach((b) => (b.disabled = false));
-      return;
-    }
-    const total = res?.total ?? 0;
-    const jobId = res?.job_id;
-    if (!jobId || total === 0) {
-      toastWithUndo(_bulkResultMessage(action, res?.affected ?? 0), res?.undo);
-      finishCustomRule(customId, action);
-      return;
-    }
-    const job = { id: jobId, customId, action, total, done: 0, failed: 0, finished: false };
-    state.customJobs.set(customId, job);
-    if (detail && state.selectedCustomRule === customId) renderRuleProgress(detail, job);
-    pollCustomJob(job);
-  }
-
-  async function pollCustomJob(job) {
-    const tick = async () => {
-      let snap;
-      try { snap = await api.getCleanupJob(job.id); }
-      catch (_) { state.customJobs.delete(job.customId); finishCustomRule(job.customId, job.action); return; }
-      job.done = snap.done; job.failed = snap.failed; job.finished = snap.finished;
-      const detail = $('#cln-rules-detail');
-      if (detail && state.selectedCustomRule === job.customId) renderRuleProgress(detail, job);
-      if (snap.finished) {
-        window.toast(snap.failed
-          ? t('cleanup.toast.job_errors', { done: snap.done, failed: snap.failed })
-          : t('cleanup.toast.job_done', { done: snap.done, total: snap.total }));
-        state.customJobs.delete(job.customId);
-        finishCustomRule(job.customId, job.action);
-        return;
-      }
-      setTimeout(tick, (snap.done + snap.failed) > 0 ? 600 : 1200);
-    };
-    tick();
-  }
-
-  function finishCustomRule(customId, _action) {
-    state.customBusy.delete(customId);
-    state.customStats.delete(`c-${customId}`);
-    state.sendersStale = true;
-    loadCustomRuleStats(customId);
-    if (state.selectedCustomRule === customId) renderCustomRuleDetail(customId);
-  }
-
-  // ── Custom rule panel (template picker / create-edit form) ────────────────
-
-  const ACCENT_PRESETS = [
-    '#34D399', '#F59E0B', '#818CF8', '#F472B6', '#94A3B8',
-    '#60A5FA', '#FB923C', '#4ADE80', '#E879F9', '#38BDF8',
-  ];
-  const ICON_PRESETS = [
-    'filter', 'briefcase', 'shield-check', 'share-2', 'bell',
-    'tag', 'mail', 'inbox', 'archive', 'trash-2',
-    'star', 'heart', 'bookmark', 'zap', 'calendar',
-    'user', 'users', 'globe', 'cpu', 'lock',
-  ];
-
-  function openCustomPanel(existingRule) {
-    state.customPanel = true;
-    state.customEditing = existingRule;
-    const panelEl = $('#cln-custom-panel');
-    const overlay = $('#cln-custom-overlay');
-    if (!panelEl) return;
-    if (existingRule) {
-      renderCustomForm(panelEl, existingRule);
-    } else {
-      renderTemplateList(panelEl);
-    }
-    panelEl.removeAttribute('hidden');
-    requestAnimationFrame(() => {
-      panelEl.classList.add('is-open');
-      overlay?.classList.add('is-visible');
-    });
-    // Clicking the overlay closes the panel
-    overlay?.addEventListener('click', closeCustomPanel, { once: true });
-  }
-
-  function closeCustomPanel() {
-    state.customPanel = false;
-    state.customEditing = null;
-    const panelEl = $('#cln-custom-panel');
-    const overlay = $('#cln-custom-overlay');
-    if (!panelEl) return;
-    panelEl.classList.remove('is-open');
-    overlay?.classList.remove('is-visible');
-    // Wait for transition before hiding
-    panelEl.addEventListener('transitionend', () => {
-      if (!state.customPanel) panelEl.setAttribute('hidden', '');
-    }, { once: true });
-  }
-
-  function renderTemplateList(panelEl) {
-    panelEl.innerHTML = `
-      <div class="cln-panel-head">
-        <strong>${t('cleanup.tpl.choose')}</strong>
-        <button class="cln-panel-close" id="btn-panel-close" title="${t('cleanup.close')}">
-          <i data-lucide="x" class="w-4 h-4"></i>
-        </button>
-      </div>
-      <div class="cln-panel-body" style="padding:18px;gap:14px">
-        <div class="cln-template-list">
-          ${CUSTOM_TEMPLATES.map((tpl) => `
-            <button class="cln-template-card" data-tpl="${escapeHtml(tpl.id)}" type="button">
-              <span class="cln-template-icon" style="background:color-mix(in oklab, ${tpl.accent} 18%, transparent); color: ${tpl.accent}">
-                <i data-lucide="${tpl.icon}" class="w-5 h-5"></i>
-              </span>
-              <span class="cln-template-info">
-                <span class="cln-template-name">${escapeHtml(tpl.name)}</span>
-                <span class="cln-template-desc">${escapeHtml(tpl.description)}</span>
-              </span>
-              <i data-lucide="chevron-right" class="w-4 h-4 cln-template-arr"></i>
-            </button>
-          `).join('')}
-        </div>
-        <div class="cln-panel-divider">${t('cleanup.tpl.or')}</div>
-        <button class="cln-rule-act cln-rule-act-primary" id="btn-tpl-scratch" style="width:100%;justify-content:center">
-          <i data-lucide="plus" class="w-4 h-4"></i>${t('cleanup.tpl.from_scratch')}
-        </button>
-      </div>
-    `;
-    panelEl.querySelector('#btn-panel-close')?.addEventListener('click', closeCustomPanel);
-    panelEl.querySelector('#btn-tpl-scratch')?.addEventListener('click', () => renderCustomForm(panelEl, null));
-    panelEl.querySelectorAll('.cln-template-card').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const tpl = CUSTOM_TEMPLATES.find((tpl) => tpl.id === btn.dataset.tpl);
-        if (tpl) renderCustomForm(panelEl, null, tpl);
-      });
-    });
-    window.lucide?.createIcons();
-  }
-
-  function renderCustomForm(panelEl, existingRule, template = null) {
-    const isEdit = !!existingRule;
-    const base = existingRule || template || {};
-    const filter = base.filter || {};
-
-    const subjectKw = (filter.subject_keywords || []).join(', ');
-    const senderKw  = (filter.sender_keywords  || []).join(', ');
-    const maxScore  = filter.max_score   != null ? filter.max_score : '';
-    const olderDays = filter.older_than_days != null ? filter.older_than_days : '';
-    const cats      = filter.categories || [];
-
-    const CAT_META = {
-      important:     { label: t('cat.important'),     color: '#FCA5A5' },
-      newsletter:    { label: t('cat.newsletter'),    color: '#93C5FD' },
-      transactional: { label: t('cat.transactional'), color: '#86EFAC' },
-      spam:          { label: t('cat.spam'),          color: '#CBD5E1' },
-      other:         { label: t('cat.other'),         color: '#C4B5FD' },
-    };
-    const catPills = Object.entries(CAT_META).map(([c, m]) => `
-      <label class="cln-cat-pill ${cats.includes(c) ? 'is-on' : ''}" style="--pill-c:${m.color}">
-        <input type="checkbox" name="cat" value="${c}" ${cats.includes(c) ? 'checked' : ''} hidden>
-        <span>${m.label}</span>
-      </label>
-    `).join('');
-
-    const currentIcon   = base.icon   || 'filter';
-    const currentAccent = base.accent  || '#818CF8';
-
-    const iconOptions = ICON_PRESETS.map((ic) => `
-      <button type="button" class="cln-icon-opt ${ic === currentIcon ? 'is-sel' : ''}" data-icon="${ic}" title="${ic}">
-        <i data-lucide="${ic}" class="w-4 h-4"></i>
-      </button>
-    `).join('');
-
-    const accentOptions = ACCENT_PRESETS.map((col) => `
-      <button type="button" class="cln-accent-opt ${col === currentAccent ? 'is-sel' : ''}"
-              data-accent="${col}" style="background:${col}" title="${col}"></button>
-    `).join('');
-
-    const defaultAction = (base.actions || ['mark_read'])[0];
-    const actionButtons = [
-      { v: 'mark_read', label: t('cleanup.form.action.mark_read'), icon: 'mail-open' },
-      { v: 'delete',    label: t('cleanup.form.action.delete'),    icon: 'trash-2'  },
-    ].map((o) => `
-      <button type="button" class="cln-action-seg ${defaultAction === o.v ? 'is-on' : ''}"
-              data-action="${o.v}">
-        <i data-lucide="${o.icon}" class="w-3.5 h-3.5"></i>${o.label}
-      </button>
-    `).join('');
-
-    panelEl.innerHTML = `
-      <div class="cln-panel-head">
-        <button class="cln-panel-back" id="btn-panel-back" title="${t('cleanup.back')}" style="${isEdit ? 'display:none' : ''}">
-          <i data-lucide="arrow-left" class="w-4 h-4"></i>
-        </button>
-        <strong>${isEdit ? t('cleanup.custom.edit_title') : (template ? escapeHtml(template.name) : t('cleanup.rules.new_rule'))}</strong>
-        <button class="cln-panel-close" id="btn-panel-close" title="${t('cleanup.close')}">
-          <i data-lucide="x" class="w-4 h-4"></i>
-        </button>
-      </div>
-
-      <!-- Live preview strip -->
-      <div class="cln-form-preview" id="cln-form-preview">
-        <span class="cln-form-preview-icon" id="preview-icon"
-              style="background:color-mix(in oklab, ${currentAccent} 18%, transparent); color:${currentAccent}">
-          <i data-lucide="${currentIcon}" class="w-5 h-5"></i>
-        </span>
-        <span class="cln-form-preview-name" id="preview-name">${escapeHtml(base.name || t('cleanup.custom.preview_name'))}</span>
-      </div>
-
-      <div class="cln-panel-body">
-        <form id="cln-custom-form" autocomplete="off">
-
-          <!-- Identité -->
-          <div class="cln-form-group">
-            <div class="cln-form-group-title">${t('cleanup.form.identity')}</div>
-
-            <label class="cln-form-label">
-              <span>${t('cleanup.form.name')}</span>
-              <input type="text" name="name" class="cln-form-input" maxlength="60" id="input-rule-name"
-                     value="${escapeHtml(base.name || '')}" placeholder="${t('cleanup.form.name_ph')}" required>
-            </label>
-
-            <label class="cln-form-label">
-              <span>${t('cleanup.form.description')} <span class="cln-form-opt">· ${t('cleanup.form.optional')}</span></span>
-              <input type="text" name="description" class="cln-form-input" maxlength="120"
-                     value="${escapeHtml(base.description || '')}" placeholder="${t('cleanup.form.description_ph')}">
-            </label>
-
-            <div class="cln-form-label"><span>${t('cleanup.form.icon')}</span>
-              <div class="cln-icon-grid" id="cln-icon-grid">${iconOptions}</div>
-              <input type="hidden" name="icon" value="${escapeHtml(currentIcon)}">
-            </div>
-
-            <div class="cln-form-label"><span>${t('cleanup.form.color')}</span>
-              <div class="cln-accent-grid" id="cln-accent-grid">${accentOptions}</div>
-              <input type="hidden" name="accent" value="${escapeHtml(currentAccent)}">
-            </div>
-          </div>
-
-          <!-- Filtres -->
-          <div class="cln-form-group">
-            <div class="cln-form-group-title">${t('cleanup.form.filters')} <span class="cln-form-opt">· ${t('cleanup.form.filters_hint')}</span></div>
-
-            <label class="cln-form-label">
-              <span>${t('cleanup.form.subject_kw')} <span class="cln-form-opt">· ${t('cleanup.form.kw_hint')}</span></span>
-              <div class="cln-kw-wrap">
-                <i data-lucide="type" class="w-3.5 h-3.5 cln-kw-icon"></i>
-                <input type="text" name="subject_keywords" class="cln-form-input cln-kw-input"
-                       value="${escapeHtml(subjectKw)}"
-                       placeholder="${t('cleanup.form.subject_kw_ph')}">
-              </div>
-            </label>
-
-            <label class="cln-form-label">
-              <span>${t('cleanup.form.sender_kw')} <span class="cln-form-opt">· ${t('cleanup.form.sender_kw_hint')}</span></span>
-              <div class="cln-kw-wrap">
-                <i data-lucide="at-sign" class="w-3.5 h-3.5 cln-kw-icon"></i>
-                <input type="text" name="sender_keywords" class="cln-form-input cln-kw-input"
-                       value="${escapeHtml(senderKw)}"
-                       placeholder="${t('cleanup.form.sender_kw_ph')}">
-              </div>
-            </label>
-
-            <div class="cln-form-label">
-              <span>${t('cleanup.form.categories')}</span>
-              <div class="cln-cat-pills">${catPills}</div>
-            </div>
-
-            <div class="cln-form-row-2">
-              <label class="cln-form-label">
-                <span>${t('cleanup.form.max_score')} <span class="cln-form-opt">/ 10</span></span>
-                <input type="number" name="max_score" class="cln-form-input" min="1" max="10"
-                       value="${maxScore}" placeholder="—">
-              </label>
-              <label class="cln-form-label">
-                <span>${t('cleanup.form.older_than')} <span class="cln-form-opt">· ${t('cleanup.form.days')}</span></span>
-                <input type="number" name="older_than_days" class="cln-form-input" min="1"
-                       value="${olderDays}" placeholder="—">
-              </label>
-            </div>
-
-            <label class="cln-form-toggle-row">
-              <span>${t('cleanup.form.unread_only')}</span>
-              <span class="cln-form-toggle ${filter.is_read === false ? 'is-on' : ''}" id="toggle-unread-only">
-                <span class="cln-toggle-knob"></span>
-              </span>
-              <input type="hidden" name="is_unread_only" id="input-unread-only"
-                     value="${filter.is_read === false ? 'on' : 'off'}">
-            </label>
-          </div>
-
-          <!-- Action -->
-          <div class="cln-form-group">
-            <div class="cln-form-group-title">${t('cleanup.form.default_action')}</div>
-            <div class="cln-action-seg-wrap" id="cln-action-seg">
-              ${actionButtons}
-            </div>
-            <input type="hidden" name="default_action" id="input-default-action" value="${defaultAction}">
-          </div>
-
-          <!-- Footer -->
-          <div class="cln-form-footer">
-            ${isEdit ? `<button type="button" class="cln-form-btn-del" id="btn-form-delete">
-              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>${t('cleanup.custom.delete_rule')}
-            </button>` : ''}
-            <button type="submit" class="cln-rule-act cln-rule-act-primary cln-form-submit">
-              <i data-lucide="${isEdit ? 'check' : 'plus'}" class="w-3.5 h-3.5"></i>
-              ${isEdit ? t('set.save') : t('cleanup.form.create')}
-            </button>
-          </div>
-        </form>
-      </div>
-    `;
-
-    panelEl.querySelector('#btn-panel-close')?.addEventListener('click', closeCustomPanel);
-    panelEl.querySelector('#btn-panel-back')?.addEventListener('click', () => renderTemplateList(panelEl));
-
-    // Live preview: name
-    const nameInput = panelEl.querySelector('#input-rule-name');
-    const previewName = panelEl.querySelector('#preview-name');
-    nameInput?.addEventListener('input', () => {
-      if (previewName) previewName.textContent = nameInput.value.trim() || t('cleanup.form.name_ph');
-    });
-
-    // Icon picker + live preview
-    const iconGrid = panelEl.querySelector('#cln-icon-grid');
-    const iconInput = panelEl.querySelector('input[name="icon"]');
-    const previewIconEl = panelEl.querySelector('#preview-icon');
-    iconGrid?.querySelectorAll('.cln-icon-opt').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        iconGrid.querySelectorAll('.cln-icon-opt').forEach((b) => b.classList.remove('is-sel'));
-        btn.classList.add('is-sel');
-        if (iconInput) iconInput.value = btn.dataset.icon;
-        if (previewIconEl) {
-          previewIconEl.innerHTML = `<i data-lucide="${btn.dataset.icon}" class="w-5 h-5"></i>`;
-          window.lucide?.createIcons({ el: previewIconEl });
-        }
-      });
-    });
-
-    // Accent picker + live preview
-    const accentGrid = panelEl.querySelector('#cln-accent-grid');
-    const accentInput = panelEl.querySelector('input[name="accent"]');
-    accentGrid?.querySelectorAll('.cln-accent-opt').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        accentGrid.querySelectorAll('.cln-accent-opt').forEach((b) => b.classList.remove('is-sel'));
-        btn.classList.add('is-sel');
-        if (accentInput) accentInput.value = btn.dataset.accent;
-        if (previewIconEl) {
-          previewIconEl.style.background = `color-mix(in oklab, ${btn.dataset.accent} 18%, transparent)`;
-          previewIconEl.style.color = btn.dataset.accent;
-        }
-      });
-    });
-
-    // Category pills
-    panelEl.querySelectorAll('.cln-cat-pill').forEach((pill) => {
-      pill.addEventListener('click', () => {
-        const cb = pill.querySelector('input[type=checkbox]');
-        if (!cb) return;
-        cb.checked = !cb.checked;
-        pill.classList.toggle('is-on', cb.checked);
-      });
-    });
-
-    // Toggle "Non lus uniquement"
-    const toggleEl = panelEl.querySelector('#toggle-unread-only');
-    const toggleInput = panelEl.querySelector('#input-unread-only');
-    toggleEl?.addEventListener('click', () => {
-      const isOn = toggleEl.classList.toggle('is-on');
-      if (toggleInput) toggleInput.value = isOn ? 'on' : 'off';
-    });
-
-    // Action segmented buttons
-    const actionSeg = panelEl.querySelector('#cln-action-seg');
-    const actionInput = panelEl.querySelector('#input-default-action');
-    actionSeg?.querySelectorAll('.cln-action-seg').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        actionSeg.querySelectorAll('.cln-action-seg').forEach((b) => b.classList.remove('is-on'));
-        btn.classList.add('is-on');
-        if (actionInput) actionInput.value = btn.dataset.action;
-      });
-    });
-
-    // Delete (edit mode)
-    panelEl.querySelector('#btn-form-delete')?.addEventListener('click', () => {
-      if (!existingRule) return;
-      closeCustomPanel();
-      deleteCustomRulePrompt(existingRule.id);
-    });
-
-    // Form submit
-    panelEl.querySelector('#cln-custom-form')?.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const fd = new FormData(e.target);
-      const name = fd.get('name')?.toString().trim() || t('cleanup.form.no_title');
-      const description = fd.get('description')?.toString().trim() || '';
-      const icon   = fd.get('icon')?.toString()   || 'filter';
-      const accent = fd.get('accent')?.toString() || 'var(--accent)';
-      const defaultAction = fd.get('default_action')?.toString() || 'mark_read';
-
-      const builtFilter = {};
-      const subjectKwVal = fd.get('subject_keywords')?.toString().trim() || '';
-      const senderKwVal  = fd.get('sender_keywords')?.toString().trim() || '';
-      const maxScoreVal  = fd.get('max_score')?.toString().trim() || '';
-      const olderDaysVal = fd.get('older_than_days')?.toString().trim() || '';
-      const isUnreadOnly = fd.get('is_unread_only') === 'on';
-
-      const catsSelected = [...e.target.querySelectorAll('input[name="cat"]:checked')].map((el) => el.value);
-      if (catsSelected.length) builtFilter.categories = catsSelected;
-      if (subjectKwVal) builtFilter.subject_keywords = subjectKwVal.split(',').map((s) => s.trim()).filter(Boolean);
-      if (senderKwVal)  builtFilter.sender_keywords  = senderKwVal.split(',').map((s) => s.trim()).filter(Boolean);
-      if (maxScoreVal)  builtFilter.max_score = parseInt(maxScoreVal, 10);
-      if (olderDaysVal) builtFilter.older_than_days = parseInt(olderDaysVal, 10);
-      if (isUnreadOnly) builtFilter.is_read = false;
-
-      const body = { name, description, icon, accent, filter: builtFilter, actions: [defaultAction] };
-
-      const submitBtn = e.target.querySelector('[type=submit]');
-      if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = isEdit ? t('set.busy.saving') : t('cleanup.form.creating'); }
+    undoBtn.addEventListener('click', async () => {
+      clearInterval(tick);
+      timers.delete(tick);
+      undoBtn.disabled = true;
       try {
-        if (isEdit) {
-          await api.updateCustomRule(existingRule.id, body);
-          const idx = state.customRules.findIndex((r) => r.id === existingRule.id);
-          if (idx >= 0) {
-            state.customRules[idx] = { ...state.customRules[idx], ...body, enabled: state.customRules[idx].enabled };
-            state.customStats.delete(`c-${existingRule.id}`);
-            loadCustomRuleStats(existingRule.id);
-          }
-        } else {
-          const created = await api.createCustomRule(body);
-          const newRule = {
-            ...created,
-            filter: typeof created.filter_json === 'string' ? JSON.parse(created.filter_json || '{}') : (created.filter_json || builtFilter),
-            actions: typeof created.actions_json === 'string' ? JSON.parse(created.actions_json || '["mark_read"]') : (created.actions_json || [defaultAction]),
-          };
-          state.customRules.push(newRule);
-          loadCustomRuleStats(newRule.id);
-          state.selectedCustomRule = newRule.id;
-        }
-        paintCustomRailList();
-        closeCustomPanel();
-        if (state.selectedCustomRule != null) renderCustomRuleDetail(state.selectedCustomRule);
-        window.toast(isEdit ? t('cleanup.toast.rule_updated') : t('cleanup.toast.rule_created'));
-      } catch (err) {
-        window.toast(t('cleanup.toast.error', { msg: err.message }));
-        if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = `<i data-lucide="${isEdit ? 'check' : 'plus'}" class="w-3.5 h-3.5"></i>${isEdit ? t('set.save') : t('cleanup.form.create')}`; window.lucide?.createIcons({ el: submitBtn }); }
+        const back = await api.cleanupUndo(res.undo);
+        announce(t('cleanup.card.undone'));
+        if (back.suggestions) render(back.suggestions);
+      } catch (_) {
+        done.innerHTML = `<p class="cln-card-done-msg">${escapeHtml(t('cleanup.card.undo_failed'))}</p>`;
       }
     });
 
-    window.lucide?.createIcons();
+    // An echo in the rail, decoration only: railToast is single-slot and a
+    // background sync pass destroys the live toast within seconds.
+    window.toast?.({ variant: 'success', message: msg, duration: UNDO_SECONDS * 1000 });
+    if (res.suggestions) state = res.suggestions;
   }
 
-  // ── Unsubscribe tab (master-detail layout, mirrors Rules) ───
-  function renderUnsubscribePane() {
-    const pane = $('#cln-pane');
-    pane.innerHTML = `
-      <div class="cln-unsub-status" id="cln-unsub-status">${t('cleanup.loading')}</div>
-      <div class="cln-rules-layout">
-        <aside class="cln-rules-rail" aria-label="${t('cleanup.unsub.rail_aria')}">
-          <div class="cln-rules-rail-head">${t('cleanup.unsub.rail_head')}</div>
-          <div class="cln-rules-rail-list" id="cln-unsub-rail"></div>
-        </aside>
-        <section class="cln-rules-detail" id="cln-unsub-detail" aria-live="polite"></section>
-      </div>
-    `;
-    paintUnsubStatus();
-    renderUnsubRail();
-    if (state.selectedUnsub) renderUnsubDetail(state.selectedUnsub);
-    // Lazy load on first visit
-    if (state.unsubStats == null) loadUnsubStats();
-    if (state.unsubSenders.length === 0) loadUnsubSenders();
+  async function hideCard(card, li) {
+    li.remove();
+    try { render((await api.hideCleanupCard(card.id)).suggestions); }
+    catch (_) { /* it will be back next mount */ }
   }
 
-  function paintUnsubStatus() {
-    const el = $('#cln-unsub-status');
-    if (!el) return;
-    const s = state.unsubStats;
-    const job = state.backfillJob;
+  // ── unsubscribe ───────────────────────────────────────────────────────
 
-    if (job && !job.finished) {
-      const pct = job.total ? ((job.done + job.failed) / job.total * 100).toFixed(1) : 0;
-      el.innerHTML = `
-        <div class="cln-unsub-status-row">
-          <i data-lucide="refresh-cw" class="w-4 h-4" style="animation: spin 1s linear infinite"></i>
-          <span>${t('cleanup.unsub.searching', { done: job.done + job.failed, total: job.total })}</span>
-        </div>
-        <div class="cln-progress-track" style="height:4px;margin-top:6px">
-          <div class="cln-progress-fill" style="width:${pct}%"></div>
-        </div>
-      `;
-      window.lucide?.createIcons();
-      return;
-    }
+  const JOB_KEY = (cardId) => `cleanup.job.${cardId}`;
 
-    if (!s) { el.textContent = t('cleanup.loading'); return; }
-
-    const linkN = s.senders_with_link || 0;
-    const haveN = s.with_header || 0;
-    const missN = s.without_header || 0;
-    const lastBackfill = s.last_backfill_at;
-
-    // Bulk-eligible = senders with one-click that aren't already unsubscribed.
-    const bulkEligible = state.unsubSenders.filter(
-      (x) => x.has_one_click && !x.unsubscribed_at,
-    );
-
-    // The search for unsubscribe links now runs by itself after a sync, so the
-    // banner announces it instead of asking the user to press a button they
-    // had to find first.
-    let banner = '';
-    if (!lastBackfill && missN > 0 && linkN === 0) {
-      banner = `
-        <div class="cln-unsub-banner">
-          <i data-lucide="info" class="w-4 h-4"></i>
-          <span>${t('cleanup.unsub.searching_auto')}</span>
-        </div>`;
-    }
-
-    const btnLabel = lastBackfill ? t('cleanup.unsub.btn_refresh') : t('cleanup.unsub.btn_analyze');
-
-    // Counts were printed twice — the template put <strong>{n}</strong> in
-    // front of a string that already interpolated {n}, so the bar read
-    // "14 14 avec lien". The middle stat is gone too: it counted messages
-    // belonging to senders that have a link, under a label that said
-    // "analysé(s)", which matched nothing a user could check.
-    el.innerHTML = `
-      ${banner}
-      <div class="cln-unsub-status-row">
-        <span class="cln-unsub-stat">${t('cleanup.unsub.senders_with_link', { n: linkN })}</span>
-        ${missN > 0 ? `<span class="cln-unsub-stat-muted">·</span><span class="cln-unsub-stat cln-unsub-stat-warn">${t('cleanup.unsub.not_analyzed', { n: missN })}</span>` : ''}
-        <span class="cln-unsub-actions">
-          ${bulkEligible.length ? `
-            <button class="cln-unsub-backfill is-primary" id="btn-bulk-unsub">
-              <i data-lucide="zap" class="w-3.5 h-3.5"></i>
-              ${t('cleanup.unsub.bulk_btn', { n: bulkEligible.length })}
-            </button>` : ''}
-          ${missN > 0 ? `
-            <button class="cln-unsub-backfill" id="btn-backfill">
-              <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
-              ${btnLabel}
-            </button>` : ''}
-        </span>
-      </div>
-    `;
-    $('#btn-backfill')?.addEventListener('click', () => runBackfill());
-    // Bulk unsubscribe was written on both sides months ago and never wired
-    // to anything: users unsubscribed one sender at a time, five clicks each.
-    $('#btn-bulk-unsub')?.addEventListener('click', () => runBulkUnsubscribe());
-    window.lucide?.createIcons();
-  }
-
-  async function runBulkUnsubscribe() {
-    const eligible = state.unsubSenders.filter(
-      (x) => x.has_one_click && !x.unsubscribed_at,
-    );
-    if (eligible.length === 0) return;
+  async function runBulkUnsubscribe(card, li) {
+    const names = card.vars.names || [];
     const ok = await confirmAsync({
-      title: t('cleanup.unsub.bulk_confirm_title'),
-      message: t('cleanup.unsub.bulk_confirm_msg', { n: eligible.length }),
-      confirmLabel: t('cleanup.unsub.unsubscribe'),
+      title: t('cleanup.unsub.sheet.title', { n: card.vars.n }),
+      message: t('cleanup.unsub.sheet.body'),
+      confirmLabel: t('cleanup.unsub.sheet.confirm', { n: card.vars.n }),
       danger: false,
+      details: names.length < card.senders.length
+        ? [...names, `+ ${card.senders.length - names.length}`] : names,
     });
-    if (!ok) return;
+    if (!ok || destroyed) return;
 
+    li.dataset.state = 'running';
+    li.querySelector('.cln-card-foot').hidden = true;
     let res;
     try {
-      res = await api.unsubscribeBulk({
-        senders: eligible.map((s) => s.email),
-        purge: false,
-      });
-    } catch (err) {
-      window.toast(t('cleanup.toast.fail', { msg: err.message }));
-      return;
-    }
-    if (!res.job_id || res.total === 0) {
-      window.toast(t('cleanup.unsub.nothing'));
-      return;
-    }
+      res = await api.unsubscribeBulk({ senders: card.senders, purge: false });
+    } catch (err) { showError(li, err); return; }
 
-    // Reuse the backfill progress slot for the bulk job — same status row.
-    state.backfillJob = {
-      id: res.job_id,
-      total: res.total,
-      done: 0,
-      failed: 0,
-      finished: false,
-      bulk: true,
-    };
-    paintUnsubStatus();
-    pollBulkUnsubJob();
-  }
-
-  async function pollBulkUnsubJob() {
-    const tick = async () => {
-      let snap;
-      try { snap = await api.getCleanupJob(state.backfillJob.id); }
-      catch (_) {
-        state.backfillJob = null;
-        await loadUnsubSenders();
-        await loadUnsubStats();
-        paintUnsubStatus();
-        return;
-      }
-      Object.assign(state.backfillJob, {
-        done: snap.done, failed: snap.failed, finished: snap.finished, total: snap.total,
-      });
-      paintUnsubStatus();
-      if (snap.finished) {
-        window.toast(snap.failed
-          ? t('cleanup.unsub.bulk_done_errors', { done: snap.done, failed: snap.failed })
-          : t('cleanup.unsub.bulk_done', { done: snap.done, total: snap.total }));
-        state.backfillJob = null;
-        await loadUnsubSenders();
-        await loadUnsubStats();
-        paintUnsubStatus();
-        return;
-      }
-      const delay = (snap.done + snap.failed) > 0 ? 800 : 1500;
-      setTimeout(tick, delay);
-    };
-    tick();
-  }
-
-  function renderUnsubRail() {
-    const rail = $('#cln-unsub-rail');
-    if (!rail) return;
-
-    if (state.unsubSenders.length === 0) {
-      rail.innerHTML = `
-        <div class="cln-empty" style="padding:24px 12px;text-align:center;font-size:12.5px;color:var(--muted)">
-          ${state.unsubStats == null ? t('cleanup.loading') : t('cleanup.unsub.no_senders')}
-        </div>`;
-      return;
-    }
-
-    rail.innerHTML = state.unsubSenders.map((s) => unsubRailItemHtml(s)).join('');
-    rail.querySelectorAll('.cln-rail-item').forEach((el) => {
-      el.addEventListener('click', () => selectUnsub(el.dataset.email));
-      el.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          selectUnsub(el.dataset.email);
-        }
-      });
-    });
-    window.lucide?.createIcons();
-  }
-
-  function unsubModeIcon(s) {
-    if (s.has_one_click) return { icon: 'zap', label: t('cleanup.unsub.mode.oneclick'), className: 'mode-oneclick' };
-    if (s.http_url)      return { icon: 'globe', label: t('cleanup.unsub.mode.web'), className: 'mode-http' };
-    if (s.mailto)        return { icon: 'mail', label: t('cleanup.unsub.mode.email'), className: 'mode-mailto' };
-    return { icon: 'help-circle', label: '?', className: '' };
-  }
-
-  function unsubRailItemHtml(s) {
-    const isActive = state.selectedUnsub === s.email;
-    const isBusy = state.unsubBusy.has(s.email);
-    const mode = unsubModeIcon(s);
-    const ini = initials(s.name || s.email);
-    const col = avatarColor(s.email);
-    const img = avatarImgHtml(s.email, 22);
-    const done = !!s.unsubscribed_at;
-    return `
-      <button class="cln-rail-item cln-unsub-item ${isActive ? 'is-active' : ''} ${done ? 'is-done' : ''} ${isBusy ? 'is-busy' : ''}"
-              data-email="${escapeHtml(s.email)}" type="button" role="tab" aria-selected="${isActive}">
-        <span class="cln-unsub-av" style="background:${col}">
-          <span class="av-text">${escapeHtml(ini)}</span>
-          ${img}
-        </span>
-        <span class="cln-rail-text">
-          <span class="cln-rail-name">${escapeHtml(s.name || s.email)}</span>
-          <span class="cln-rail-desc">${escapeHtml(s.email)}</span>
-        </span>
-        <span class="cln-unsub-mode ${mode.className}" title="${escapeHtml(mode.label)}">
-          ${done
-            ? `<i data-lucide="check" class="w-3.5 h-3.5"></i>`
-            : `<i data-lucide="${mode.icon}" class="w-3.5 h-3.5"></i>`}
-        </span>
-        <span class="cln-rail-count">${s.total}</span>
-      </button>
-    `;
-  }
-
-  function selectUnsub(email) {
-    if (!state.unsubSenders.some((s) => s.email === email)) return;
-    if (state.selectedUnsub === email) return;
-    state.selectedUnsub = email;
-    $('#cln-unsub-rail')?.querySelectorAll('.cln-rail-item').forEach((el) => {
-      const on = el.dataset.email === email;
-      el.classList.toggle('is-active', on);
-      el.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-    renderUnsubDetail(email);
-  }
-
-  function renderUnsubDetail(email) {
-    const detail = $('#cln-unsub-detail');
-    if (!detail) return;
-    const s = state.unsubSenders.find((x) => x.email === email);
-    if (!s) {
-      detail.innerHTML = `<div class="cln-empty"><div class="cln-empty-title">${t('cleanup.unsub.none_selected')}</div></div>`;
-      return;
-    }
-
-    const isBusy = state.unsubBusy.has(email);
-    const job = state.unsubJobs.get(email);
-    const done = !!s.unsubscribed_at;
-    const mode = unsubModeIcon(s);
-    const ini = initials(s.name || s.email);
-    const col = avatarColor(s.email);
-    const img = avatarImgHtml(s.email, 44);
-
-    // Primary button label depends on capability + already-done state
-    let primaryLabel, primaryIcon, primaryAction;
-    if (done) {
-      primaryLabel = t('cleanup.unsub.re_unsub'); primaryIcon = 'refresh-cw'; primaryAction = 'auto-force';
-    } else if (s.has_one_click) {
-      primaryLabel = t('cleanup.unsub.unsubscribe'); primaryIcon = 'zap'; primaryAction = 'auto';
-    } else if (s.http_url) {
-      primaryLabel = t('cleanup.unsub.open_page'); primaryIcon = 'external-link'; primaryAction = 'http_only';
-    } else if (s.mailto) {
-      primaryLabel = t('cleanup.unsub.send_email'); primaryIcon = 'mail'; primaryAction = 'mailto_only';
-    } else {
-      primaryLabel = t('cleanup.unsub.no_link'); primaryIcon = 'x'; primaryAction = null;
-    }
-
-    const purgeChecked = state.unsubPurge ? 'checked' : '';
-
-    const header = `
-      <header class="cln-detail-head">
-        <span class="cln-unsub-av" style="background:${col};width:44px;height:44px;font-size:14px">
-          <span class="av-text">${escapeHtml(ini)}</span>
-          ${img}
-        </span>
-        <div class="cln-detail-titles">
-          <h2 class="cln-detail-name">${escapeHtml(s.name || s.email)}</h2>
-          <p class="cln-detail-desc cln-unsub-recip-row">
-            <i data-lucide="at-sign" class="w-3 h-3"></i>
-            ${escapeHtml(s.email)}
-            <span class="cln-unsub-chip ${mode.className}">
-              <i data-lucide="${mode.icon}" class="w-3 h-3"></i>${escapeHtml(mode.label)}
-            </span>
-            ${done ? `<span class="cln-unsub-chip-done"><i data-lucide="check" class="w-3 h-3"></i>${t('cleanup.unsub.done_date', { date: escapeHtml(shortDate(s.unsubscribed_at)) })}</span>` : ''}
-          </p>
-          ${(s.accounts || []).length > 0 ? `
-          <p class="cln-detail-desc cln-unsub-recip-row">
-            <i data-lucide="inbox" class="w-3 h-3"></i>
-            ${s.accounts.join(', ')}
-          </p>` : ''}
-        </div>
-        <div class="cln-detail-actions">
-          ${primaryAction ? `
-            <button class="cln-rule-act cln-rule-act-primary" data-unsub-act="${primaryAction}" ${(isBusy || (done && primaryAction !== 'auto-force')) ? 'disabled' : ''}>
-              <i data-lucide="${primaryIcon}" class="w-3.5 h-3.5"></i>${primaryLabel}
-            </button>` : ''}
-          ${s.http_url && primaryAction !== 'http_only' ? `
-            <button class="cln-rule-act" data-unsub-act="http_only" ${isBusy ? 'disabled' : ''}>
-              <i data-lucide="globe" class="w-3.5 h-3.5"></i>${t('cleanup.unsub.web_page')}
-            </button>` : ''}
-          ${s.mailto && primaryAction !== 'mailto_only' ? `
-            <button class="cln-rule-act" data-unsub-act="mailto_only" ${isBusy ? 'disabled' : ''}>
-              <i data-lucide="mail" class="w-3.5 h-3.5"></i>${t('cleanup.unsub.email_btn')}
-            </button>` : ''}
-        </div>
-      </header>
-    `;
-
-    // Friendly explainer per mode — show just the domain/address, never
-    // the raw URL. Tracking links can be 200+ chars and they're noise
-    // for non-technical users.
-    const httpDomain = (() => {
-      if (!s.http_url) return null;
-      try { return new URL(s.http_url).host.replace(/^www\./, ''); }
-      catch (_) { return s.http_url; }
-    })();
-    let explainer = '';
-    if (s.has_one_click && httpDomain) {
-      explainer = t('cleanup.unsub.explainer.oneclick', { domain: escapeHtml(httpDomain) });
-    } else if (httpDomain) {
-      explainer = t('cleanup.unsub.explainer.http', { domain: escapeHtml(httpDomain) });
-    } else if (s.mailto) {
-      explainer = t('cleanup.unsub.explainer.mailto', { address: escapeHtml(s.mailto.split('?')[0]) });
-    }
-
-    const accountsLine = (s.accounts || []).length > 1
-      ? `<span class="cln-detail-desc" style="display:block;margin-top:4px">
-          ${t('cleanup.unsub.received_on', { n: s.accounts.length })} ${
-            s.accounts.map((a) => `<span class="cln-prv-chip">${escapeHtml(a.split('@')[0])}</span>`).join(' ')
-          }
-        </span>`
-      : '';
-
-    const body = `
-      <div class="cln-unsub-kpis">
-        <div class="cln-unsub-kpi">
-          <span class="cln-unsub-kpi-val">${s.total}</span>
-          <span class="cln-unsub-kpi-lbl">${t('cleanup.unsub.kpi.emails')}</span>
-        </div>
-        <div class="cln-unsub-kpi">
-          <span class="cln-unsub-kpi-val">${s.unread}</span>
-          <span class="cln-unsub-kpi-lbl">${t('cleanup.unsub.kpi.unread')}</span>
-        </div>
-        <div class="cln-unsub-kpi">
-          <span class="cln-unsub-kpi-val">${escapeHtml(shortDate(s.last_seen))}</span>
-          <span class="cln-unsub-kpi-lbl">${t('cleanup.unsub.kpi.last_received')}</span>
-        </div>
-        ${(s.accounts || []).length > 1 ? `
-        <div class="cln-unsub-kpi">
-          <span class="cln-unsub-kpi-val">${s.accounts.length}</span>
-          <span class="cln-unsub-kpi-lbl">${t('cleanup.unsub.kpi.accounts')}</span>
-        </div>` : ''}
-      </div>
-
-      <div class="cln-unsub-mails-section">
-        <div class="cln-unsub-mails-head">
-          <i data-lucide="mails" class="w-3.5 h-3.5"></i>
-          <span>${t('cleanup.unsub.mails_head')}</span>
-        </div>
-        <div class="cln-unsub-mails-list" id="cln-unsub-mails-list">
-          <div class="cln-unsub-mails-loading">
-            <i data-lucide="loader" class="w-3.5 h-3.5" style="animation:spin 1s linear infinite"></i>
-            ${t('cleanup.loading')}
-          </div>
-        </div>
-      </div>
-    `;
-
-    detail.innerHTML = `
-      ${header}
-      <div class="cln-detail-progress" data-progress hidden>
-        <div class="cln-progress-track"><div class="cln-progress-fill" style="width:0%"></div></div>
-        <div class="cln-progress-meta">
-          <span class="cln-progress-label">—</span>
-          <span class="cln-progress-count">0 / 0</span>
-        </div>
-      </div>
-      <div class="cln-detail-body">${body}</div>
-    `;
-
-    detail.querySelectorAll('[data-unsub-act]').forEach((b) => {
-      b.addEventListener('click', () => showUnsubModal(email, b.dataset.unsubAct));
-    });
-
-    if (job) renderUnsubProgress(detail, job);
-    window.lucide?.createIcons();
-
-    // Load email samples asynchronously
-    loadUnsubMailList(email);
-  }
-
-  async function loadUnsubMailList(email) {
-    const listEl = document.getElementById('cln-unsub-mails-list');
-    if (!listEl) return;
-    let emails = [];
-    try {
-      emails = await api.getEmails({ sender: email, limit: 50 });
-    } catch (_) { /* ignore */ }
-
-    if (!listEl.isConnected) return;
-
-    if (emails.length === 0) {
-      listEl.innerHTML = `<div class="cln-unsub-mails-empty">${(window.t||((k)=>k))('cleanup.unsub.no_mails')}</div>`;
-      return;
-    }
-
-    listEl.innerHTML = emails.map((em) => {
-      const subj = escapeHtml(em.subject || (window.t||((k)=>k))('cleanup.no_subject'));
-      const dt   = escapeHtml(shortDate(em.date_received));
-      const read = em.is_read ? '' : 'is-unread';
-      const score = em.importance_score != null ? em.importance_score : '—';
-      const scoreClass = em.importance_score >= 7 ? 'score-hi' : em.importance_score >= 4 ? 'score-mid' : 'score-lo';
-      return `
-        <div class="cln-unsub-mail-row ${read}" data-id="${em.int_id}" role="button" tabindex="0">
-          <span class="cln-unsub-mail-score ${scoreClass}">${score}</span>
-          <span class="cln-unsub-mail-subj">${subj}</span>
-          <span class="cln-unsub-mail-date">${dt}</span>
-        </div>`;
-    }).join('');
-
-    listEl.querySelectorAll('.cln-unsub-mail-row').forEach((row) => {
-      // Three bugs in one line before this: `opts` was named `_opts` at the
-      // mount signature so the click threw ReferenceError, the rows carried
-      // `em.id` which the API never returns (it is `int_id`), and the inbox
-      // honours `focus=`, not `id=`.
-      const open = () => navigateTo(`#/inbox?focus=${encodeURIComponent(row.dataset.id)}`);
-      row.addEventListener('click', open);
-      row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
-    });
-  }
-
-  // ── Unsubscribe data loading ────────────────────────────
-  async function loadUnsubStats() {
-    try {
-      state.unsubStats = await api.getUnsubscribeStats();
-    } catch (err) {
-      state.unsubStats = { with_header: 0, without_header: 0, senders_with_link: 0, last_backfill_at: null, error: err.message };
-    }
-    if (state.tab === 'unsubscribe') paintUnsubStatus();
-  }
-
-  async function loadUnsubSenders() {
-    try {
-      state.unsubSenders = await api.getUnsubscribeSenders();
-    } catch (_) {
-      state.unsubSenders = [];
-    }
-    // Honour a pending deep-link selection (e.g. dashboard's "Désabonnement
-    // express" card sends ?tab=unsubscribe&sender=email). Done here, after
-    // the rail data is in, because selectUnsub() refuses unknown emails.
-    if (state.pendingUnsub) {
-      const want = state.pendingUnsub.toLowerCase();
-      const match = state.unsubSenders.find((s) => (s.email || '').toLowerCase() === want);
-      state.pendingUnsub = null;
-      if (match) state.selectedUnsub = match.email;
-    }
-    if (state.tab === 'unsubscribe') {
-      renderUnsubRail();
-      if (state.selectedUnsub) {
-        renderUnsubDetail(state.selectedUnsub);
-        // Scroll the freshly-selected sender into view (deep-link case).
-        const item = $(`.cln-rail-item[data-email="${state.selectedUnsub.replace(/"/g, '\\"')}"]`);
-        item?.scrollIntoView({ block: 'nearest' });
-      }
-    }
-  }
-
-  // ── Backfill flow ───────────────────────────────────────
-  async function runBackfill() {
-    if (state.backfillJob) return;
-    let res;
-    try {
-      res = await api.runHeaderBackfill();
-    } catch (err) {
-      window.toast(t('cleanup.toast.fail', { msg: err.message }));
-      return;
-    }
     if (!res.job_id) {
-      window.toast(t('cleanup.backfill.toast.uptodate'));
-      await loadUnsubStats();
-      paintUnsubStatus();
+      finishUnsub(card, li, { done: 0, failed: 0, skipped: res.skipped || [] });
       return;
     }
-    state.backfillJob = { id: res.job_id, total: res.total, done: 0, failed: 0, finished: false };
-    paintUnsubStatus();
-    pollBackfillJob();
+    try { sessionStorage.setItem(JOB_KEY(card.id), res.job_id); } catch (_) {}
+    pollUnsubJob(card, li, res.job_id, res.total, res.skipped || []);
   }
 
-  async function pollBackfillJob() {
+  function pollUnsubJob(card, li, jobId, total, skipped) {
+    const run = li.querySelector('.cln-card-run');
+    const bar = li.querySelector('.cln-bar-fill');
+    const text = li.querySelector('.cln-card-run-text');
+    run.hidden = false;
+
     const tick = async () => {
+      if (destroyed) return;
       let snap;
-      try { snap = await api.getCleanupJob(state.backfillJob.id); }
+      try { snap = await api.getCleanupJob(jobId); }
       catch (_) {
-        state.backfillJob = null;
-        await loadUnsubStats();
-        await loadUnsubSenders();
-        paintUnsubStatus();
+        // The registry is in memory and dies with the process; a 404 means
+        // "ask the server what the world looks like now" rather than an error.
+        try { sessionStorage.removeItem(JOB_KEY(card.id)); } catch (_) {}
+        load();
         return;
       }
-      Object.assign(state.backfillJob, {
-        done: snap.done, failed: snap.failed, finished: snap.finished, total: snap.total,
-      });
-      paintUnsubStatus();
-      if (snap.finished) {
-        const verb = snap.failed
-          ? t('cleanup.backfill.toast.partial', { done: snap.done, fail: snap.failed })
-          : t('cleanup.backfill.toast.done', { done: snap.done, total: snap.total });
-        window.toast(verb);
-        state.backfillJob = null;
-        await loadUnsubStats();
-        await loadUnsubSenders();
-        paintUnsubStatus();
-        return;
-      }
-      const delay = (snap.done + snap.failed) > 0 ? 600 : 1200;
-      setTimeout(tick, delay);
+      const seen = snap.done + snap.failed;
+      // A width, not an animation: prefers-reduced-motion zeroes every
+      // animation-duration globally, which freezes a spinner mid-frame.
+      bar.style.width = `${snap.total ? (seen / snap.total * 100).toFixed(1) : 0}%`;
+      text.textContent = t('cleanup.unsub.running', { done: seen, total: snap.total });
+      if (!snap.finished) { later(tick, 700); return; }
+      try { sessionStorage.removeItem(JOB_KEY(card.id)); } catch (_) {}
+      finishUnsub(card, li, { done: snap.done, failed: snap.failed, skipped });
     };
     tick();
   }
 
-  // ── Unsubscribe confirm modal ───────────────────────────
-  function showUnsubModal(email, mode) {
-    const s = state.unsubSenders.find((x) => x.email === email);
-    if (!s) return;
-
-    const modal    = document.getElementById('unsub-modal');
-    const avEl     = document.getElementById('unsub-modal-av');
-    const titleEl  = document.getElementById('unsub-modal-title');
-    const emailEl  = document.getElementById('unsub-modal-email');
-    const descEl   = document.getElementById('unsub-modal-desc');
-    const purgeLbl = document.getElementById('unsub-modal-purge-label');
-    const purgeCb  = document.getElementById('unsub-modal-purge-cb');
-    const purgeText= document.getElementById('unsub-modal-purge-text');
-    const cancelBtn= document.getElementById('unsub-modal-cancel');
-    const confirmBtn = document.getElementById('unsub-modal-confirm');
-    const confirmLbl = document.getElementById('unsub-modal-confirm-label');
-    const iconEl   = document.getElementById('unsub-modal-icon');
-    if (!modal) return;
-
-    // Avatar
-    const col = avatarColor(s.email);
-    const ini = initials(s.name || s.email);
-    const img = avatarImgHtml(s.email, 40);
-    avEl.style.background = col;
-    avEl.innerHTML = `<span class="av-text">${escapeHtml(ini)}</span>${img}`;
-
-    titleEl.textContent  = s.name || s.email;
-    emailEl.textContent  = s.email;
-
-    // Explainer
-    const httpDomain = (() => {
-      if (!s.http_url) return null;
-      try { return new URL(s.http_url).host.replace(/^www\./, ''); }
-      catch (_) { return s.http_url; }
-    })();
-    if (mode === 'auto' || mode === 'auto-force') {
-      descEl.textContent = s.has_one_click && httpDomain
-        ? t('cleanup.unsub.modal.desc_oneclick', { domain: httpDomain })
-        : httpDomain
-          ? t('cleanup.unsub.modal.desc_http', { domain: httpDomain })
-          : s.mailto ? t('cleanup.unsub.modal.desc_mailto') : '';
-    } else if (mode === 'http_only') {
-      descEl.textContent = t('cleanup.unsub.modal.desc_http_only');
+  function finishUnsub(card, li, { done, failed, skipped }) {
+    li.dataset.state = 'done';
+    li.querySelector('.cln-card-run').hidden = true;
+    const box = li.querySelector('.cln-card-done');
+    box.hidden = false;
+    let html = '';
+    if (failed) {
+      html += `<p class="cln-card-done-msg">${escapeHtml(t('cleanup.unsub.partial.title', { done, failed }))}</p>`;
+      html += `<p class="cln-card-after">${escapeHtml(t('cleanup.unsub.partial.body', { names: (card.vars.names || []).join(', ') }))}</p>`;
     } else {
-      descEl.textContent = t('cleanup.unsub.modal.desc_mailto_only');
+      html += `<p class="cln-card-done-msg">${escapeHtml(t('cleanup.unsub.done', { n: done }))}</p>`;
     }
-
-    // Purge option
-    purgeText.innerHTML = t('cleanup.unsub.modal.purge_html', { n: s.total });
-    purgeCb.checked = state.unsubPurge;
-    purgeLbl.style.display = '';
-
-    // Confirm button label/icon
-    const modeIcon = mode === 'http_only' ? 'globe' : mode === 'mailto_only' ? 'mail' : 'zap';
-    iconEl.setAttribute('data-lucide', modeIcon);
-    confirmLbl.textContent = t('cleanup.unsub.unsubscribe');
-
-    // Show
-    modal.hidden = false;
-    window.lucide?.createIcons({ nodes: [avEl, iconEl] });
-
-    // Trap focus
-    confirmBtn.focus();
-
-    const close = () => { modal.hidden = true; cleanup(); };
-
-    const onConfirm = () => {
-      state.unsubPurge = purgeCb.checked;
-      close();
-      runUnsubscribe(email, mode);
-    };
-    const onCancel  = () => close();
-    const onBackdrop = (e) => { if (e.target === modal) close(); };
-    const onKey = (e) => { if (e.key === 'Escape') close(); };
-
-    confirmBtn.addEventListener('click', onConfirm, { once: true });
-    cancelBtn.addEventListener('click', onCancel, { once: true });
-    modal.addEventListener('click', onBackdrop);
-    document.addEventListener('keydown', onKey);
-
-    function cleanup() {
-      confirmBtn.removeEventListener('click', onConfirm);
-      cancelBtn.removeEventListener('click', onCancel);
-      modal.removeEventListener('click', onBackdrop);
-      document.removeEventListener('keydown', onKey);
+    if (skipped && skipped.length) {
+      html += `<p class="cln-card-after">${escapeHtml(t('cleanup.unsub.skipped', { names: skipped.join(', ') }))}</p>`;
     }
+    box.innerHTML = html;
+    announce(box.textContent);
+    later(() => load(), 1500);
   }
 
-  // ── Single-sender unsubscribe ───────────────────────────
-  async function runUnsubscribe(email, mode) {
-    if (state.unsubBusy.has(email)) return;
-    const sender = state.unsubSenders.find((s) => s.email === email);
-    if (!sender) return;
-
-    state.unsubBusy.add(email);
-    const detail = $('#cln-unsub-detail');
-    if (detail) detail.querySelectorAll('button').forEach((b) => (b.disabled = true));
-
+  async function runManualUnsubscribe(card, li) {
+    const go = li.querySelector('.cln-card-go');
+    go.disabled = true;
     let res;
     try {
-      const force = mode === 'auto-force';
-      const realMode = force ? 'auto' : mode;
-      res = await api.unsubscribeSender({
-        sender: email,
-        mode: realMode,
-        purge: state.unsubPurge,
-        force,
-      });
-    } catch (err) {
-      window.toast(t('cleanup.toast.fail', { msg: err.message }));
-      state.unsubBusy.delete(email);
-      if (detail) detail.querySelectorAll('button').forEach((b) => (b.disabled = false));
-      return;
-    }
+      res = await api.unsubscribeSender({ sender: card.senders[0], mode: 'auto' });
+    } catch (err) { showError(li, err); return; }
 
-    // Server says "open this URL/mailto in a tab". We cannot see what happens
-    // there, so we do not stamp anything — but we ask. Without this, senders
-    // without a one-click link stayed listed as subscribed forever and the
-    // list never got shorter.
     if (res.action_required === 'open_url' || res.action_required === 'open_mailto') {
       const isPage = res.action_required === 'open_url';
       window.open(isPage ? res.target : `mailto:${res.target}`, '_blank', 'noopener,noreferrer');
-      window.toast({
-        variant: 'info',
-        message: t(isPage ? 'cleanup.unsub.toast.page_opened' : 'cleanup.unsub.toast.mail_opened'),
-        duration: 12000,
-        action: {
-          label: t('cleanup.unsub.mark_done'),
-          onClick: async () => {
-            try {
-              await api.markUnsubscribed({ sender: email, account: state.accountFilter || undefined });
-              const s = state.unsubSenders.find((x) => x.email === email);
-              if (s) s.unsubscribed_at = new Date().toISOString();
-              window.toast(t('cleanup.unsub.toast.marked'));
-            } catch (err) {
-              window.toast({ variant: 'error', message: t('cleanup.toast.fail', { msg: err.message }) });
-            }
-            renderUnsubRail();
-            if (state.selectedUnsub === email) renderUnsubDetail(email);
-          },
-        },
-      });
-      finishUnsub(email, false);
-      return;
     }
-
-    if (res.already && !res.job_id) {
-      window.toast(t('cleanup.unsub.toast.already'));
-      finishUnsub(email, true);
-      return;
-    }
-
-    if (!res.job_id || res.total === 0) {
-      window.toast(t('cleanup.unsub.toast.done'));
-      finishUnsub(email, true);
-      return;
-    }
-
-    const job = {
-      id: res.job_id,
-      sender: email,
-      total: res.total,
-      done: 0,
-      failed: 0,
-      finished: false,
-    };
-    state.unsubJobs.set(email, job);
-    if (detail && state.selectedUnsub === email) renderUnsubProgress(detail, job);
-    pollUnsubJob(job);
-  }
-
-  function renderUnsubProgress(host, job) {
-    const wrap = host.querySelector('[data-progress]');
-    const actions = host.querySelector('.cln-detail-actions');
-    if (!wrap) return;
-    wrap.hidden = false;
-    if (actions) actions.style.visibility = 'hidden';
-    const fill = wrap.querySelector('.cln-progress-fill');
-    const label = wrap.querySelector('.cln-progress-label');
-    const count = wrap.querySelector('.cln-progress-count');
-    const ratio = job.total ? ((job.done + job.failed) / job.total) : 0;
-    fill.style.width = `${(ratio * 100).toFixed(1)}%`;
-    label.textContent = job.finished
-      ? (job.failed ? t('cleanup.unsub.progress.done_partial', { fail: job.failed }) : t('cleanup.unsub.progress.done'))
-      : t('cleanup.unsub.progress.label');
-    count.textContent = `${job.done + job.failed} / ${job.total}`;
-  }
-
-  async function pollUnsubJob(job) {
-    const tick = async () => {
-      let snap;
-      try { snap = await api.getCleanupJob(job.id); }
-      catch (_) {
-        state.unsubJobs.delete(job.sender);
-        finishUnsub(job.sender, true);
-        return;
-      }
-      Object.assign(job, { done: snap.done, failed: snap.failed, finished: snap.finished });
-      const detail = $('#cln-unsub-detail');
-      if (detail && state.selectedUnsub === job.sender) renderUnsubProgress(detail, job);
-      if (snap.finished) {
-        window.toast(snap.failed
-          ? t('cleanup.unsub.toast.partial', { done: snap.done, fail: snap.failed })
-          : t('cleanup.unsub.toast.success'));
-        state.unsubJobs.delete(job.sender);
-        finishUnsub(job.sender, snap.done > 0);
-        return;
-      }
-      const delay = (snap.done + snap.failed) > 0 ? 600 : 1200;
-      setTimeout(tick, delay);
-    };
-    tick();
-  }
-
-  function finishUnsub(email, persisted) {
-    state.unsubBusy.delete(email);
-    // If the server marked the sender unsubscribed, update local state so
-    // the rail repaints immediately (no reload roundtrip).
-    if (persisted) {
-      const s = state.unsubSenders.find((x) => x.email === email);
-      if (s) s.unsubscribed_at = new Date().toISOString();
-    }
-    // If purge was requested, the senders/rules tabs are stale.
-    if (state.unsubPurge) {
-      state.sendersStale = true;
-      for (const r of RULES) state.ruleStats.delete(r.id);
-    }
-    state.unsubPurge = false;
-    renderUnsubRail();
-    if (state.selectedUnsub === email) renderUnsubDetail(email);
-    // Refresh stats (purge changed totals).
-    loadUnsubStats();
-  }
-
-  // ── Data loading ─────────────────────────────────────────
-  async function loadAccounts() {
-    try { state.accounts = await api.getAccounts(); }
-    catch (_) { state.accounts = []; }
-  }
-
-  async function loadSenders() {
-    try {
-      const params = { limit: 200 };
-      if (state.accountFilter) params.account = state.accountFilter;
-      state.senders = await api.getTopSenders(params);
-      $('#cln-sub').textContent =
-        state.senders.length
-          ? t('cleanup.senders.count', { n: state.senders.length })
-          : t('cleanup.senders.empty');
-      renderSenderList();
-    } catch (err) {
-      // Only the senders list may report a senders failure. This used to
-      // overwrite #cln-pane, so a hiccup on a background load wiped whichever
-      // tab the user was actually looking at.
-      $('#cln-sub').textContent = t('cleanup.senders.error');
-      const list = $('#cln-senders');
-      if (list) {
-        list.innerHTML = `<div class="cln-empty cln-error">${escapeHtml(t('cleanup.toast.fail', { msg: err.message }))}</div>`;
-      }
-    }
-  }
-
-  // ── Wire-up ──────────────────────────────────────────────
-  // Honour ?tab= deep-link (e.g. #/cleanup?tab=unsubscribe from the dashboard)
-  const hashParams = new URLSearchParams(location.hash.includes('?') ? location.hash.split('?')[1] : '');
-  const deepTab = hashParams.get('tab');
-  if (deepTab && deepTab !== state.tab && TABS_L.find((tab) => tab.id === deepTab && tab.enabled)) {
-    state.tab = deepTab;
-    host.querySelectorAll('.cln-tab').forEach((b) => {
-      const on = b.dataset.tab === deepTab;
-      b.classList.toggle('active', on);
-      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    // We cannot see what happens on their site, so we ask. Without this the
+    // sender stays listed as subscribed and the list never gets shorter.
+    li.dataset.state = 'done';
+    li.querySelector('.cln-card-foot').hidden = true;
+    const box = li.querySelector('.cln-card-done');
+    box.hidden = false;
+    box.innerHTML =
+      `<p class="cln-card-done-msg">${escapeHtml(t('cleanup.card.unsub_one.ask', card.vars))}</p>` +
+      `<button type="button" class="cln-card-undo" data-yes>${escapeHtml(t('cleanup.card.unsub_one.yes'))}</button>` +
+      `<button type="button" class="cln-card-hide" data-no>${escapeHtml(t('cleanup.card.unsub_one.no'))}</button>`;
+    box.querySelector('[data-yes]').addEventListener('click', async () => {
+      try {
+        await api.markUnsubscribed({ sender: card.senders[0] });
+        announce(t('cleanup.unsub.marked', { name: card.vars.name }));
+      } catch (_) { /* the card simply comes back */ }
+      load();
     });
-  }
-  // Pre-select an unsubscribe sender if the dashboard linked us to one.
-  // The actual selection is applied inside loadUnsubSenders() once the
-  // rail data is back from the API.
-  const deepSender = hashParams.get('sender');
-  if (deepSender && state.tab === 'unsubscribe') {
-    state.pendingUnsub = deepSender;
+    box.querySelector('[data-no]').addEventListener('click', () => hideCard(card, li));
+    box.querySelector('[data-yes]').focus();
   }
 
-  renderPane();
-  await loadAccounts();
-  await loadSenders();
-  window.lucide?.createIcons();
+  function resumeRunningJobs() {
+    for (const li of listEl.querySelectorAll('.cln-card')) {
+      const cardId = li.dataset.card;
+      let jobId = null;
+      try { jobId = sessionStorage.getItem(JOB_KEY(cardId)); } catch (_) {}
+      if (!jobId) continue;
+      const card = (state?.cards || []).find((c) => c.id === cardId);
+      if (card) {
+        li.querySelector('.cln-card-foot').hidden = true;
+        pollUnsubJob(card, li, jobId, card.vars.n, []);
+      }
+    }
+  }
+
+  async function runHeaderScan() {
+    const btn = bannerEl.querySelector('#cln-scan');
+    if (btn) btn.disabled = true;
+    try {
+      const res = await api.runHeaderBackfill();
+      if (!res.job_id) { load(); return; }
+      const poll = async () => {
+        if (destroyed) return;
+        let snap;
+        try { snap = await api.getCleanupJob(res.job_id); } catch (_) { load(); return; }
+        bannerEl.textContent = t('cleanup.banner.scan.running', {
+          done: snap.done + snap.failed, total: snap.total });
+        if (snap.finished) { load(); return; }
+        later(poll, 900);
+      };
+      poll();
+    } catch (_) {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  // ── loading ───────────────────────────────────────────────────────────
+
+  async function load() {
+    if (!state) renderState('loading');
+    try {
+      const payload = await api.getCleanupSuggestions();
+      if (destroyed) return;
+      render(payload);
+    } catch (err) {
+      if (destroyed) return;
+      renderState('error');
+    }
+  }
+
+  // The rail already polls /api/sync/status every 3 s and re-broadcasts it;
+  // ride that instead of opening another poll.
+  const onSyncStatus = (e) => {
+    const s = e.detail;
+    if (!s || !state || !bannerEl) return;
+    if (s.pending_ops > 0 && bannerEl.hidden) {
+      bannerEl.textContent = t('cleanup.banner.syncing', { n: s.pending_ops });
+      bannerEl.hidden = false;
+      bannerEl.dataset.transient = '1';
+    } else if (!s.pending_ops && bannerEl.dataset.transient === '1') {
+      delete bannerEl.dataset.transient;
+      renderBanner(state);
+    }
+  };
+  window.addEventListener('sync-status', onSyncStatus);
+
+  await load();
 
   return () => {
-    // The document-level dropdown closer used to be left running here, on
-    // the theory that it "auto-collapses the next time it fires" — it does
-    // not unregister itself, it just pokes a detached node forever.
-    _docTeardown.forEach((off) => off());
-    _docTeardown.length = 0;
+    destroyed = true;
+    for (const id of timers) { clearTimeout(id); clearInterval(id); }
+    timers.clear();
+    window.removeEventListener('sync-status', onSyncStatus);
   };
 }

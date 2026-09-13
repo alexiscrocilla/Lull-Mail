@@ -5769,10 +5769,14 @@ export async function mountMailbox(host, _opts) {
     // Consume them, the way ?focus= already is. Left in the hash, these
     // re-applied their filter on every later remount — clicking "Toutes"
     // cleared the chip but the next re-render silently put it back.
-    if (sortM || unreadM || hash.match(/[?&]reply=1/)) {
+    // `q` belongs in this list too. applyHashQuery sets state.query and left
+    // the parameter in the hash, so a user who followed a link from the
+    // cleanup page, cleared the search box, then triggered any remount got
+    // the query silently reapplied.
+    if (sortM || unreadM || hash.match(/[?&]reply=1/) || hash.match(/[?&]q=/)) {
       try {
         let h = location.hash;
-        for (const k of ['sort', 'unread', 'reply']) h = _stripHashParam(k, h);
+        for (const k of ['sort', 'unread', 'reply', 'q']) h = _stripHashParam(k, h);
         if (h !== location.hash) history.replaceState(null, '', h);
       } catch (_) {}
     }

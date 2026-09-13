@@ -412,6 +412,34 @@ export const api = {
     return j(`/api/cleanup/jobs/${encodeURIComponent(jobId)}`);
   },
 
+  // Everything the Nettoyage page shows, in one request.
+  getCleanupSuggestions(account, requestOptions = {}) {
+    const qs = account ? `?account=${encodeURIComponent(account)}` : '';
+    return j(`/api/cleanup/suggestions${qs}`, requestOptions);
+  },
+
+  // Run one suggestion. The body is a card id, never a filter: the server
+  // re-runs that card's own query so the set acted on is the one it counted.
+  applyCleanupCard(card, account) {
+    return j('/api/cleanup/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ card, account }),
+    });
+  },
+
+  hideCleanupCard(card) {
+    return j('/api/cleanup/hide', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ card }),
+    });
+  },
+
+  unhideCleanupCards() {
+    return j('/api/cleanup/unhide', { method: 'POST' });
+  },
+
   // Put back what a cleanup action just did. `undo` is the payload the action
   // returned: {folders: {name: [int_id]}} and/or {unread_ids: [int_id]}.
   cleanupUndo(undo) {

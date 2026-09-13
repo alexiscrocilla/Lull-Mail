@@ -2217,6 +2217,17 @@ def find_uids_missing_headers(account: Optional[str] = None) -> List[Dict]:
         return [dict(r) for r in con.execute(q, params).fetchall()]
 
 
+def count_unsubscribed_senders() -> int:
+    """How many senders the user has ever unsubscribed from. The cleanup page
+    shows it once it has nothing left to suggest: the page remembering its own
+    value is what earns the next visit."""
+    with _conn() as con:
+        return int(con.execute(
+            "SELECT COUNT(DISTINCT sender_addr) FROM emails"
+            " WHERE unsubscribed_at IS NOT NULL AND sender_addr <> ''"
+        ).fetchone()[0])
+
+
 def count_emails_missing_headers(account: Optional[str] = None) -> int:
     """How many messages have never been inspected for an unsubscribe link.
 

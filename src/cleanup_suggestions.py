@@ -59,8 +59,43 @@ MAX_CARDS = 3
 CONFIRM_ABOVE = 200
 
 
+# A card the user dismissed stays out of the way for this long. One rule, one
+# key: every competitor offers a dismiss, and without one the only way to
+# reject a card is to ignore it — which teaches the user to ignore the page.
+HIDE_DAYS = 30
+HIDDEN_KV_KEY = "cleanup.hidden"
+
+
 def _cutoff(days: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+def _hidden_cards() -> Dict[str, str]:
+    """{card_id: iso} for cards dismissed within the last HIDE_DAYS."""
+    import json
+    raw = db.get_kv(HIDDEN_KV_KEY)
+    if not raw:
+        return {}
+    try:
+        stored = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    floor = _cutoff(HIDE_DAYS)
+    return {k: v for k, v in stored.items()
+            if isinstance(v, str) and v > floor}
+
+
+def hide_card(card_id: str) -> None:
+    import json
+    current = _hidden_cards()
+    current[card_id] = datetime.now(timezone.utc).isoformat()
+    db.set_kv(HIDDEN_KV_KEY, json.dumps(current))
+
+
+def unhide_all() -> int:
+    n = len(_hidden_cards())
+    db.set_kv(HIDDEN_KV_KEY, "{}")
+    return n
 
 
 def _live(extra: str = "") -> str:
@@ -308,7 +343,9 @@ def compute(account: Optional[str] = None) -> Dict[str, Any]:
     # ── rank ─────────────────────────────────────────────────────────────
     order = {cid: i for i, cid in enumerate(
         ("unsub_bulk", "unsub_one", "after_unsub", "spam", "old_news", "old_unread"))}
-    kept = [c for c in cards if c["score"] >= SCORE_FLOOR]
+    dismissed = _hidden_cards()
+    kept = [c for c in cards
+            if c["score"] >= SCORE_FLOOR and c["id"] not in dismissed]
     kept.sort(key=lambda c: (-c["score"], -c["gain"]["value"], order[c["id"]]))
 
     return {
@@ -319,6 +356,10 @@ def compute(account: Optional[str] = None) -> Dict[str, Any]:
         "analysing": db.count_pending(),
         "cards": kept[:MAX_CARDS],
         "more": max(len(kept) - MAX_CARDS, 0),
-        "hidden": len(cards) - len(kept),
+        "hidden": sum(1 for c in cards if c["id"] in dismissed),
+        # Only ever grows, and only through the flagship card: the one forward
+        # commitment this app can actually honour.
+        "unsubscribed_total": db.count_unsubscribed_senders(),
+        "missing_headers": db.count_emails_missing_headers(account),
         "mailbox": {"live": live, "unread": unread},
     }

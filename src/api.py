@@ -1545,6 +1545,29 @@ def cleanup_suggestions(account: Optional[str] = None):
     return sug.compute(account)
 
 
+class CleanupHideReq(BaseModel):
+    card: str
+
+
+@app.post("/api/cleanup/hide")
+@limiter.limit("60/minute")
+def cleanup_hide(request: Request, req: CleanupHideReq):
+    """Dismiss a suggestion for a month. Without a way to say no, the only way
+    to reject a card is to ignore it, which teaches the user to ignore the
+    page."""
+    from src import cleanup_suggestions as sug
+    sug.hide_card(req.card)
+    return {"ok": True, "suggestions": sug.compute()}
+
+
+@app.post("/api/cleanup/unhide")
+@limiter.limit("60/minute")
+def cleanup_unhide(request: Request):
+    from src import cleanup_suggestions as sug
+    n = sug.unhide_all()
+    return {"ok": True, "restored": n, "suggestions": sug.compute()}
+
+
 class CleanupApplyReq(BaseModel):
     card: str
     account: Optional[str] = None
