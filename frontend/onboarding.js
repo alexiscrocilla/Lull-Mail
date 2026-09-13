@@ -147,29 +147,33 @@ function renderFinalizeStatus() {
 // The account is configured and finalize has run, so the first fetch is
 // under way while the user picks an AI backend. Saying so is what makes
 // that choice feel like a choice rather than a delay.
-let _fetchTicker = null;
+// Fed by the event stream, which this page already loads. It used to be a
+// second three-second poller running alongside the rail's, on the one screen
+// where the server is busiest.
+let _fetchListener = null;
 
-async function _tickFetched() {
+function _showFetched(s) {
   const el = document.getElementById('ob-fetch-live');
-  if (!el) return;
-  try {
-    const s = await api('GET', '/api/sync/status');
-    const n = (s.accounts || []).reduce((acc, a) => acc + (a.fetched || 0), 0);
-    if (n > 0) {
-      el.textContent = window.t('ob.fetching_live', { n });
-      el.hidden = false;
-    }
-  } catch (_) { /* the wizard must not depend on this */ }
+  if (!el || !s) return;
+  const n = (s.accounts || []).reduce((acc, a) => acc + (a.fetched || 0), 0);
+  if (n > 0) {
+    el.textContent = window.t('ob.fetching_live', { n });
+    el.hidden = false;
+  }
 }
 
 function startFetchTicker() {
   stopFetchTicker();
-  _tickFetched();
-  _fetchTicker = setInterval(_tickFetched, 3000);
+  _fetchListener = (e) => _showFetched(e.detail);
+  window.addEventListener('sync-status', _fetchListener);
+  _showFetched(window.lullEvents?.lastStatus?.());
 }
 
 function stopFetchTicker() {
-  if (_fetchTicker) { clearInterval(_fetchTicker); _fetchTicker = null; }
+  if (_fetchListener) {
+    window.removeEventListener('sync-status', _fetchListener);
+    _fetchListener = null;
+  }
 }
 
 // Leaving the account screen: persist and start fetching immediately, so

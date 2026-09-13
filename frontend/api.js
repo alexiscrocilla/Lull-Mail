@@ -477,7 +477,6 @@ export const api = {
     return msg.includes('ia désactivée') || msg.includes('sans ia') || msg.includes('ai disabled');
   },
 
-  getSyncStatus()   { return j('/api/sync/status'); },
 
   skipQueue()       { return j('/api/queue/skip-all', { method: 'POST' }); },
   getLogsTail(since, lines = 50) {

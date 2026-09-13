@@ -1460,7 +1460,7 @@ export async function mountMailbox(host, _opts) {
   }
 
   // ── Live sync status (sidebar line + per-account state) ─────
-  // Fed by the 3 s /api/sync/status poll that rail-toast.js re-broadcasts
+  // Fed by the event stream, re-broadcast by events.js
   // as a 'sync-status' event. Answers the two questions users kept asking:
   // "is it fetching right now, and which account?" and "when did it last
   // fetch?". Pure DOM patching — never a list re-render.
@@ -4427,6 +4427,13 @@ export async function mountMailbox(host, _opts) {
         closeComposer({ skipDraftSync: true });
         if (ta) ta.value = '';
         setSending('idle');
+        // The Sent copy is written inside the request that just returned, so
+        // the caller already knows. This used to reload only when Brouillons
+        // happened to be the open folder, which left the sent message and
+        // every sidebar counter stale for up to a minute — and that minute
+        // timer is gone.
+        loadEmails({ background: true }).catch(() => {});
+        loadAccounts().catch(() => {});
       } catch (err) {
         setSending('idle');
         const msg = (err && err.message) || t('mb.toast.send_fail');
@@ -5845,7 +5852,8 @@ export async function mountMailbox(host, _opts) {
         stagedAttachmentsNew.length = 0;
         await new Promise((r) => setTimeout(r, 1500));
         renderEmpty();
-        if (state.folder === 'draft') loadEmails();
+        loadEmails({ background: true }).catch(() => {});
+        loadAccounts().catch(() => {});
       } catch (err) {
         setSending('idle');
         const msg = (err && err.message) || t('mb.toast.send_fail');

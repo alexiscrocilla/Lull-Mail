@@ -481,8 +481,8 @@ window.addEventListener('ai-config-changed', async () => {
 });
 
 // ── AI-queue rail indicator ────────────────────────────────
-// Replaces the dashboard page. Rides the 3 s /api/sync/status poll that
-// rail-toast.js already runs (re-broadcast as a 'sync-status' event): the
+// Replaces the dashboard page. Rides the event stream (events.js
+// re-broadcasts every frame as a 'sync-status' event): the
 // ring spins while a sync/analysis pass runs, the badge shows how many
 // mails still wait for analysis, a click launches a pass.
 const queueInd = document.getElementById('queue-ind');

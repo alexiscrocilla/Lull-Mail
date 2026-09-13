@@ -494,7 +494,7 @@ export async function mountCleanup(host, opts = {}) {
     }
   }
 
-  // The rail already polls /api/sync/status every 3 s and re-broadcasts it;
+  // The event stream already broadcasts the sync status;
   // ride that instead of opening another poll.
   const onSyncStatus = (e) => {
     const s = e.detail;
