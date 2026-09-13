@@ -6015,6 +6015,18 @@ export async function mountMailbox(host, _opts) {
   // that the next focus or visibility change drains.
   let _reloadTimer = null;
   let _reloadPending = false;
+  // Whether anything that landed since the last reload belongs in the list
+  // the user is looking at. Counters always move; the list only when its
+  // own contents changed.
+  let _reloadNeedsList = false;
+
+  // Is `email` one of the mailboxes the current list is showing? No filter
+  // means all of them. A single filter is applied server-side, two or more
+  // client-side (see applyFilter), but for this question they are the same.
+  function _accountInScope(email) {
+    if (!email) return true;   // frame without an account: assume it matters
+    return state.accountFilters.size === 0 || state.accountFilters.has(email);
+  }
 
   function _reloadNow() {
     if (document.hidden || _userIsBusy()) {
@@ -6022,7 +6034,8 @@ export async function mountMailbox(host, _opts) {
       return;
     }
     _reloadPending = false;
-    loadEmails({ background: true }).catch(() => {});
+    if (_reloadNeedsList) loadEmails({ background: true }).catch(() => {});
+    _reloadNeedsList = false;
     loadAccounts().catch(() => {});
   }
 
@@ -6038,8 +6051,19 @@ export async function mountMailbox(host, _opts) {
     if (_reloadPending) _reloadNow();
   }
 
-  const onMailArrived = () => _scheduleReload();
-  const onResync = () => _scheduleReload();
+  // Mail landed. The frame says in which mailbox -- the handler used to
+  // ignore it and reload the list unconditionally, so a filtered inbox
+  // rebuilt itself for arrivals it would not show, while the one thing that
+  // was allowed to change (that mailbox's unread badge) rode along by
+  // accident. Now the badge is the guaranteed part and the list is the
+  // conditional one.
+  const onMailArrived = (e) => {
+    if (_accountInScope((e.detail || {}).account || '')) _reloadNeedsList = true;
+    _scheduleReload();
+  };
+  // A resync is the server saying "you missed frames" -- it names no
+  // account, so everything is suspect.
+  const onResync = () => { _reloadNeedsList = true; _scheduleReload(); };
   window.addEventListener('lull:mail', onMailArrived);
   window.addEventListener('lull:resync', onResync);
 
@@ -6084,7 +6108,8 @@ export async function mountMailbox(host, _opts) {
     setSyncSpinner(!!s?.running);
     // A pass that just finished may have changed rows without inserting any,
     // so no `mail` frame was sent: mark read, move, delete, an AI backlog.
-    if (wasRunning && !s?.running) _scheduleReload();
+    // A pass that names no account and may have touched any of them.
+    if (wasRunning && !s?.running) { _reloadNeedsList = true; _scheduleReload(); }
   };
   window.addEventListener('sync-status', onSyncStatus);
   // Don't wait up to 3 s for the first broadcast: the sidebar line would

@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// What the event stream does when the mail it announces belongs to a
+// mailbox the user is not currently looking at.
+import { expect, test } from '@playwright/test';
+
+test.beforeEach(async ({ page }) => {
+  await page.request.post('/__test__/reset');
+  await page.route('**/api/brand-logo/**', (route) => route.abort());
+});
+
+const TOTAL = 30;
+
+test('mail for a filtered-out mailbox moves its badge without rebuilding the list', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto('/#/inbox');
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(TOTAL);
+  await expect(page.locator('#queue-ind')).toBeVisible();
+
+  // Scope the list to one mailbox.
+  await page.locator('[data-acc="demo@lullmail.test"]').click();
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(18);
+
+  const proBadge = page.locator('[data-acc="pro@lullmail.test"] .mb-acc-badge');
+  await expect(proBadge).toHaveText('3');
+
+  // Count what the arrival costs. A list rebuild here is not a cosmetic
+  // waste: it closes an open popover and can evict checked rows, for a
+  // message the filter would hide anyway.
+  let listRequests = 0;
+  page.on('request', (r) => {
+    if (r.url().includes('/api/emails?')) listRequests += 1;
+  });
+
+  await page.request.post('/__test__/emit?kind=mail&account=pro@lullmail.test');
+
+  // The badge on that mailbox is exactly how the user is meant to find out.
+  await expect(proBadge).toHaveText('4');
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(18);
+  expect(listRequests).toBe(0);
+});
+
+test('mail for the mailbox in view lands in the list', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto('/#/inbox');
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(TOTAL);
+  await expect(page.locator('#queue-ind')).toBeVisible();
+
+  await page.locator('[data-acc="pro@lullmail.test"]').click();
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(6);
+
+  await page.request.post('/__test__/emit?kind=mail&account=pro@lullmail.test');
+
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(7);
+  await expect(page.locator('#email-list .mb-card').first())
+    .toContainText('Message arrivé pendant le test');
+});
