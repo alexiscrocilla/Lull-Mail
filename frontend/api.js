@@ -838,24 +838,6 @@ export const CATEGORY_LABEL = {
   pending:       _t('cat.pending'),
 };
 
-export const CATEGORY_COLOR = {
-  important:     '#FCA5A5',
-  newsletter:    '#93C5FD',
-  transactional: '#86EFAC',
-  spam:          '#CBD5E1',
-  other:         '#C4B5FD',
-  pending:       '#FCD34D',
-};
-
-export const CATEGORY_ICON = {
-  important:     'star',
-  newsletter:    'newspaper',
-  transactional: 'receipt',
-  spam:          'shield-x',
-  other:         'tag',
-  pending:       'clock',
-};
-
 export function scoreClass(s) {
   if (s >= 7) return 's-hi';
   if (s >= 4) return 's-md';

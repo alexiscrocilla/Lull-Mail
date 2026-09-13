@@ -4,7 +4,7 @@ import {
   avatarColor, initials, senderName, senderEmail,
   avatarImgHtml,
   shortDate, longDate, escapeHtml, linkify, isHomographUrl, safeLinkUrl,
-  CATEGORY_LABEL, CATEGORY_COLOR, CATEGORY_ICON, scoreClass,
+  CATEGORY_LABEL, scoreClass,
 } from '/static/api.js';
 import { rewriteRemoteImages, senderDomain } from '/static/image-blocker.js';
 import { confirmAsync } from '/static/confirm.js';
@@ -2221,23 +2221,30 @@ export async function mountMailbox(host, _opts) {
   }
 
   // Fast-path guard: tells whether the new list matches the previous one
-  // exactly enough to skip the wipe + rebuild. We compare ids in order +
-  // every flag that drives card visuals (unread state, category badge,
-  // folder marker, score chip, label count, attachment paperclip).
-  // If anything else changes server-side, callers will see stale visuals
-  // until the next mutation forces a full re-render — those fields are
-  // not painted on list cards anyway (summary/draft live in the read pane).
+  // exactly enough to skip the wipe + rebuild. Compare ids in order plus
+  // every field the row actually paints — nothing else.
+  //
+  // `category`, `importance_score` and `labels.length` used to be in here,
+  // and an AI analysis pass writes exactly those. Once the row stopped
+  // painting them, keeping them would have forced a full wipe and a rebuild
+  // of up to 80 cards, plus a document-wide icon sweep, after every pass —
+  // to repaint fields nobody can see. The three glyphs that replaced them
+  // are here instead.
+  //
+  // `folder` stays: the Favoris view is virtual (is_favourite = 1 AND
+  // folder != 'deleted'), so a mail moving from the inbox to the trash
+  // inside it changes the folder without changing the length.
   function _canPatchInPlace(prev, next) {
     if (prev.length !== next.length) return false;
     for (let i = 0; i < prev.length; i++) {
       const p = prev[i], n = next[i];
       if (p.int_id !== n.int_id) return false;
       if (!!p.is_read !== !!n.is_read) return false;
-      if (p.category !== n.category) return false;
       if (p.folder !== n.folder) return false;
-      if ((p.importance_score || 0) !== (n.importance_score || 0)) return false;
-      if ((p.labels?.length || 0) !== (n.labels?.length || 0)) return false;
       if ((p.attachments?.total || 0) !== (n.attachments?.total || 0)) return false;
+      if (!!p.injection_flag !== !!n.injection_flag) return false;
+      if (!!p.needs_reply !== !!n.needs_reply) return false;
+      if (!!p.draft_response !== !!n.draft_response) return false;
     }
     return true;
   }
@@ -2523,25 +2530,47 @@ export async function mountMailbox(host, _opts) {
     const col = avatarColor(sEmail || sName);
     const logoImg = avatarImgHtml(sEmail);
     const isUnread = !em.is_read;
-    // In no-AI mode every email gets a neutral score=5 fallback; we
-    // suppress score/summary/draft hints entirely so the UI doesn't
-    // pretend to be intelligent when it isn't.
+    // A row answers four questions and stops: who is it from, is it new,
+    // does it want something from me, when did it land. Everything it used
+    // to carry besides those — the truncated summary, the bare score, the
+    // category glyph, the label chips, the star, the thread count, the
+    // recipient badge — the read pane already shows in full, and the CSS
+    // stripped five of them the moment that pane opened. This is that
+    // reduced row, now unconditional.
     const aiOn = !!window.aiEnabled;
-    const score = aiOn ? (em.importance_score || 0) : 0;
-    const showSummary = aiOn && em.summary && em.summary.length > 0;
     const isSelected = state.selectedId === em.int_id;
     const isChecked = state.selectedIds.has(em.int_id);
 
-    // Recipient account mini-avatar — only meaningful when several accounts
-    // feed the list. With a single account it stamped the same badge on
-    // every card: pure noise.
-    const accEmail = em.account_email || '';
-    const accObj = state.accounts.find((a) => a.email === accEmail);
-    const accIni = initials(accObj?.name || accEmail);
-    const accCol = avatarColor(accEmail);
-    const accAvatar = accEmail && state.accounts.length > 1
-      ? `<span class="mb-acc-av mb-card-acc-av" style="background:${accCol}" title="${escapeHtml(accEmail)}">${escapeHtml(accIni)}</span>`
-      : '';
+    // Attachments: three threat tiers, the one signal on this row that is
+    // about safety rather than convenience.
+    const att = em.attachments || { total: 0, dangerous: 0, suspicious: 0 };
+    const attLabel = !att.total ? ''
+      : att.dangerous ? t('mb.att.dangerous')
+      : att.suspicious ? t('mb.att.suspicious')
+      : t('mb.att.count', { n: att.total });
+    const draftLabel = em.draft_auto ? t('mb.ai.draft_auto') : t('mb.ai.draft_ready');
+
+    // Lucide replaces each <i> with an <svg> that inherits these attributes.
+    // A `title` attribute means nothing on an SVG, so the accessible name has
+    // to be an aria-label, and the row's own label below repeats it for the
+    // screen readers that skip an option's children.
+    const glyph = (name, cls, label) =>
+      `<i data-lucide="${name}" class="w-3.5 h-3.5 ${cls}" role="img" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"></i>`;
+
+    const states = [];
+    if (isUnread) states.push(t('mb.card.unread'));
+    if (attLabel) states.push(attLabel);
+    if (em.injection_flag) states.push(t('mb.injection.flag'));
+    if (aiOn && em.needs_reply) states.push(t('mb.ai.needs_reply'));
+    if (aiOn && em.draft_response) states.push(draftLabel);
+    // `role="option"` computes its name from its contents, which after the
+    // cut are two text runs and a handful of icons. Name it explicitly.
+    const cardLabel = [
+      sName || sEmail || t('mb.unknown_sender'),
+      em.subject || t('mb.no_subject'),
+      shortDate(em.date_received),
+      ...states,
+    ].join('. ');
 
     // Staggered entrance on first render: start at 80ms, +20ms per card, cap 280ms.
     const animClass = isNew ? ' mb-card-new' : animIdx >= 0 ? ' mb-card-enter' : isPage2Plus ? ' mb-card-page' : '';
@@ -2550,7 +2579,7 @@ export async function mountMailbox(host, _opts) {
       : '';
 
     return `
-      <article class="mb-card${animClass} ${isUnread ? 'unread' : ''} ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''}" data-id="${em.int_id}" role="option" aria-selected="${isChecked ? 'true' : 'false'}" aria-current="${isSelected ? 'true' : 'false'}" tabindex="${isSelected ? '0' : '-1'}"${animStyle}>
+      <article class="mb-card${animClass} ${isUnread ? 'unread' : ''} ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''}" data-id="${em.int_id}" role="option" aria-label="${escapeHtml(cardLabel)}" aria-selected="${isChecked ? 'true' : 'false'}" aria-current="${isSelected ? 'true' : 'false'}" tabindex="${isSelected ? '0' : '-1'}"${animStyle}>
         <div class="mb-avatar" style="background:${col}" aria-hidden="true" title="${t('mb.list.select_title')}">
           <span class="av-text">${escapeHtml(ini)}</span>
           ${logoImg}
@@ -2560,40 +2589,16 @@ export async function mountMailbox(host, _opts) {
           <div class="mb-card-row">
             <div class="mb-row-left">
               <span class="mb-sender">${escapeHtml(sName || sEmail || t('mb.unknown_sender'))}</span>
-              ${Array.isArray(em.labels) && em.labels.length ? `
-                <span class="mb-card-labels">
-                  ${em.labels.slice(0, 3).map((l) => `<span class="mb-label-chip mb-label-chip-sm" style="--label-c:${escapeHtml(l.color)}" title="${escapeHtml(l.name)}"><span class="mb-label-chip-dot" style="background:${escapeHtml(l.color)}"></span>${escapeHtml(l.name)}</span>`).join('')}
-                  ${em.labels.length > 3 ? `<span class="mb-label-chip mb-label-chip-sm mb-label-chip-more" title="${t('mb.label.more', { n: em.labels.length - 3 })}">+${em.labels.length - 3}</span>` : ''}
-                </span>
-              ` : ''}
-              ${(() => {
-                // Inline indicators ordered:
-                //   sender → labels → paperclip → reply (needs reply) → draft (draft ready)
-                // The paperclip has three threat-tier variants so the user
-                // spots dangerous PJ at a glance.
-                const a = em.attachments || { total: 0, dangerous: 0, suspicious: 0 };
-                if (!a.total) return '';
-                if (a.dangerous)  return `<i data-lucide="shield-alert" class="w-3.5 h-3.5 mb-att-warn" title="${t('mb.att.dangerous')}"></i>`;
-                if (a.suspicious) return `<i data-lucide="paperclip" class="w-3.5 h-3.5 mb-att-warn" title="${t('mb.att.suspicious')}"></i>`;
-                return `<i data-lucide="paperclip" class="w-3.5 h-3.5 mb-att-icon" title="${t('mb.att.count', { n: a.total })}"></i>`;
-              })()}
-              ${em.injection_flag ? `<i data-lucide="alert-triangle" class="w-3.5 h-3.5 mb-inject-inline" title="${t('mb.injection.flag')}"></i>` : ''}
-              ${aiOn && em.needs_reply ? `<i data-lucide="reply" class="w-3.5 h-3.5 mb-reply-inline" title="${t('mb.ai.needs_reply')}"></i>` : ''}
-              ${aiOn && em.draft_response ? `<i data-lucide="pencil-line" class="w-3.5 h-3.5 mb-draft-inline${em.draft_auto ? ' mb-draft-auto' : ''}" title="${em.draft_auto ? t('mb.ai.draft_auto') : t('mb.ai.draft_ready')}"></i>` : ''}
+              ${attLabel ? glyph(att.dangerous ? 'shield-alert' : 'paperclip', att.dangerous || att.suspicious ? 'mb-att-warn' : 'mb-att-icon', attLabel) : ''}
+              ${em.injection_flag ? glyph('alert-triangle', 'mb-inject-inline', t('mb.injection.flag')) : ''}
+              ${aiOn && em.needs_reply ? glyph('reply', 'mb-reply-inline', t('mb.ai.needs_reply')) : ''}
+              ${aiOn && em.draft_response ? glyph('pencil-line', `mb-draft-inline${em.draft_auto ? ' mb-draft-auto' : ''}`, draftLabel) : ''}
             </div>
-            ${em.thread_count > 1 ? `<span class="mb-thread-count" title="${t('mb.thread.count', { n: em.thread_count })}"><i data-lucide="messages-square" class="w-3 h-3"></i>${em.thread_count}</span>` : ''}
-            ${em.category && em.category !== 'pending' ? `<i data-lucide="${CATEGORY_ICON[em.category] || 'tag'}" class="mb-cat-icon" style="color:${CATEGORY_COLOR[em.category] || 'var(--muted-2)'}" title="${escapeHtml(CATEGORY_LABEL[em.category] || em.category)}"></i>` : ''}
             <span class="mb-date">${escapeHtml(shortDate(em.date_received))}</span>
           </div>
           <div class="mb-subj">
             <span>${escapeHtml(em.subject || t('mb.no_subject'))}</span>
           </div>
-          ${showSummary ? `<div class="mb-summary">${escapeHtml(em.summary)}</div>` : ''}
-        </div>
-        <div class="mb-card-meta">
-          ${score >= 7 ? `<span class="score-pill ${scoreClass(score)}" title="${t('mb.score.title', { n: score })}">${score}</span>` : '<span></span>'}
-          ${em.is_favourite ? `<span class="mb-fav-star" title="${t('mb.favorite')}"><i data-lucide="star" class="w-3.5 h-3.5"></i></span>` : ''}
-          ${accAvatar}
         </div>
       </article>
     `;
@@ -3377,6 +3382,9 @@ export async function mountMailbox(host, _opts) {
   function renderSkeleton() {
     const list = $('#email-list');
     if (!list) return;
+    // Two columns and two lines, exactly like the row it turns into —
+    // otherwise every foreground load ends with the list snapping from an
+    // 88px skeleton to a 68px card.
     const rows = Array.from({ length: 8 }, () => `
       <div class="mb-card mb-card-skeleton">
         <div class="mb-avatar sk-avatar"></div>
@@ -3388,12 +3396,6 @@ export async function mountMailbox(host, _opts) {
           <div class="mb-subj">
             <div class="sk-line sk-line-med"></div>
           </div>
-          <div class="mb-summary-sk">
-            <div class="sk-line sk-line-long"></div>
-          </div>
-        </div>
-        <div class="mb-card-meta">
-          <div class="sk-line sk-line-tiny"></div>
         </div>
       </div>`).join('');
     list.innerHTML = rows;
@@ -5272,7 +5274,10 @@ export async function mountMailbox(host, _opts) {
     svg.setAttribute('stroke-linecap', 'round');
     svg.setAttribute('stroke-linejoin', 'round');
     svg.setAttribute('class', `w-3.5 h-3.5 ${extraClass}`);
-    svg.setAttribute('data-lucide', name);
+    // Deliberately NOT `data-lucide`: the next unscoped createIcons() sweep
+    // would rebuild this element's children and delete the <title> below.
+    // `name` is kept in the signature because it names the path data.
+    svg.setAttribute('role', 'img');
     svg.setAttribute('aria-label', label);
     svg.innerHTML = innerSvg;
     const t = document.createElementNS('http://www.w3.org/2000/svg', 'title');

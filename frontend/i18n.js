@@ -710,7 +710,6 @@ const STRINGS = {
     'mb.label.add':                  'Ajouter une étiquette',
     'mb.label.empty':                'Aucune étiquette',
     'mb.label.all':                  'Toutes',
-    'mb.label.more':                 '{n} étiquette(s) de plus',
     'mb.label.modal.edit_title':     'Modifier l\'étiquette',
     'mb.label.modal.new_title':      'Nouvelle étiquette',
     'mb.label.modal.name':           'Nom',
@@ -951,12 +950,12 @@ const STRINGS = {
     'mb.toast.bulk_error':           '{n} action(s) ont échoué.',
     'mb.list.select_aria':           'Sélectionner ce message',
     'mb.list.select_title':          'Cliquer pour sélectionner, cliquer sur le corps pour ouvrir',
+    'mb.card.unread':                'Non lu',
     'mb.list.error':                 'Erreur : {msg}',
     'mb.read.error_load':            'Erreur de chargement : {msg}',
     'mb.read.loading':               'Chargement du message…',
     'mb.read.retry':                 'Réessayer',
     'mb.score.title':                'Score {n}/10',
-    'mb.favorite':                   'Favori',
 
     // Cleanup confirmation aria-label (post-pass)
 
@@ -1630,7 +1629,6 @@ const STRINGS = {
     'mb.label.add':                  'Add label',
     'mb.label.empty':                'No labels',
     'mb.label.all':                  'All',
-    'mb.label.more':                 '{n} more label(s)',
     'mb.label.modal.edit_title':     'Edit label',
     'mb.label.modal.new_title':      'New label',
     'mb.label.modal.name':           'Name',
@@ -1871,12 +1869,12 @@ const STRINGS = {
     'mb.toast.bulk_error':           '{n} action(s) failed.',
     'mb.list.select_aria':           'Select this message',
     'mb.list.select_title':          'Click to select, click body to open',
+    'mb.card.unread':                'Unread',
     'mb.list.error':                 'Error: {msg}',
     'mb.read.error_load':            'Loading error: {msg}',
     'mb.read.loading':               'Loading message…',
     'mb.read.retry':                 'Retry',
     'mb.score.title':                'Score {n}/10',
-    'mb.favorite':                   'Favourite',
 
     // Cleanup confirmation aria-label (post-pass)
 
