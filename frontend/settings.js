@@ -246,11 +246,18 @@ export async function mountSettings(host, opts = {}) {
               </label>
             </div>
           </h3>
+          <p class="set-notice" id="ntfy-noai" hidden>${t('set.notif.noai')}</p>
           <div class="set-notif-fields-row">
             <div class="set-grid" style="flex:1;min-width:0">
               <label class="set-field">
                 <span class="set-label">${t('set.notif.topic_label')}</span>
-                <input id="ntfy-topic" class="set-input mono" placeholder="lullmail-vous-x7k2p" />
+                <div style="display:flex;gap:6px;align-items:center">
+                  <input id="ntfy-topic" class="set-input mono" style="flex:1;min-width:0" placeholder="lullmail-vous-x7k2p" />
+                  <button class="mb-cta set-btn-ghost" id="btn-ntfy-random" type="button"
+                          title="${escapeAttr(t('set.notif.random'))}" aria-label="${escapeAttr(t('set.notif.random'))}">
+                    <i data-lucide="dice-5" class="w-4 h-4"></i>
+                  </button>
+                </div>
                 <span class="set-hint">${t('set.notif.topic_hint')}</span>
               </label>
               <label class="set-field">
@@ -264,6 +271,19 @@ export async function mountSettings(host, opts = {}) {
             </div>
           </div>
         </section>
+
+      </div>
+
+      <!-- Synchronisation and Stockage: real settings, rarely touched, and
+           neither answers the question that brings an angry user here. The
+           summary names both cards because in a window with no address bar
+           and no find-in-page, this string is the search index. A native
+           <details>, the same pattern the account modal already uses. It
+           does not remember being open: a page that looks different for
+           invisible reasons is what this work exists to stop. -->
+      <details class="set-advanced set-advanced-page">
+        <summary>${t('set.advanced.summary')}</summary>
+        <div class="set-advanced-body dash-grid">
 
         <!-- General -->
         <section class="card col-6">
@@ -282,7 +302,12 @@ export async function mountSettings(host, opts = {}) {
                 </div>
                 <span class="set-hint">${t('set.polling.interval_hint')}</span>
               </label>
-              <label class="set-field">
+              <!-- Hidden rather than removed when AI is off: the scanner only
+                   runs inside the AI branch, so the control is inert then --
+                   but saveGeneral reads this element, and an absent one made
+                   the next save write the default over a deliberate choice.
+                   The save now omits the field instead. -->
+              <label class="set-field" id="field-injection">
                 <span class="set-label">${t('set.injection.label')}</span>
                 <select id="general-injection" class="set-input" style="max-width:220px">
                   <option value="hybrid">${t('set.injection.hybrid')}</option>
@@ -292,10 +317,6 @@ export async function mountSettings(host, opts = {}) {
                 </select>
                 <span class="set-hint">${t('set.injection.hint')}</span>
               </label>
-              <div class="set-field">
-                <span class="set-label">${t('set.polling.status_label')}</span>
-                <div id="set-services" class="set-status">…</div>
-              </div>
             </div>
             <div class="set-actions set-actions--rail">
               <button class="mb-cta set-btn" id="btn-save-general">${t('set.save')}</button>
@@ -311,28 +332,18 @@ export async function mountSettings(host, opts = {}) {
             </span>
           </h3>
           <div class="set-storage-body">
-            <div id="view-storage-main" class="set-storage-view">
-              <div class="set-storage-field-wrap">
-                <div class="set-field" style="flex:1;min-width:0">
-                  <span class="set-label">${t('set.storage.dir_label')}</span>
-                  <div id="set-data-dir" class="set-path mono">—</div>
-                  <span class="set-hint">${t('set.storage.dir_hint')}</span>
-                </div>
-                <div class="set-actions-rail">
-                  <button class="mb-cta set-btn-ghost" id="btn-storage-actions" type="button">
-                    <i data-lucide="menu" class="w-4 h-4"></i>
-                    <span>${t('set.storage.actions_btn')}</span>
-                  </button>
-                </div>
+            <div class="set-storage-field-wrap">
+              <div class="set-field" style="flex:1;min-width:0">
+                <span class="set-label">${t('set.storage.dir_label')}</span>
+                <div id="set-data-dir" class="set-path mono">—</div>
+                <span class="set-hint">${t('set.storage.dir_hint')}</span>
               </div>
             </div>
-            <div id="view-storage-actions" class="set-storage-view hidden">
-              <div class="set-storage-view__head">
-                <span class="set-storage-view__title">${t('set.storage.actions_btn')}</span>
-                <button class="set-icon-btn" id="btn-storage-actions-back" type="button" aria-label="${t('set.close')}">
-                  <i data-lucide="x" class="w-4 h-4"></i>
-                </button>
-              </div>
+            <!-- These five used to sit behind a bespoke view swap inside this
+                 card: a second mechanism for going one level deep, on a page
+                 that now has one. It moved focus nowhere, so a keyboard user
+                 landed on a view whose first control was its close button. -->
+            <div>
               <div class="set-storage-actions-grid">
                 <button class="mb-cta set-btn-ghost" id="btn-open-data" type="button">
                   <i data-lucide="folder-open" class="w-3.5 h-3.5"></i>
@@ -360,7 +371,8 @@ export async function mountSettings(host, opts = {}) {
             </div>
           </div>
         </section>
-      </div>
+        </div>
+      </details>
     </div>
 
     <!-- Wipe-data confirmation modal -->
@@ -502,23 +514,30 @@ export async function mountSettings(host, opts = {}) {
               <span class="set-opt-hint">${t('set.account.ai_enabled_hint')}</span>
             </span>
           </label>
-          <label class="set-opt" data-ai-dep>
-            <input id="m-auto-draft" type="checkbox" />
-            <span class="set-opt-body">
-              <span class="set-opt-label">${t('set.account.auto_draft')}</span>
-              <span class="set-opt-hint">${t('set.account.auto_draft_hint')}</span>
-            </span>
-          </label>
-          <div class="set-opt set-opt-static" data-ai-dep>
-            <span class="set-opt-body">
-              <span class="set-opt-label">${t('set.account.ai_threshold')}</span>
-              <span class="set-opt-hint">${t('set.account.ai_threshold_hint')}</span>
-            </span>
-            <input id="m-ai-threshold" type="number" min="0" max="10"
-                   class="set-input set-opt-input"
-                   placeholder="${t('set.account.ai_threshold_ph')}"
-                   aria-label="${t('set.account.ai_threshold')}" />
-          </div>
+          <!-- Nested INSIDE #m-ai-opts on purpose: syncAiOptRows disables
+               the dependent rows within that container, so moving these two
+               outside it would silently stop dimming them and a keyboard
+               user would tab into controls that do nothing. -->
+          <details class="set-advanced">
+            <summary>${t('set.modal.advanced')}</summary>
+            <label class="set-opt" data-ai-dep>
+              <input id="m-auto-draft" type="checkbox" />
+              <span class="set-opt-body">
+                <span class="set-opt-label">${t('set.account.auto_draft')}</span>
+                <span class="set-opt-hint">${t('set.account.auto_draft_hint')}</span>
+              </span>
+            </label>
+            <div class="set-opt set-opt-static" data-ai-dep>
+              <span class="set-opt-body">
+                <span class="set-opt-label">${t('set.account.ai_threshold')}</span>
+                <span class="set-opt-hint">${t('set.account.ai_threshold_hint')}</span>
+              </span>
+              <input id="m-ai-threshold" type="number" min="0" max="10"
+                     class="set-input set-opt-input"
+                     placeholder="${t('set.account.ai_threshold_ph')}"
+                     aria-label="${t('set.account.ai_threshold')}" />
+            </div>
+          </details>
         </div>
 
         <div id="m-test-result" class="set-test-result"></div>
@@ -538,7 +557,6 @@ export async function mountSettings(host, opts = {}) {
   const els = {
     banner:   host.querySelector('#set-banner'),
     dataDir:  host.querySelector('#set-data-dir'),
-    services: host.querySelector('#set-services'),
     accList:  host.querySelector('#accounts-list'),
     // On-device AI provider tiles/panels — section IA
     aiTiles:         host.querySelector('#ai-tiles'),
@@ -566,6 +584,7 @@ export async function mountSettings(host, opts = {}) {
     btnAdd:    host.querySelector('#btn-add-acc'),
     btnSaveApi: host.querySelector('#btn-save-api'),
     btnSaveNt: host.querySelector('#btn-save-ntfy'),
+    btnNtfyRandom: host.querySelector('#btn-ntfy-random'),
     btnSaveGn: host.querySelector('#btn-save-general'),
     modal:    host.querySelector('#set-modal'),
     mProviders: host.querySelector('#m-providers'),
@@ -1227,14 +1246,19 @@ export async function mountSettings(host, opts = {}) {
       els.banner.classList.add('hidden');
     }
 
-    // Services status indicator
-    if (state.status.services_running) {
-      els.services.innerHTML = `<span class="set-dot ok"></span>${t('set.status.running')}`;
-    } else if (state.status.configured) {
-      els.services.innerHTML = `<span class="set-dot warn"></span>${t('set.status.paused')}`;
-    } else {
-      els.services.innerHTML = `<span class="set-dot warn"></span>${t('set.status.not_ready')}`;
-    }
+    // The scanner runs only inside the AI branch of the analysis pass, so
+    // with no model the control configures nothing.
+    const aiOff = state.status.ai_enabled === false;
+    const injField = host.querySelector('#field-injection');
+    if (injField) injField.hidden = aiOff;
+
+    // Notifications cannot fire at the default threshold with no model: the
+    // rule levels cap the importance score at 5 and the default minimum is
+    // 7, so a user can configure a topic, install the phone app and never
+    // hear anything. The field accepts 1-10, so this is a notice, not a
+    // reason to hide either control.
+    const ntfyNotice = host.querySelector('#ntfy-noai');
+    if (ntfyNotice) ntfyNotice.hidden = !aiOff;
 
     // Accounts
     const accounts = state.config.accounts || [];
@@ -1319,7 +1343,12 @@ export async function mountSettings(host, opts = {}) {
     els.ntfySegOn.checked = !!ntfy.topic;
     els.ntfySegOff.checked = !ntfy.topic;
     _syncNtfySegActive();
-    els.ntfyTopic.value = ntfy.topic || '';
+    // Only fill from the server when it has something. Switching the
+    // segment off posts an empty topic, and re-rendering used to blank the
+    // field with it -- so turning notifications back on meant re-typing a
+    // topic a phone may have been subscribed to for months, with no
+    // generator anywhere in Settings to produce a new one.
+    if (ntfy.topic) els.ntfyTopic.value = ntfy.topic;
     els.ntfyMin.value = ntfy.min_importance || 7;
 
     // General
@@ -1366,13 +1395,17 @@ export async function mountSettings(host, opts = {}) {
 
   async function saveGeneral() {
     const polling = parseInt(els.genInterval.value, 10) || 2;
-    const injectionMode = els.genInjection?.value || 'hybrid';
     setBusy(els.btnSaveGn, true, t('set.busy.saving'));
     try {
-      await api('POST', '/api/setup/general', {
-        polling_interval_minutes: polling,
-        injection_scan_mode: injectionMode,
-      });
+      // The injection mode is omitted when its control is not on screen.
+      // It used to default to 'hybrid' in that case, so saving this card
+      // with the AI off silently overwrote a deliberate 'off' or 'local'.
+      // The backend leaves the stored value alone when the field is absent.
+      const payload = { polling_interval_minutes: polling };
+      if (els.genInjection && !els.genInjection.closest('[hidden]')) {
+        payload.injection_scan_mode = els.genInjection.value;
+      }
+      await api('POST', '/api/setup/general', payload);
       window.toast?.(t('set.toast.saved'));
       await loadAll();
     } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
@@ -1759,6 +1792,11 @@ export async function mountSettings(host, opts = {}) {
   }
 
   // ── Wire events ──
+  els.btnNtfyRandom?.addEventListener('click', () => {
+    els.ntfyTopic.value = `lullmail-${Math.random().toString(36).slice(2, 8)}`;
+    els.ntfySegOn.checked = true;
+    _syncNtfySegActive();
+  });
   els.ntfySegOff?.addEventListener('change', _syncNtfySegActive);
   els.ntfySegOn?.addEventListener('change', _syncNtfySegActive);
   els.btnAdd.addEventListener('click', openModal);
@@ -1892,15 +1930,6 @@ export async function mountSettings(host, opts = {}) {
     input.click();
   });
 
-  // ── Storage actions view swap ─────────────────────────────────────
-  const viewMain = host.querySelector('#view-storage-main');
-  const viewActions = host.querySelector('#view-storage-actions');
-  function showActionsView(show) {
-    viewMain?.classList.toggle('hidden', show);
-    viewActions?.classList.toggle('hidden', !show);
-  }
-  host.querySelector('#btn-storage-actions')?.addEventListener('click', () => showActionsView(true));
-  host.querySelector('#btn-storage-actions-back')?.addEventListener('click', () => showActionsView(false));
   // Provider tiles wire their own click handlers in render()
   els.mClose.addEventListener('click', closeModal);
   els.mCancel.addEventListener('click', closeModal);
@@ -2819,6 +2848,44 @@ function injectStyles() {
       padding: 4px 0;
     }
     .set-advanced > summary:hover { color: var(--text); }
+
+    /* The page-level disclosure is a FLEX sibling of .dash-grid, not a grid
+       item: as an item it would be clipped by the grid's overflow:hidden.
+       min-height:0, never flex-shrink:0 — shrink squeezes the accounts row,
+       which owns the minmax(0,1fr) track, to zero and then overflows .dash
+       with no scrollbar to get it back. */
+    .set-advanced-page {
+      min-height: 0;
+      margin-top: 12px;
+      border-top: 1px solid var(--border-2, var(--border));
+      padding-top: 8px;
+    }
+    .set-advanced-page > summary {
+      font-size: 13px;
+      font-weight: 600;
+      padding: 6px 0;
+    }
+    .set-advanced-body.dash-grid {
+      flex: none;
+      overflow-y: auto;
+      overflow-x: hidden;
+      grid-auto-rows: min-content;
+      grid-template-rows: none;
+      align-content: start;
+      max-height: 60vh;
+      margin-top: 8px;
+    }
+
+    .set-notice {
+      margin: 0 0 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 12.5px;
+      line-height: 1.45;
+      color: color-mix(in oklab, var(--warning) 45%, var(--text));
+      background: color-mix(in oklab, var(--warning) 10%, transparent);
+      border: 1px solid color-mix(in oklab, var(--warning) 30%, transparent);
+    }
     .set-subhead {
       font-size: 11px;
       font-weight: 700;

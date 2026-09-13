@@ -2987,12 +2987,33 @@ a.lnk-warn {
 .dash-grid--fill {
   grid-auto-rows: auto;
   align-content: stretch;
-  grid-template-rows: minmax(0, 1fr) auto auto;
+  /* Three cards in two rows since Synchronisation and Stockage moved
+     behind the page-level Avancé disclosure. */
+  grid-template-rows: minmax(0, 1fr) auto;
   overflow-y: hidden;
   scrollbar-gutter: auto;
   scrollbar-width: none;
 }
 .dash-grid::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+/* The fill layout only makes sense when there is height to fill. Below this
+   the `minmax(0, 1fr)` track -- the one holding the mailbox list -- gets
+   squeezed to nothing by the fixed-height row under it, and because the grid
+   clips its overflow the accounts card vanished with no scrollbar to bring
+   it back. At the app's 900x600 minimum window that is the single most
+   important card on the page. Let the page scroll instead. */
+@media (max-height: 760px) {
+  .dash-grid--fill {
+    grid-auto-rows: min-content;
+    grid-template-rows: none;
+    align-content: start;
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+  .dash-grid--fill::-webkit-scrollbar { width: 6px; }
+  .dash-grid--fill::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .set-card--fill-body { min-height: 0; }
+}
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
