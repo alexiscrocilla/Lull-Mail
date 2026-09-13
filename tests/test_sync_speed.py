@@ -451,6 +451,24 @@ def test_reschedule_fetch_updates_the_running_job():
     assert lifecycle.reschedule_fetch(3) is False
 
 
+def test_the_analysis_job_survives_a_missed_tick():
+    """A resume must not silently drop the analysis tick it slept through.
+
+    The fetch job got a misfire grace when it moved to a 2-minute interval;
+    the analysis job kept APScheduler's 1-second default, so any tick the
+    machine slept through was discarded rather than run late. Invisible
+    while a 60-second list refresh covered for it -- that refresh is gone.
+    """
+    from apscheduler.schedulers.background import BackgroundScheduler
+    from src import lifecycle
+
+    sched = BackgroundScheduler()
+    lifecycle._register_analysis_job(sched)
+    job = sched.get_job(lifecycle.ANALYSIS_JOB_ID)
+    assert job is not None
+    assert job.misfire_grace_time >= lifecycle.ANALYSIS_TICK_SECONDS
+
+
 def test_save_general_reschedules_without_restart(client, monkeypatch):
     from src import lifecycle
 

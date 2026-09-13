@@ -79,6 +79,22 @@ def _apply_fetch_interval(sched: BackgroundScheduler, minutes: int) -> None:
         )
 
 
+def _register_analysis_job(sched: BackgroundScheduler) -> None:
+    """Add the analysis job, with a grace as long as its own interval.
+
+    APScheduler discards a tick whose scheduled time has passed by more
+    than `misfire_grace_time`, and the default is one second. The fetch job
+    was given a real grace when it moved to a two-minute interval; this one
+    was left on the default, so every resume from sleep dropped a tick. It
+    used not to matter because a 60-second list refresh covered for it.
+    """
+    sched.add_job(
+        _analysis_job, "interval", seconds=ANALYSIS_TICK_SECONDS,
+        id=ANALYSIS_JOB_ID, coalesce=True, max_instances=1,
+        misfire_grace_time=ANALYSIS_TICK_SECONDS,
+    )
+
+
 def reschedule_fetch(minutes: int) -> bool:
     """Apply a new fetch interval to the running scheduler (Settings save).
     Returns False when the services are not running (nothing to update)."""
@@ -212,10 +228,7 @@ def start_email_services(*, restart: bool = False) -> bool:
         interval = int(conf.get("polling", {}).get("interval_minutes", 2))
         sched = BackgroundScheduler(timezone="Europe/Paris")
         _apply_fetch_interval(sched, interval)
-        sched.add_job(
-            _analysis_job, "interval", seconds=ANALYSIS_TICK_SECONDS,
-            id=ANALYSIS_JOB_ID, coalesce=True, max_instances=1,
-        )
+        _register_analysis_job(sched)
         sched.start()
         _scheduler = sched
         logger.info("Polling email actif (relève toutes les %d min, analyse en continu)", interval)
