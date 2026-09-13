@@ -1482,7 +1482,8 @@ export async function mountMailbox(host, _opts) {
     return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
-  const _BOLT_SVG = '<svg class="mb-sync-bolt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>';
+  const _bolt = (partial) =>
+    `<svg class="mb-sync-bolt${partial ? ' is-partial' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>`;
 
   // Server error strings have no length contract (an IMAP server can answer
   // with a paragraph). Clip for the line, keep the whole thing in the title.
@@ -1490,6 +1491,8 @@ export async function mountMailbox(host, _opts) {
     const v = String(str || '').replace(/\s+/g, ' ').trim();
     return v.length > max ? v.slice(0, max - 1) + '…' : v;
   }
+
+  const _accName = (a) => a.name || a.email || '';
 
   function renderSyncLine(s) {
     const el = $('#mb-sync-line');
@@ -1499,7 +1502,6 @@ export async function mountMailbox(host, _opts) {
     const fetching = accs.filter((a) => a.phase === 'fetching');
     let text = '';
     let cls = '';
-    let errDetail = '';
     if (s.fetching) {
       cls = 'is-busy';
       if (fetching.length === 1) text = t('mb.sync.line_fetching_one', { name: fetching[0].name });
@@ -1517,29 +1519,52 @@ export async function mountMailbox(host, _opts) {
         : t('mb.sync.line_hydrating');
     } else {
       text = s.last_sync_iso ? t('mb.sync.line_last', { t: _agoLabel(s.last_sync_iso) }) : t('mb.sync.line_never');
-      const errs = accs.filter((a) => a.error);
-      if (errs.length) {
-        cls = 'has-error';
-        // With one account failing, say WHY. The reason used to live only in
-        // a `title` on the per-account row — hover-only, unreachable by
-        // keyboard, and about to disappear entirely for people with a single
-        // account. This line is `aria-live="polite"`, so it is also the first
-        // route by which a screen reader hears about it at all.
-        const first = errs[0];
-        errDetail = first.error;
-        text += ' · ' + t('mb.sync.line_errors', {
-          n: errs.length,
-          name: first.name || first.email || '',
-          msg: _clip(first.error, 70),
-        });
-      }
     }
-    const push = accs.length > 0 && accs.some((a) => a.push && a.push.connected);
+
+    // Errors are reported whatever the phase. They used to live inside the
+    // idle branch only, so a mailbox that had been failing for hours went
+    // quiet for the length of every pass -- and with several accounts a pass
+    // is running most of the time.
+    const errs = accs.filter((a) => a.error);
+    let errDetail = '';
+    if (errs.length) {
+      cls = 'has-error';
+      // Say WHICH account, and with one of them say WHY. The reason used to
+      // live only in a `title` on the per-account row -- hover-only, and
+      // unreachable by keyboard. This line is `aria-live="polite"`, so it is
+      // also the first route by which a screen reader hears about it at all.
+      //
+      // Past one failure the reasons do not fit, but the names do, and a
+      // bare "3 accounts in error" left the user to hunt for which three.
+      errDetail = errs.map((a) => `${_accName(a)} : ${a.error}`).join('\n');
+      text += ' · ' + t('mb.sync.line_errors', {
+        n: errs.length,
+        name: _accName(errs[0]),
+        names: _clip(errs.map(_accName).join(', '), 60),
+        msg: _clip(errs[0].error, 70),
+      });
+    }
+
+    // The bolt is a claim about instant delivery, and it was made as soon as
+    // ONE mailbox had an IDLE connection. On the others mail arrives on the
+    // polling interval, and the user had no way to know which was which.
+    // Accounts whose server does not support IDLE are not counted as missing
+    // -- nothing is going to change for them.
+    const canPush = accs.filter((a) => a.push && a.push.supported !== false);
+    const pushOn = canPush.filter((a) => a.push.connected);
+    const pushPartial = pushOn.length > 0 && pushOn.length < canPush.length;
+    const pushTitle = !pushOn.length ? ''
+      : pushPartial
+        ? t('mb.sync.push_partial', {
+            on: _clip(pushOn.map(_accName).join(', '), 60),
+            off: _clip(canPush.filter((a) => !a.push.connected).map(_accName).join(', '), 60),
+          })
+        : t('mb.sync.push_on');
     el.className = 'mb-sync-line ' + cls;
     // A clipped message keeps its full text on hover; the line itself stays
     // readable in a 240px sidebar either way.
-    el.title = errDetail || (push ? t('mb.sync.push_on') : '');
-    el.innerHTML = `${push ? _BOLT_SVG : ''}<span>${escapeHtml(text)}</span>`;
+    el.title = errDetail || pushTitle;
+    el.innerHTML = `${pushOn.length ? _bolt(pushPartial) : ''}<span>${escapeHtml(text)}</span>`;
   }
 
   function _applySyncStatusToAccounts(s) {
@@ -1559,6 +1584,8 @@ export async function mountMailbox(host, _opts) {
         parts.push(line);
       }
       if (a.push && a.push.connected) parts.push(t('mb.sync.push_on'));
+      else if (a.push && a.push.error) parts.push(t('mb.sync.push_error', { msg: a.push.error }));
+      else if (a.push && a.push.supported === false) parts.push(t('mb.sync.push_unsupported'));
       parts.push(t('mb.sidebar.acc_toggle_title'));
       btn.title = parts.join('\n');
       // "+N" flash on the badge when this account just received mail.

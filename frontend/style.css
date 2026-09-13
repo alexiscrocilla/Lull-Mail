@@ -4357,12 +4357,24 @@ kbd {
   line-height: 14px;
   color: var(--muted);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 5px;
-  white-space: nowrap;
   overflow: hidden;
 }
-.mb-sync-line > span { overflow: hidden; text-overflow: ellipsis; }
+/* Two lines, then ellipsis. One line fitted "il y a 2 min"; it does not fit
+   "Travail : identifiants refusés", and with several mailboxes that is the
+   message that matters. */
+.mb-sync-line > span {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.mb-sync-line .mb-sync-bolt { margin-top: 1.5px; }
+/* Some mailboxes on IDLE, some not: the bolt is still true, but only partly,
+   and a full-strength icon claimed more than the app knows. */
+.mb-sync-line .mb-sync-bolt.is-partial { opacity: .55; }
 .mb-sync-line.is-busy { color: var(--accent); }
 .mb-sync-line.has-error { color: var(--warning); }
 .mb-sync-line .mb-sync-bolt { width: 11px; height: 11px; flex: none; color: var(--accent); }
