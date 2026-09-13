@@ -1281,7 +1281,19 @@ def get_due_pending_ops(limit: int = 50, account: Optional[str] = None) -> List[
         return [dict(r) for r in con.execute(q, params).fetchall()]
 
 
-def claim_pending_ops(limit: int = 50, account: Optional[str] = None) -> List[Dict]:
+def claim_pending_ops(
+    limit: int = 50,
+    account: Optional[str] = None,
+    operation: Optional[str] = None,
+    exclude_operations: Optional[List[str]] = None,
+) -> List[Dict]:
+    """Take the next due offline mutations and mark them in flight.
+
+    `operation` / `exclude_operations` let the drain split the queue by kind.
+    Trash ops are replayed in one IMAP connection per account and can be
+    claimed hundreds at a time; flag changes still open a connection each and
+    stay on a small batch.
+    """
     now_iso = datetime.now(timezone.utc).isoformat()
     with _conn() as con:
         q = """
@@ -1295,6 +1307,13 @@ def claim_pending_ops(limit: int = 50, account: Optional[str] = None) -> List[Di
         if account:
             q += " AND p.account_email = ?"
             params.append(account)
+        if operation:
+            q += " AND p.operation = ?"
+            params.append(operation)
+        if exclude_operations:
+            placeholders = ",".join("?" for _ in exclude_operations)
+            q += f" AND p.operation NOT IN ({placeholders})"
+            params.extend(exclude_operations)
         q += " ORDER BY p.id ASC LIMIT ?"
         params.append(limit)
         rows = [dict(r) for r in con.execute(q, params).fetchall()]

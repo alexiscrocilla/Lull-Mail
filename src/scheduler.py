@@ -70,6 +70,9 @@ HYDRATION_BATCH = 30
 # Unsubscribe headers re-fetched per account per analysis pass. One IMAP
 # round-trip each, so keep the slice small enough to stay invisible.
 UNSUB_BACKFILL_PER_PASS = 300
+# Queued deletions replayed per pass. High because they share one connection
+# per account, unlike flag changes which open one each.
+TRASH_DRAIN_BATCH = 250
 # IDLE notifications are coalesced for this long before a targeted fetch.
 IDLE_DEBOUNCE_SECONDS = 2.0
 
@@ -268,16 +271,71 @@ def _persist_account(
 # Offline mutations
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _drain_trash_ops(acc_by_email: Dict[str, Dict]) -> int:
+    """Replay queued deletions, one IMAP connection per account.
+
+    Trash used to go through the same per-UID path as a flag change, which
+    opens and tears down a full IMAP connection per message. A cleanup action
+    on a thousand messages was a thousand logins at fifty a minute — twenty
+    minutes of queue, behind which every ordinary "mark this read" waited,
+    and long enough for a large provider to start throttling.
+    """
+    from src.email_fetcher import batch_move_to_trash
+
+    claimed = db.claim_pending_ops(limit=TRASH_DRAIN_BATCH, operation="trash")
+    if not claimed:
+        return 0
+
+    by_acc: Dict[str, List[Dict]] = {}
+    for op in claimed:
+        if not op.get("uid"):
+            db.fail_pending_op(op["id"], op["revision"], "UID non disponible",
+                               retry_delay_seconds=30)
+            continue
+        if op["account_email"] not in acc_by_email:
+            continue
+        by_acc.setdefault(op["account_email"], []).append(op)
+
+    done = 0
+    for account_email, ops in by_acc.items():
+        acc = acc_by_email[account_email]
+        by_uid: Dict[str, List[Dict]] = {}
+        for op in ops:
+            by_uid.setdefault(op["uid"], []).append(op)
+
+        def _on_each(uid, ok, _by_uid=by_uid):
+            for op in _by_uid.get(uid, []):
+                if ok:
+                    db.complete_pending_op(op["id"], op["revision"])
+                else:
+                    db.fail_pending_op(op["id"], op["revision"],
+                                       "Échec suppression IMAP", retry_delay_seconds=30)
+
+        try:
+            batch_move_to_trash(acc, list(by_uid.keys()), on_each=_on_each)
+            done += len(ops)
+        except Exception as e:  # noqa: BLE001 — one account must not sink the rest
+            logger.warning(f"[{account_email}] suppression par lot : {e}")
+            for op in ops:
+                db.fail_pending_op(op["id"], op["revision"], str(e)[:200] or "Échec",
+                                   retry_delay_seconds=30)
+    return done
+
+
 def _drain_pending_ops(accounts: List[Dict]):
     """Replay offline mutations (seen, flagged, trash) queued in pending_ops."""
     from src.email_fetcher import (
         mark_seen_on_server,
         mark_unseen_on_server,
         set_flagged_on_server,
-        move_to_trash_on_server,
     )
     acc_by_email = {a["email"]: a for a in accounts}
-    claimed = db.claim_pending_ops(limit=50)
+    _drain_trash_ops(acc_by_email)
+
+    # Flag changes still open one connection each, so they stay on a small
+    # batch: they arrive one at a time as the user reads mail, never in
+    # thousands the way a cleanup action does.
+    claimed = db.claim_pending_ops(limit=50, exclude_operations=["trash"])
     for op in claimed:
         acc = acc_by_email.get(op["account_email"])
         if not acc:
@@ -299,9 +357,8 @@ def _drain_pending_ops(accounts: List[Dict]):
                     ok = mark_unseen_on_server(acc, uid)
             elif operation == "flagged":
                 ok = set_flagged_on_server(acc, uid, val == "1")
-            elif operation == "trash":
-                ok = move_to_trash_on_server(acc, uid)
             else:
+                # 'trash' never reaches here — _drain_trash_ops claimed it.
                 ok = True
         except Exception as e:
             ok = False
