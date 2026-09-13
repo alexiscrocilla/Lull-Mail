@@ -142,3 +142,37 @@ test('the panel fits the narrowest window without pushing the page sideways', as
   expect(geometry.right).toBeLessThanOrEqual(geometry.innerW);
   expect(geometry.bottom).toBeLessThanOrEqual(geometry.innerH);
 });
+
+test('a search with no results names the filters and removes them one by one', async ({ page }) => {
+  await page.locator('#search').fill('from:nora@rivage-studio.fr subject:zzz-introuvable');
+  const empty = page.locator('.mb-list-empty');
+  await expect(empty).toBeVisible();
+
+  // Not « from:nora@… subject:zzz-introuvable » quoted back at the user.
+  await expect(empty).not.toContainText('from:');
+  await expect(empty.locator('.mb-chip-filter')).toHaveCount(2);
+
+  // The one CTA used to be "clear everything", which throws away the
+  // filter that was right along with the one that was not.
+  await empty.locator('.mb-chip-filter').filter({ hasText: 'Objet' }).click();
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(3);
+  await expect(page.locator('#search')).toHaveValue('from:nora@rivage-studio.fr');
+});
+
+test('a search that could not run says so instead of showing no results', async ({ page }) => {
+  await page.route('**/api/emails/search**', (route) => route.abort('failed'));
+  await page.locator('#search').fill('category:newsletter');
+
+  const empty = page.locator('.mb-list-empty');
+  await expect(empty).toBeVisible();
+  // The fallback is a local substring match, so `category:newsletter`
+  // becomes a hunt for that literal text -- a different search, and
+  // indistinguishable from "nothing matched" unless it says so.
+  await expect(empty).toContainText('échoué');
+  await expect(empty.locator('[data-empty-act="retry-search"]')).toBeVisible();
+
+  await page.unroute('**/api/emails/search**');
+  await empty.locator('[data-empty-act="retry-search"]').click();
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(0);
+  await expect(page.locator('.mb-list-empty')).not.toContainText('échoué');
+});

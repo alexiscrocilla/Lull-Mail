@@ -821,6 +821,14 @@ button { font: inherit; }
 .mb-chip-x { width: 11px; height: 11px; flex: none; opacity: .7; }
 .mb-chip-filter:hover { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 .mb-chip-filter:hover .mb-chip-x { opacity: 1; }
+.mb-empty-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin: 4px 0 2px;
+  max-width: 420px;
+}
 .mb-chip.active {
   background: var(--accent-soft);
   color: var(--accent-ink);

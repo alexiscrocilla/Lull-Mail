@@ -824,6 +824,11 @@ export async function mountMailbox(host, _opts) {
     category: '',     // '' = all
     query: '',
     searchResults: null,  // server-side search hits while a query is active
+    // The last search failed for real (not an abort). Distinguishes
+    // "nothing matched" from "nobody answered": the local fallback is a
+    // substring match, which with operators in play is a different
+    // search rather than a weaker one.
+    searchError: false,
     onlyUnread: false,
     onlyReply: false,
     accountFilters: new Set(),  // empty = all accounts
@@ -1898,6 +1903,7 @@ export async function mountMailbox(host, _opts) {
   }
 
   function _clearAllFilters() {
+    state.searchError = false;
     state.onlyUnread = false;
     state.onlyReply = false;
     state.category = '';
@@ -2592,6 +2598,23 @@ export async function mountMailbox(host, _opts) {
 
   function renderList(items) {
     if (!$('#email-list')) return;   // view already unmounted — see renderChips
+    // Nothing to show, decided before the fast paths. renderSkeleton sets
+    // _listAllItems = [], and _canPatchInPlace([], []) is vacuously true, so
+    // a search that returned nothing took the in-place patch and returned --
+    // leaving whatever was on screen, skeletons included, and never reaching
+    // the empty branch below. Everything the slow path does on the way out
+    // has to be done here too, or the entrance animation stays armed and the
+    // observer keeps pointing at rows that are gone.
+    if (!items.length) {
+      _teardownListObserver();
+      _firstRender = false;
+      _filterDidChange = false;
+      _listAllItems = [];
+      _listRendered = 0;
+      _announceCount(0);
+      renderEmptyState($('#email-list'));
+      return;
+    }
     // Fast-path 1: same ids in the same order, no flag change → in-place
     // patch. Skips the innerHTML wipe + 1111-card rebuild that drives
     // the jank on large inboxes. _firstRender (mount animation) and
@@ -2678,10 +2701,29 @@ export async function mountMailbox(host, _opts) {
    * the way out inside the block.
    */
   function _emptyStateFor() {
+    // A search that failed is not a search that found nothing. The catch in
+    // runServerSearch falls back to a local substring match, and with
+    // operators in play that is a different search, not a degraded one:
+    // `category:newsletter` becomes a hunt for the literal text. Saying "no
+    // results" there is a lie.
+    if (state.searchError) {
+      return { icon: 'unplug', title: t('mb.empty.error_title'),
+               desc: t('mb.empty.error_desc'), action: 'retry-search' };
+    }
     const q = state.query.trim();
-    if (q) {
-      return { icon: 'search-x', title: t('mb.empty.search_title'),
-               desc: t('mb.empty.search_desc', { q }), action: 'clear-search' };
+    const filters = _activeFilters();
+    if (q || filters.length) {
+      // Name the filters rather than quoting the raw string. With three of
+      // them on, the old description read
+      // « from:nora subject:facture category:spam » back at the user.
+      const free = freeText(state.query);
+      return {
+        icon: 'search-x',
+        title: t('mb.empty.search_title'),
+        desc: free ? t('mb.empty.search_desc', { q: free }) : t('mb.list.empty_filter'),
+        filters,
+        action: 'clear-filters',
+      };
     }
     if (_anyFilterActive()) {
       return { icon: 'filter-x', title: t('mb.empty.filter_title'),
@@ -2737,30 +2779,57 @@ export async function mountMailbox(host, _opts) {
 
   function renderEmptyState(list) {
     const s = _emptyStateFor();
-    const btn = s.action === 'clear-search'
-      ? `<button type="button" class="mb-empty-cta" data-empty-act="clear-search">${t('mb.empty.clear_search')}</button>`
-      : s.action === 'clear-filters'
-      ? `<button type="button" class="mb-empty-cta" data-empty-act="clear-filters">${t('mb.empty.clear_filters')}</button>`
+    const label = s.action === 'retry-search' ? t('mb.empty.retry')
+                : s.action === 'clear-search' ? t('mb.empty.clear_search')
+                : s.action === 'clear-filters' ? t('mb.empty.clear_filters')
+                : '';
+    const btn = label
+      ? `<button type="button" class="mb-empty-cta" data-empty-act="${s.action}">${escapeHtml(label)}</button>`
       : '';
     list.innerHTML = `
       <div class="mb-list-empty">
         <div class="mb-list-empty-ill"><i data-lucide="${s.icon}" class="w-6 h-6"></i></div>
         <div class="mb-list-empty-title">${escapeHtml(s.title)}</div>
         <div class="mb-list-empty-desc">${escapeHtml(s.desc)}</div>
+        ${s.filters?.length ? '<div class="mb-empty-chips"></div>' : ''}
         ${btn}
       </div>`;
+    // The same removable chips as the header's. With three filters on,
+    // "remove everything" throws away the two that were right -- and the
+    // one CTA was the only thing on offer.
+    const chipBox = list.querySelector('.mb-empty-chips');
+    if (chipBox) {
+      for (const chip of s.filters) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'mb-chip mb-chip-filter';
+        b.setAttribute('aria-label', t('mb.filter.remove', { name: chip.label }));
+        b.innerHTML = `<span>${escapeHtml(chip.label)}</span>`
+          + '<svg class="mb-chip-x" viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+          + ' stroke-width="2.6" stroke-linecap="round" aria-hidden="true">'
+          + '<path d="M6 6l12 12M18 6L6 18"/></svg>';
+        b.addEventListener('click', () => _dropFilter(chip));
+        chipBox.appendChild(b);
+      }
+    }
     window.lucide?.createIcons({ nodes: [list] });
     list.querySelector('[data-empty-act]')?.addEventListener('click', (e) => {
-      if (e.currentTarget.dataset.emptyAct === 'clear-search') {
+      const act = e.currentTarget.dataset.emptyAct;
+      if (act === 'retry-search') {
+        state.searchError = false;
+        runServerSearch();
+        return;
+      }
+      if (act === 'clear-search') {
         const inp = $('#search');
         if (inp) inp.value = '';
         state.query = '';
         _searchToken++;
         state.searchResults = null;
         applyFilter();
-      } else {
-        _clearAllFilters();
+        return;
       }
+      _clearAllFilters();
     });
   }
 
@@ -5808,9 +5877,15 @@ export async function mountMailbox(host, _opts) {
         if (oldestKey) _searchCache.delete(oldestKey);
       }
       _searchCache.set(cacheKey, { results, timestamp: Date.now() });
-    } catch (_) {
+      state.searchError = false;
+    } catch (err) {
       if (myToken !== _searchToken) return;
       state.searchResults = null;             // fall back to local filtering
+      // An abort is a supersede, not a failure: a newer keystroke cancelled
+      // this one and is already in flight. Only a real error may claim the
+      // list, because the local fallback is a substring match -- with
+      // operators in play, a different search rather than a weaker one.
+      state.searchError = err?.name !== 'AbortError';
     }
     applyFilter();
   }
