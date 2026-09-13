@@ -1,12 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Lot 2 — the Nettoyage page must not be able to destroy a mailbox, and
-everything it does must be undoable.
+"""Safety of the cleanup machinery below the suggestion engine.
 
-Covers: the empty-filter guard on every write path, bulk actions routed
-through the delayed pending_ops queue, undo restoring the folder each message
-actually came from, SQL-variable chunking on big selections, and the
-unsubscribe-header backfill (which must not mark a message "checked" when the
-connection died).
+The guard that stops a card reaching a protected message lives in
+tests/test_cleanup_suggestions.py, where the cards are. What is left here is
+everything underneath: the bulk writes must survive a selection larger than
+SQLite's bound-variable limit, the unsubscribe purge must not move a message
+twice, and the unsubscribe-link search must not mark a message "checked"
+because the network dropped.
+
+This file used to assert that a rule with an empty filter was refused. That
+guard is gone with the rules engine: the apply endpoint takes a card id and
+re-runs the card's own query, so there is no user-supplied filter left to be
+empty.
 """
 
 from __future__ import annotations
@@ -17,22 +22,24 @@ import pytest
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _mail(db, mid, sender="Promo <news@shop.fr>", account="u@x.fr", uid="1",
-          folder="inbox", is_read=False):
-    db.insert_email({
+          folder="inbox", is_read=False, **extra):
+    data = {
         "message_id": mid, "account": account, "uid": uid,
         "subject": "hi", "sender": sender, "recipient": account,
         "date_str": "Mon, 05 May 2025 10:00:00 +0000",
         "body_text": "x", "is_read": is_read,
-    })
+    }
+    data.update(extra)
+    db.insert_email(data)
     if folder != "inbox":
         db.update_email_folder(mid, folder)
-    return db.get_email_by_message_id(mid) if hasattr(db, "get_email_by_message_id") else None
 
 
 def _pending_ops(db):
     with db._conn() as con:
         return [dict(r) for r in con.execute(
-            "SELECT email_int_id, operation, desired_value, next_attempt_at FROM pending_ops"
+            "SELECT email_int_id, operation, desired_value, next_attempt_at"
+            " FROM pending_ops"
         ).fetchall()]
 
 
@@ -42,162 +49,11 @@ def _folders_of(db):
                 con.execute("SELECT message_id, folder FROM emails").fetchall()}
 
 
-# ── empty-filter guard ────────────────────────────────────────────────────────
-
-EMPTY_FILTERS = [
-    {},
-    {"categories": []},
-    {"subject_keywords": []},
-    {"account": "u@x.fr"},          # picking a mailbox narrows nothing inside it
-    {"older_than_days": 0},         # 0 is "no age constraint" in find_by_filter
-]
-
-
-@pytest.mark.parametrize("flt", EMPTY_FILTERS)
-def test_empty_filter_is_refused_everywhere(client, flt):
-    """A filter with no clause matches every live message; "delete" on it used
-    to trash the whole mailbox behind one confirm."""
-    assert client.post("/api/cleanup/rules/preview", json=flt).status_code == 400
-    r = client.post("/api/cleanup/rules/run", json={"filter": flt, "action": "delete"})
-    assert r.status_code == 400
-    assert client.post("/api/cleanup/custom-rules",
-                       json={"name": "R", "filter": flt}).status_code == 400
-
-
-def test_empty_filter_run_touches_nothing(client, fresh_app):
-    from src import database as db
-
-    _mail(db, "<keep@x>")
-    client.post("/api/cleanup/rules/run", json={"filter": {}, "action": "delete"})
-    assert _folders_of(db) == {"<keep@x>": "inbox"}
-
-
-@pytest.mark.parametrize("flt", [
-    {"categories": ["spam"]},
-    {"is_read": False},
-    {"max_score": 3},
-    {"older_than_days": 30},
-    {"subject_keywords": ["promo"]},
-    {"sender_keywords": ["noreply"]},
-])
-def test_real_filters_are_accepted(client, flt):
-    assert client.post("/api/cleanup/rules/preview", json=flt).status_code == 200
-    assert client.post("/api/cleanup/custom-rules",
-                       json={"name": "R", "filter": flt}).status_code == 201
-
-
-def test_patching_a_rule_to_an_empty_filter_is_refused(client):
-    created = client.post("/api/cleanup/custom-rules",
-                          json={"name": "R", "filter": {"categories": ["spam"]}})
-    assert created.status_code == 201
-    rule_id = created.json()["id"]
-    assert client.patch(f"/api/cleanup/custom-rules/{rule_id}",
-                        json={"filter": {}}).status_code == 400
-    # A patch that leaves the filter alone still works.
-    assert client.patch(f"/api/cleanup/custom-rules/{rule_id}",
-                        json={"enabled": False}).status_code == 200
-
-
-# ── bulk actions are queued and undoable ──────────────────────────────────────
-
-def test_sender_delete_is_queued_with_a_delay_and_undoable(client, fresh_app):
-    from src import database as db
-
-    for i in range(3):
-        _mail(db, f"<m{i}@x>", uid=str(10 + i))
-    db.create_folder("Archive")
-    _mail(db, "<arch@x>", uid="20", folder="Archive")
-
-    r = client.post("/api/cleanup/sender",
-                    json={"sender": "news@shop.fr", "action": "delete"})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["affected"] == 4
-
-    # Everything moved, and the IMAP side is queued rather than already done.
-    assert set(_folders_of(db).values()) == {"deleted"}
-    ops = _pending_ops(db)
-    assert len(ops) == 4 and {o["operation"] for o in ops} == {"trash"}
-    assert all(o["next_attempt_at"] for o in ops), "trash ops must be delayed so undo can cancel them"
-
-    # The undo payload remembers where each message actually was.
-    folders = body["undo"]["folders"]
-    assert sorted(folders) == ["Archive", "inbox"]
-    assert len(folders["inbox"]) == 3 and len(folders["Archive"]) == 1
-
-    undo = client.post("/api/cleanup/undo", json={"folders": folders})
-    assert undo.status_code == 200 and undo.json()["restored"] == 4
-    assert _folders_of(db) == {
-        "<m0@x>": "inbox", "<m1@x>": "inbox", "<m2@x>": "inbox", "<arch@x>": "Archive",
-    }
-    assert _pending_ops(db) == [], "undo must cancel the queued trash, not add to it"
-
-
-def test_rule_delete_is_undoable(client, fresh_app):
-    from src import database as db
-
-    _mail(db, "<a@x>", uid="1")
-    _mail(db, "<b@x>", uid="2")
-    db.update_email_ai("<a@x>", {"category": "spam", "importance_score": 1})
-    db.update_email_ai("<b@x>", {"category": "important", "importance_score": 9})
-
-    r = client.post("/api/cleanup/rules/run",
-                    json={"filter": {"categories": ["spam"]}, "action": "delete"})
-    assert r.status_code == 200, r.text
-    assert r.json()["affected"] == 1
-    assert _folders_of(db) == {"<a@x>": "deleted", "<b@x>": "inbox"}
-
-    client.post("/api/cleanup/undo", json=r.json()["undo"])
-    assert _folders_of(db) == {"<a@x>": "inbox", "<b@x>": "inbox"}
-
-
-def test_mark_read_is_undoable(client, fresh_app):
-    from src import database as db
-
-    _mail(db, "<a@x>", uid="1", is_read=False)
-    _mail(db, "<b@x>", uid="2", is_read=True)
-
-    r = client.post("/api/cleanup/sender",
-                    json={"sender": "news@shop.fr", "action": "mark_read"})
-    assert r.status_code == 200
-    # Only the unread one counted, and only it can be put back.
-    assert r.json()["affected"] == 1
-    unread_ids = r.json()["undo"]["unread_ids"]
-    assert len(unread_ids) == 1
-    with db._conn() as con:
-        assert [r["is_read"] for r in con.execute(
-            "SELECT is_read FROM emails ORDER BY message_id")] == [1, 1]
-
-    client.post("/api/cleanup/undo", json={"unread_ids": unread_ids})
-    with db._conn() as con:
-        assert [r["is_read"] for r in con.execute(
-            "SELECT is_read FROM emails ORDER BY message_id")] == [0, 1]
-
-
-def test_undo_refuses_an_unknown_folder(client, fresh_app):
-    from src import database as db
-
-    _mail(db, "<a@x>", uid="1")
-    r = client.post("/api/cleanup/undo", json={"folders": {"../etc": [1]}})
-    assert r.status_code == 400
-    assert _folders_of(db) == {"<a@x>": "inbox"}
-
-
-def test_nothing_to_do_returns_no_undo(client, fresh_app):
-    from src import database as db
-
-    _mail(db, "<a@x>", uid="1", is_read=True)
-    r = client.post("/api/cleanup/sender",
-                    json={"sender": "news@shop.fr", "action": "mark_read"})
-    assert r.status_code == 200
-    assert r.json()["affected"] == 0 and r.json()["undo"] is None
-
-
 # ── SQL variable chunking ─────────────────────────────────────────────────────
 
-def test_bulk_helpers_survive_more_ids_than_sqlite_allows(fresh_app):
-    """SQLite caps bound variables per statement — 999 on plenty of shipped
-    builds. A "delete every newsletter" on a real mailbox exceeds that."""
+def test_bulk_writes_survive_more_ids_than_sqlite_allows(fresh_app):
+    """SQLite stops at 999 bound variables on plenty of shipped builds, and a
+    card on a real mailbox selects thousands."""
     from src import database as db
 
     n = 2500
@@ -222,23 +78,87 @@ def test_bulk_helpers_survive_more_ids_than_sqlite_allows(fresh_app):
         assert con.execute("SELECT COUNT(*) FROM pending_ops").fetchone()[0] == 0
 
     assert len(db.bulk_set_read_tx(ids, True)) == n
-    assert db.bulk_mark_read([f"<bulk-{i}@x>" for i in range(n)], False) == n
-    assert db.bulk_set_folder([f"<bulk-{i}@x>" for i in range(n)], "deleted") == n
+    assert db.mark_sender_unsubscribed("a@b.c") == n
 
 
-# ── unsubscribe header backfill ───────────────────────────────────────────────
+# ── the unsubscribe purge ─────────────────────────────────────────────────────
+
+def test_purge_queues_each_message_once(fresh_app):
+    """The purge used to move the rows itself AND add hand-built trash steps
+    to the unsubscribe job, so every message went to the server twice."""
+    from src import api, database as db
+
+    for i in range(4):
+        _mail(db, f"<p{i}@x>", uid=str(i))
+    _mail(db, "<other@x>", sender="Someone <s@e.fr>", uid="9")
+    db.update_email_folder("<p3@x>", "deleted")
+
+    ids = api._purge_sender("news@shop.fr", None)
+
+    assert len(ids) == 3, "the one already in the trash is not moved again"
+    folders = _folders_of(db)
+    assert folders["<other@x>"] == "inbox", "a different sender is untouched"
+    ops = _pending_ops(db)
+    assert len(ops) == 3 and {o["operation"] for o in ops} == {"trash"}
+    assert len({o["email_int_id"] for o in ops}) == 3, "one queued move per message"
+    assert all(o["next_attempt_at"] for o in ops), "delayed, so it can still be cancelled"
+
+
+def test_purge_of_an_unknown_sender_does_nothing(fresh_app):
+    from src import api, database as db
+
+    _mail(db, "<a@x>")
+    assert api._purge_sender("nobody@nowhere.tld", None) == []
+    assert _pending_ops(db) == []
+
+
+# ── unsubscribe stamping ──────────────────────────────────────────────────────
+
+def test_manual_unsubscribe_can_be_marked_done(client, fresh_app):
+    """Senders with no one-click link send the user to their own page, which
+    the app cannot observe. Without this they stayed listed as subscribed for
+    good and the list never got shorter."""
+    from src import database as db
+
+    _mail(db, "<n1@x>", sender="News <n@shop.fr>",
+          list_unsubscribe="<https://shop.fr/u>", unsubscribe_url="https://shop.fr/u")
+    assert db.unsubscribe_senders()[0]["unsubscribed_at"] is None
+
+    r = client.post("/api/cleanup/unsubscribe/mark", json={"sender": "n@shop.fr"})
+    assert r.status_code == 200 and r.json()["marked"] == 1
+    assert db.unsubscribe_senders()[0]["unsubscribed_at"] is not None
+
+
+def test_a_stamp_that_fails_is_reported_as_a_failure(fresh_app, monkeypatch):
+    """The POST going through while the stamp fails told the user they had
+    unsubscribed, then showed the sender again a minute later."""
+    from src import api, database as db, email_fetcher as ef
+
+    monkeypatch.setattr(ef, "unsubscribe_http", lambda url, timeout_s=5.0: (True, 200, None))
+    monkeypatch.setattr(db, "mark_sender_unsubscribed",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk full")))
+
+    job_id = api._make_job("unsubscribe", "unsubscribe:test", 1)
+    api._run_unsubscribe_job(job_id, [{"kind": "http_post", "sender": "n@shop.fr",
+                                       "url": "https://shop.fr/u", "account": None}])
+    job = api._jobs[job_id]
+    assert job["failed"] == 1 and job["done"] == 0
+
+
+# ── unsubscribe header search ─────────────────────────────────────────────────
 
 def _envelope_without_header(db, mid, uid):
     db.insert_email({
         "message_id": mid, "account": "u@x.fr", "uid": uid, "subject": "s",
         "sender": "News <n@shop.fr>", "date_str": "Mon, 05 May 2025 10:00:00 +0000",
     })
-    # Older builds left the column NULL; that is what marks a row "never inspected".
+    # Older builds left the column NULL; that is what marks a row "never
+    # inspected". insert_email writes the empty-string sentinel instead.
     with db._conn() as con:
         con.execute("UPDATE emails SET list_unsubscribe = NULL WHERE message_id = ?", (mid,))
 
 
-def test_backfill_runs_by_itself_and_finds_links(fresh_app, monkeypatch):
+def test_the_search_runs_by_itself_and_finds_links(fresh_app, monkeypatch):
     """The unsubscribe list used to stay empty until the user found a button
     labelled "Analyser les en-têtes" and pressed it."""
     from src import scheduler, database as db, email_fetcher as ef
@@ -267,14 +187,14 @@ def test_backfill_runs_by_itself_and_finds_links(fresh_app, monkeypatch):
 
     # Second pass is a no-op — it must not re-walk the mailbox every minute.
     monkeypatch.setattr(ef, "batch_fetch_headers",
-                        lambda *a, **k: pytest.fail("backfill ran twice"))
+                        lambda *a, **k: pytest.fail("the search ran twice"))
     assert scheduler._backfill_unsubscribe_headers(
         [{"email": "u@x.fr"}], deadline=float("inf")) == 0
 
 
-def test_backfill_connection_failure_does_not_mark_rows_checked(fresh_app, monkeypatch):
-    """A dead connection calls back with a bare {"uid": …}. Writing that stamps
-    the "checked, no header" sentinel and hides the sender for good."""
+def test_a_dropped_connection_does_not_mark_rows_checked(fresh_app, monkeypatch):
+    """A dead connection calls back with a bare {"uid": …}. Writing that
+    stamps the "checked, no header" sentinel and hides the sender for good."""
     from src import scheduler, database as db, email_fetcher as ef
 
     _envelope_without_header(db, "<n1@x>", "1")
@@ -293,25 +213,7 @@ def test_backfill_connection_failure_does_not_mark_rows_checked(fresh_app, monke
         ).fetchone()[0] is None, "a failed fetch must leave the row inspectable"
 
 
-def test_manual_unsubscribe_can_be_marked_done(client, fresh_app):
-    """Senders with no one-click link send the user to their own page, which
-    the app cannot observe. Without this they stayed listed as subscribed for
-    good and the list never got shorter."""
-    from src import database as db
-
-    db.insert_email({
-        "message_id": "<n1@x>", "account": "u@x.fr", "uid": "1", "subject": "s",
-        "sender": "News <n@shop.fr>", "date_str": "Mon, 05 May 2025 10:00:00 +0000",
-        "list_unsubscribe": "<https://shop.fr/u>", "unsubscribe_url": "https://shop.fr/u",
-    })
-    assert db.unsubscribe_senders()[0]["unsubscribed_at"] is None
-
-    r = client.post("/api/cleanup/unsubscribe/mark", json={"sender": "n@shop.fr"})
-    assert r.status_code == 200 and r.json()["marked"] == 1
-    assert db.unsubscribe_senders()[0]["unsubscribed_at"] is not None
-
-
-def test_backfill_skips_accounts_in_backoff(fresh_app, monkeypatch):
+def test_the_search_skips_accounts_in_backoff(fresh_app, monkeypatch):
     from src import scheduler, database as db, email_fetcher as ef
 
     _envelope_without_header(db, "<n1@x>", "1")
@@ -321,3 +223,51 @@ def test_backfill_skips_accounts_in_backoff(fresh_app, monkeypatch):
                         lambda *a, **k: pytest.fail("fetched an account in backoff"))
     assert scheduler._backfill_unsubscribe_headers(
         [{"email": "u@x.fr"}], deadline=float("inf")) == 0
+
+
+# ── the rules engine is gone ──────────────────────────────────────────────────
+
+@pytest.mark.parametrize("method,path", [
+    ("post", "/api/cleanup/rules/preview"),
+    ("post", "/api/cleanup/rules/run"),
+    ("post", "/api/cleanup/sender"),
+    ("get", "/api/cleanup/senders"),
+    ("get", "/api/cleanup/custom-rules"),
+    ("post", "/api/cleanup/custom-rules"),
+    ("get", "/api/cleanup/unsubscribe/senders"),
+    ("get", "/api/cleanup/unsubscribe/stats"),
+])
+def test_the_retired_routes_are_really_gone(client, method, path):
+    r = client.post(path, json={}) if method == "post" else client.get(path)
+    assert r.status_code == 404, f"{path} still answers {r.status_code}"
+
+
+def test_custom_rules_are_kept_but_out_of_the_way(fresh_app):
+    """Somebody spent time building those rules. They are renamed rather than
+    dropped, and counted so the page can say once that they are gone."""
+    from src import database as db, cleanup_suggestions as sug
+
+    with db._conn() as con:
+        con.execute("""CREATE TABLE custom_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+            description TEXT DEFAULT '', icon TEXT DEFAULT 'filter',
+            accent TEXT DEFAULT '', filter_json TEXT NOT NULL DEFAULT '{}',
+            actions_json TEXT NOT NULL DEFAULT '[]', enabled INTEGER DEFAULT 1,
+            position INTEGER DEFAULT 0)""")
+        con.execute("INSERT INTO custom_rules (name) VALUES ('Promos')")
+        con.execute("INSERT INTO custom_rules (name) VALUES ('Recrutement')")
+
+    db.init_db()
+
+    with db._conn() as con:
+        tables = {r["name"] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert "custom_rules" not in tables
+        assert "custom_rules_removed_v1" in tables
+        assert con.execute(
+            "SELECT COUNT(*) FROM custom_rules_removed_v1").fetchone()[0] == 2
+
+    assert sug.compute()["migrated_rules"] == 2
+    # And it is said once: dismissing it is the same gesture as hiding a card.
+    sug.hide_card("migrated_rules")
+    assert sug.compute()["migrated_rules"] == 0

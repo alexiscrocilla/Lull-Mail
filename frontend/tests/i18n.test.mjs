@@ -117,15 +117,15 @@ async function loadI18n(lang = 'fr') {
 }
 
 test('t() picks the _one variant when n is 1, in both locales', async () => {
-  // Live case: with a single unsubscribable sender the bulk button used to
-  // read "Se désabonner des 1 newsletters".
+  // Live case: the dictionary used to work around {var}-only substitution
+  // with "suggestion(s)", which reads as "Voir 1 suggestions de plus".
   for (const [lang, one, many] of [
-    ['fr', 'Se désabonner de cette newsletter', 'Se désabonner des 4 newsletters'],
-    ['en', 'Unsubscribe from this newsletter', 'Unsubscribe from all 4 newsletters'],
+    ['fr', 'Voir 1 suggestion de plus', 'Voir 4 suggestions de plus'],
+    ['en', 'See 1 more suggestion', 'See 4 more suggestions'],
   ]) {
     const tr = await loadI18n(lang);
-    assert.equal(tr('cleanup.unsub.bulk_btn', { n: 1 }), one);
-    assert.equal(tr('cleanup.unsub.bulk_btn', { n: 4 }), many);
+    assert.equal(tr('cleanup.more', { n: 1 }), one);
+    assert.equal(tr('cleanup.more', { n: 4 }), many);
   }
 });
 

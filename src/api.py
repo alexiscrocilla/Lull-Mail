@@ -109,33 +109,6 @@ class EmailPatch(BaseModel):
     # draft (Modifier → composer → close). When provided, replaces the
     # stored body verbatim. None = unchanged.
     draft_response: Optional[str] = None
-
-
-class CleanupSenderReq(BaseModel):
-    sender: str
-    action: Literal["delete", "mark_read"]
-    account: Optional[str] = None
-
-
-class RuleFilter(BaseModel):
-    """Generic filter spec used by the rules cleanup tab. Every field is
-    optional and they combine with AND. Within subject_keywords /
-    sender_keywords, values are OR'd (any keyword match is sufficient)."""
-
-    categories: Optional[List[str]] = None
-    max_score: Optional[int] = None
-    is_read: Optional[bool] = None
-    older_than_days: Optional[int] = None
-    account: Optional[str] = None
-    subject_keywords: Optional[List[str]] = None
-    sender_keywords: Optional[List[str]] = None
-
-
-class RuleRunReq(BaseModel):
-    filter: RuleFilter
-    action: Literal["delete", "mark_read"]
-
-
 class UnsubscribeReq(BaseModel):
     sender: str
     account: Optional[str] = None
@@ -1501,38 +1474,6 @@ def _bump_job(job_id: str, ok: bool):
         if j["done"] + j["failed"] >= j["total"]:
             j["finished"] = True
             j["finished_at"] = _now_iso()
-
-
-# _run_imap_batch used to push cleanup deletions to IMAP as one tracked job so
-# the UI could draw a progress bar over it. Both callers now go through the
-# transactional pending_ops queue instead (see _apply_bulk_action): that is
-# what makes the action undoable, and the progress bar was reporting IMAP
-# propagation nobody had asked to watch. The registry itself stays — the
-# header backfill and the unsubscribe flows still use it.
-
-
-@app.get("/api/cleanup/senders")
-def cleanup_senders(limit: int = 50, account: Optional[str] = None):
-    return db.top_senders(limit=min(max(1, limit), 200), account=account)
-
-
-@app.post("/api/cleanup/sender")
-@limiter.limit("60/minute")
-def cleanup_sender(request: Request, req: CleanupSenderReq, bg: BackgroundTasks):
-    """Apply a bulk action ('delete' or 'mark_read') to every live message
-    from `req.sender`. Undoable — see _apply_bulk_action.
-
-    The limit is 60/minute rather than 10: this is a loopback-only app with a
-    single user, the origin middleware already refuses cross-origin calls, and
-    cleaning a dozen senders in a row is ordinary use, not abuse. At 10 the
-    eleventh click of a cleaning session answered "Échec".
-    """
-    matches = db.find_by_sender(req.sender, account=req.account)
-    if not matches:
-        return {"ok": True, "affected": 0, "undo": None, "job_id": None, "total": 0}
-    return _apply_bulk_action(req.action, matches, bg)
-
-
 @app.get("/api/cleanup/suggestions")
 def cleanup_suggestions(account: Optional[str] = None):
     """Everything the Nettoyage page shows, in one request.
@@ -1646,30 +1587,6 @@ def get_cleanup_job(job_id: str, locale: str = Depends(get_locale)):
 # the undo to still be on screen: an undo inside the window cancels the op
 # outright, so the server never sees the deletion at all.
 _CLEANUP_UNDO_DELAY_SECONDS = 20
-
-
-def _filter_constrains_anything(f: RuleFilter) -> bool:
-    """True when the filter actually narrows the mailbox.
-
-    A spec with no clause matches every live message, and "delete" on it used
-    to trash the whole mailbox behind a single confirm. `account` on its own
-    does not count: picking a mailbox is not narrowing what inside it matches.
-    """
-    return any([
-        f.categories,
-        f.max_score is not None,
-        f.is_read is not None,
-        (f.older_than_days or 0) > 0,
-        f.subject_keywords,
-        f.sender_keywords,
-    ])
-
-
-def _reject_empty_filter(f: RuleFilter, locale: str) -> None:
-    if not _filter_constrains_anything(f):
-        raise HTTPException(400, tr("cleanup.rule.no_filter", locale))
-
-
 def _apply_bulk_action(action: str, matches: List[Dict], bg: BackgroundTasks) -> Dict:
     """Apply 'delete' or 'mark_read' to matched rows and describe the undo.
 
@@ -1698,109 +1615,6 @@ def _apply_bulk_action(action: str, matches: List[Dict], bg: BackgroundTasks) ->
     # still branch on them before falling through to the "nothing to poll" path.
     return {"ok": True, "affected": len(before), "undo": undo,
             "job_id": None, "total": 0}
-
-
-def _filter_kwargs(f: RuleFilter) -> dict:
-    return {
-        "categories": f.categories,
-        "max_score": f.max_score,
-        "is_read": f.is_read,
-        "older_than_days": f.older_than_days,
-        "account": f.account,
-        "subject_keywords": f.subject_keywords,
-        "sender_keywords": f.sender_keywords,
-    }
-
-
-@app.post("/api/cleanup/rules/preview")
-def cleanup_rule_preview(filter: RuleFilter, limit: int = 100,
-                         locale: str = Depends(get_locale)):
-    """Return rich aggregates + a sample of messages that match a filter
-    spec. The Rules tab uses this to surface every signal a user might want
-    before committing to a destructive action: the total, the most recent
-    matches (highest false-positive risk), the top senders inside the
-    selection, the date span, and a per-account breakdown.
-    """
-    _reject_empty_filter(filter, locale)
-    matches = db.find_by_filter(**_filter_kwargs(filter))
-
-    # Sort by date descending so the preview shows the most recent matches
-    # first — that's where "wait, I actually want to keep this" hits.
-    def _sort_key(m):
-        dt = db._parse_email_date(m.get("date_received") or "")
-        return dt.timestamp() if dt is not None else 0
-    matches_sorted = sorted(matches, key=_sort_key, reverse=True)
-
-    cap = max(1, min(int(limit), 500))
-    sample = []
-    for m in matches_sorted[:cap]:
-        sample.append({
-            "int_id": m.get("int_id"),
-            "message_id": m["message_id"],
-            "sender": m["sender"],
-            "subject": m["subject"],
-            "date_received": m["date_received"],
-            "account_email": m["account_email"],
-            "category": m["category"],
-            "importance_score": m["importance_score"],
-            "is_read": bool(m["is_read"]),
-        })
-
-    unread = sum(1 for m in matches if not m["is_read"])
-    accounts: Dict[str, int] = {}
-    for m in matches:
-        accounts[m["account_email"]] = accounts.get(m["account_email"], 0) + 1
-
-    # Top senders inside this rule's selection.
-    senders_count: Dict[str, Dict] = {}
-    for m in matches:
-        display, addr = db._canonical_sender(m["sender"] or "")
-        if not addr:
-            continue
-        bucket = senders_count.setdefault(addr, {"email": addr, "count": 0, "name": ""})
-        bucket["count"] += 1
-        if display and not bucket["name"]:
-            bucket["name"] = display
-    top_senders = sorted(senders_count.values(), key=lambda x: x["count"], reverse=True)[:6]
-
-    # Date span: oldest and newest match.
-    date_oldest = None
-    date_newest = None
-    for m in matches:
-        dt = db._parse_email_date(m.get("date_received") or "")
-        if dt is None:
-            continue
-        if date_oldest is None or dt < date_oldest:
-            date_oldest = dt
-        if date_newest is None or dt > date_newest:
-            date_newest = dt
-
-    return {
-        "total": len(matches),
-        "unread": unread,
-        "by_account": accounts,
-        "sample": sample,
-        "top_senders": top_senders,
-        "date_oldest": date_oldest.isoformat() if date_oldest else None,
-        "date_newest": date_newest.isoformat() if date_newest else None,
-    }
-
-
-@app.post("/api/cleanup/rules/run")
-@limiter.limit("60/minute")
-def cleanup_rule_run(request: Request, req: RuleRunReq, bg: BackgroundTasks,
-                     locale: str = Depends(get_locale)):
-    """Apply a rule's action (delete | mark_read) to every match. Undoable —
-    see _apply_bulk_action. A filter that narrows nothing is refused before
-    anything is touched: it used to match the entire mailbox.
-    """
-    _reject_empty_filter(req.filter, locale)
-    matches = db.find_by_filter(**_filter_kwargs(req.filter))
-    if not matches:
-        return {"ok": True, "affected": 0, "undo": None, "job_id": None, "total": 0}
-    return _apply_bulk_action(req.action, matches, bg)
-
-
 # ── Unsubscribe (RFC 2369 + RFC 8058) ─────────────────────────────────────────
 
 def _run_header_backfill(job_id: str, account: Optional[str]):
@@ -1869,19 +1683,31 @@ def _run_header_backfill(job_id: str, account: Optional[str]):
     db.set_kv("unsubscribe_backfill_done_at", _now_iso())
 
 
-def _run_unsubscribe_job(job_id: str, plan: List[Dict]):
-    """Execute a sequence of steps for one or more sender unsubscriptions.
-    Each step is one of:
-      - {"kind": "http_post", "sender": str, "url": str, "account": Optional[str]}
-      - {"kind": "imap_trash", "account_email": str, "uid": str, "message_id": str}
-    The HTTP step bumps the job and stamps `unsubscribed_at` on success.
-    The IMAP trash step is a per-UID move using the existing batch helper.
-    """
-    from src.email_fetcher import unsubscribe_http, batch_move_to_trash
+def _purge_sender(sender: str, account: Optional[str]) -> List[int]:
+    """Move every live message from `sender` to the trash, queued.
 
-    # Group trash steps by account so we still benefit from one connection.
-    trash_groups: Dict[str, List[str]] = {}
-    trash_msg_ids: Dict[Tuple[str, str], str] = {}
+    Returns the affected int_ids. The queue owns the IMAP side, drains it one
+    connection per account, and holds it long enough to be cancelled — the
+    same path the suggestion cards use.
+    """
+    matches = db.find_by_sender(sender, account=account)
+    ids = [m["int_id"] for m in matches if m.get("folder") != "deleted"]
+    if not ids:
+        return []
+    db.bulk_set_folder_tx(ids, "deleted",
+                          trash_delay_seconds=_CLEANUP_UNDO_DELAY_SECONDS)
+    return ids
+
+
+def _run_unsubscribe_job(job_id: str, plan: List[Dict]):
+    """POST the unsubscribe endpoint for each sender in the plan.
+
+    Each step is {"kind": "http_post", "sender", "url", "account"}. Deleting
+    the sender's existing mail is not part of the job: it goes through the
+    offline mutation queue, which already batches per account and can be
+    taken back.
+    """
+    from src.email_fetcher import unsubscribe_http
 
     for step in plan:
         kind = step.get("kind")
@@ -1894,51 +1720,16 @@ def _run_unsubscribe_job(job_id: str, plan: List[Dict]):
                 try:
                     db.mark_sender_unsubscribed(sender, account=account)
                 except Exception as e:
+                    # The POST went through but we failed to record it, so the
+                    # sender comes back on the next mount as if nothing had
+                    # happened. Reporting this as a success told the user they
+                    # had unsubscribed and then contradicted itself a minute
+                    # later; report the failure instead.
                     logger.warning(f"unsubscribe DB stamp for {sender} failed: {e}")
-            else:
+                    ok = False
+            elif not ok:
                 logger.info(f"unsubscribe POST {sender}: status={status} err={err}")
             _bump_job(job_id, ok)
-        elif kind == "imap_trash":
-            ae = step["account_email"]
-            uid = step["uid"]
-            trash_groups.setdefault(ae, []).append(uid)
-            trash_msg_ids[(ae, uid)] = step.get("message_id", "")
-
-    # Execute trash batches now (one connection per account).
-    for account_email, uids in trash_groups.items():
-        acc = _account_for(account_email)
-        if not acc:
-            for _ in uids:
-                _bump_job(job_id, False)
-            continue
-        try:
-            batch_move_to_trash(acc, uids, on_each=lambda _u, ok: _bump_job(job_id, ok))
-        except Exception as e:
-            logger.error(f"[{account_email}] unsubscribe trash batch crashed: {e}")
-
-
-@app.get("/api/cleanup/unsubscribe/senders")
-def cleanup_unsubscribe_senders(account: Optional[str] = None):
-    return db.unsubscribe_senders(account=account)
-
-
-@app.get("/api/cleanup/unsubscribe/stats")
-def cleanup_unsubscribe_stats(account: Optional[str] = None):
-    """Numbers for the status banner: how many rows still need a header
-    backfill, how many already have an unsubscribe link, and when the last
-    backfill ran."""
-    missing = db.count_emails_missing_headers(account=account)
-    senders = db.unsubscribe_senders(account=account)
-    with_header_rows = sum(s["total"] for s in senders)
-    last_backfill = db.get_kv("unsubscribe_backfill_done_at")
-    return {
-        "with_header": with_header_rows,
-        "without_header": missing,
-        "senders_with_link": len(senders),
-        "last_backfill_at": last_backfill,
-    }
-
-
 @app.post("/api/cleanup/unsubscribe/backfill")
 def cleanup_unsubscribe_backfill(account: Optional[str] = None, bg: BackgroundTasks = None):
     rows = db.find_uids_missing_headers(account)
@@ -2010,23 +1801,11 @@ def cleanup_unsubscribe(request: Request, req: UnsubscribeReq, bg: BackgroundTas
         "account": req.account,
     })
 
-    # Optional purge: gather all UIDs of this sender (live mails only) and
-    # add IMAP trash steps to the same job. DB-side folder is updated
-    # synchronously so the UI flips immediately.
-    purge_total = 0
-    if req.purge:
-        matches = db.find_by_sender(req.sender, account=req.account)
-        live = [m for m in matches if m["folder"] != "deleted" and m.get("uid")]
-        if live:
-            db.bulk_set_folder([m["message_id"] for m in live], "deleted")
-            for m in live:
-                plan.append({
-                    "kind": "imap_trash",
-                    "account_email": m["account_email"],
-                    "uid": m["uid"],
-                    "message_id": m["message_id"],
-                })
-            purge_total = len(live)
+    # Optional purge. Goes through the transactional queue like every other
+    # deletion in the app: it moves the rows and queues their IMAP ops itself.
+    # Adding hand-built trash steps to the job on top of that would move each
+    # message twice.
+    purge_total = len(_purge_sender(req.sender, req.account))
 
     total = len(plan)
     job_id = _make_job("unsubscribe", f"unsubscribe:{req.sender}", total)
@@ -2081,17 +1860,7 @@ def cleanup_unsubscribe_bulk(request: Request, req: UnsubscribeBulkReq, bg: Back
             "account": req.account,
         })
         if req.purge:
-            matches = db.find_by_sender(sender, account=req.account)
-            live = [m for m in matches if m["folder"] != "deleted" and m.get("uid")]
-            if live:
-                db.bulk_set_folder([m["message_id"] for m in live], "deleted")
-                for m in live:
-                    plan.append({
-                        "kind": "imap_trash",
-                        "account_email": m["account_email"],
-                        "uid": m["uid"],
-                        "message_id": m["message_id"],
-                    })
+            _purge_sender(sender, req.account)
 
     if not plan:
         return {"ok": True, "job_id": None, "total": 0, "skipped": skipped}
@@ -2749,96 +2518,6 @@ def diagnostics():
         },
         "log_tail": log_tail,
     }
-
-
-# ── Custom cleanup rules ──────────────────────────────────────────────────────
-
-class CustomRuleBody(BaseModel):
-    name: str
-    description: str = ""
-    icon: str = "filter"
-    accent: str = "var(--accent)"
-    filter: dict = {}
-    actions: List[str] = ["mark_read"]
-    enabled: bool = True
-
-
-class CustomRulePatch(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    icon: Optional[str] = None
-    accent: Optional[str] = None
-    filter: Optional[dict] = None
-    actions: Optional[List[str]] = None
-    enabled: Optional[bool] = None
-    position: Optional[int] = None
-
-
-@app.get("/api/cleanup/custom-rules")
-def list_custom_rules():
-    return db.get_custom_rules()
-
-
-def _reject_empty_rule_dict(raw: dict, locale: str) -> None:
-    """Same guard as _reject_empty_filter, for the loosely-typed `filter` dict
-    a custom rule carries. Applied at write time so a rule that would select
-    the whole mailbox can never be stored in the first place."""
-    try:
-        parsed = RuleFilter(**(raw or {}))
-    except Exception:
-        raise HTTPException(400, tr("cleanup.rule.invalid", locale))
-    if not _filter_constrains_anything(parsed):
-        raise HTTPException(400, tr("cleanup.rule.no_filter", locale))
-
-
-@app.post("/api/cleanup/custom-rules", status_code=201)
-def create_custom_rule(body: CustomRuleBody, locale: str = Depends(get_locale)):
-    _reject_empty_rule_dict(body.filter, locale)
-    rule_id = db.create_custom_rule(
-        name=body.name.strip() or "Sans titre",
-        description=body.description,
-        icon=body.icon or "filter",
-        accent=body.accent or "var(--accent)",
-        filter_json=json.dumps(body.filter),
-        actions_json=json.dumps(body.actions),
-    )
-    rules = db.get_custom_rules()
-    created = next((r for r in rules if r["id"] == rule_id), None)
-    return created or {"id": rule_id}
-
-
-@app.patch("/api/cleanup/custom-rules/{rule_id}")
-def patch_custom_rule(rule_id: int, body: CustomRulePatch, locale: str = Depends(get_locale)):
-    fields: dict = {}
-    if body.name is not None:
-        fields["name"] = body.name.strip() or "Sans titre"
-    if body.description is not None:
-        fields["description"] = body.description
-    if body.icon is not None:
-        fields["icon"] = body.icon
-    if body.accent is not None:
-        fields["accent"] = body.accent
-    if body.filter is not None:
-        _reject_empty_rule_dict(body.filter, locale)
-        fields["filter_json"] = json.dumps(body.filter)
-    if body.actions is not None:
-        fields["actions_json"] = json.dumps(body.actions)
-    if body.enabled is not None:
-        fields["enabled"] = 1 if body.enabled else 0
-    if body.position is not None:
-        fields["position"] = body.position
-    if not fields:
-        raise HTTPException(400, tr("cleanup.no_field_to_update", locale))
-    db.update_custom_rule(rule_id, **fields)
-    return {"ok": True}
-
-
-@app.delete("/api/cleanup/custom-rules/{rule_id}")
-def remove_custom_rule(rule_id: int):
-    db.delete_custom_rule(rule_id)
-    return {"ok": True}
-
-
 # ── Setup wizard router ──────────────────────────────────────────────────────
 # Mounted late so it inherits the same FastAPI instance. Imported here (not
 # at module top) to avoid pulling lifecycle/yaml at api.py import time when

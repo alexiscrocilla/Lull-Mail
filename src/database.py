@@ -298,20 +298,26 @@ def init_db():
         if "images_trusted" not in sc_cols:
             con.execute("ALTER TABLE sender_cache ADD COLUMN images_trusted INTEGER DEFAULT 0")
 
-        # User-defined cleanup rules ("plugins").
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS custom_rules (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                name         TEXT    NOT NULL,
-                description  TEXT    DEFAULT '',
-                icon         TEXT    DEFAULT 'filter',
-                accent       TEXT    DEFAULT 'var(--accent)',
-                filter_json  TEXT    NOT NULL DEFAULT '{}',
-                actions_json TEXT    NOT NULL DEFAULT '["mark_read"]',
-                enabled      INTEGER DEFAULT 1,
-                position     INTEGER DEFAULT 0
-            )
-        """)
+        # User-defined cleanup rules used to live in `custom_rules`. They were
+        # never applied: nothing outside the CRUD endpoints ever read the
+        # table, so a "rule" was a saved filter the user had to come back and
+        # run by hand, behind a form with 48 controls. The rows are renamed
+        # rather than dropped — somebody spent time on them — and the count is
+        # kept so the page can say once that they are gone.
+        tables = {r["name"] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "custom_rules" in tables and "custom_rules_removed_v1" not in tables:
+            n = con.execute("SELECT COUNT(*) FROM custom_rules").fetchone()[0]
+            con.execute("ALTER TABLE custom_rules RENAME TO custom_rules_removed_v1")
+            if n:
+                con.execute(
+                    "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+                    ("cleanup.migrated_rules", str(n)),
+                )
+                logger.info("%d règle(s) personnalisée(s) retirée(s) : elles ne "
+                            "se déclenchaient jamais seules", n)
+        elif "custom_rules" in tables:
+            con.execute("DROP TABLE custom_rules")
 
         # Attachments (security-aware: every row carries the threat
         # classification the fetcher computed at ingest, so the API can
@@ -2024,113 +2030,6 @@ def find_by_sender(sender_email: str, account: Optional[str] = None) -> List[Dic
         params.append(account)
     with _conn() as con:
         return [dict(r) for r in con.execute(q, params).fetchall()]
-
-
-def find_by_filter(
-    *,
-    categories: Optional[List[str]] = None,
-    max_score: Optional[int] = None,
-    is_read: Optional[bool] = None,
-    older_than_days: Optional[int] = None,
-    account: Optional[str] = None,
-    subject_keywords: Optional[List[str]] = None,
-    sender_keywords: Optional[List[str]] = None,
-    limit: Optional[int] = None,
-) -> List[Dict]:
-    """Return live (non-trashed) messages matching a filter spec.
-
-    All fields combine with AND. Within subject_keywords / sender_keywords,
-    values are OR'd (any match is sufficient). Date filtering happens in
-    Python because `date_received` is stored as the raw RFC 2822 header
-    string (strings don't sort by date). Everything else is pushed to SQL.
-    """
-    q = """
-        SELECT int_id, message_id, account_email, uid, sender, subject,
-               date_received, category, importance_score, is_read, folder
-        FROM emails
-        WHERE folder != 'deleted'
-    """
-    params: list = []
-    if categories:
-        placeholders = ",".join("?" for _ in categories)
-        q += f" AND category IN ({placeholders})"
-        params.extend(categories)
-    if is_read is not None:
-        q += " AND is_read = ?"
-        params.append(1 if is_read else 0)
-    if max_score is not None:
-        q += " AND importance_score <= ? AND category != 'pending'"
-        params.append(int(max_score))
-    if account:
-        q += " AND account_email = ?"
-        params.append(account)
-    # subject_keywords and sender_keywords are combined with OR between them
-    # (an email matches if ANY subject keyword OR ANY sender keyword matches).
-    # This is more intuitive for plugin-style rules where both fields identify
-    # the same category of emails via different signals.
-    if subject_keywords or sender_keywords:
-        parts = []
-        if subject_keywords:
-            sub_clauses = " OR ".join("LOWER(subject) LIKE ?" for _ in subject_keywords)
-            parts.append(f"({sub_clauses})")
-            params.extend(f"%{kw.lower()}%" for kw in subject_keywords)
-        if sender_keywords:
-            snd_clauses = " OR ".join("LOWER(sender) LIKE ?" for _ in sender_keywords)
-            parts.append(f"({snd_clauses})")
-            params.extend(f"%{kw.lower()}%" for kw in sender_keywords)
-        q += f" AND ({' OR '.join(parts)})"
-
-    with _conn() as con:
-        rows = con.execute(q, params).fetchall()
-
-    if older_than_days is not None and older_than_days > 0:
-        from datetime import datetime, timedelta, timezone
-        cutoff = datetime.now(timezone.utc) - timedelta(days=int(older_than_days))
-        filtered = []
-        for r in rows:
-            dt = _parse_email_date(r["date_received"])
-            # If the date is unparseable we err on the safe side and skip
-            # (don't auto-delete unknown-age messages).
-            if dt is not None and dt < cutoff:
-                filtered.append(r)
-        rows = filtered
-
-    out = [dict(r) for r in rows]
-    if limit is not None and limit > 0:
-        out = out[: int(limit)]
-    return out
-
-
-def bulk_set_folder(message_ids: List[str], folder: str):
-    if not message_ids:
-        return 0
-    total = 0
-    with _conn() as con:
-        for batch in _chunks(list(message_ids)):
-            placeholders = ",".join("?" for _ in batch)
-            cur = con.execute(
-                f"UPDATE emails SET folder = ? WHERE message_id IN ({placeholders})",
-                (folder, *batch),
-            )
-            total += cur.rowcount
-    return total
-
-
-def bulk_mark_read(message_ids: List[str], is_read: bool):
-    if not message_ids:
-        return 0
-    total = 0
-    with _conn() as con:
-        for batch in _chunks(list(message_ids)):
-            placeholders = ",".join("?" for _ in batch)
-            cur = con.execute(
-                f"UPDATE emails SET is_read = ? WHERE message_id IN ({placeholders})",
-                (1 if is_read else 0, *batch),
-            )
-            total += cur.rowcount
-    return total
-
-
 # ── Unsubscribe (RFC 2369 + RFC 8058) ─────────────────────────────────────────
 
 # `List-Unsubscribe` is a comma-separated list of `<…>` entries; we want the
@@ -2548,48 +2447,6 @@ def set_sender_trusted_for_images(domain: str, trusted: bool) -> None:
                 images_trusted = excluded.images_trusted,
                 updated_at     = excluded.updated_at
         """, (domain.lower(), flag))
-
-
-# ── Custom rules ("plugins") ──────────────────────────────────────────────────
-
-def get_custom_rules() -> List[Dict]:
-    with _conn() as con:
-        rows = con.execute(
-            "SELECT * FROM custom_rules ORDER BY position ASC, id ASC"
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def create_custom_rule(name: str, description: str, icon: str, accent: str,
-                       filter_json: str, actions_json: str) -> int:
-    with _conn() as con:
-        pos = con.execute("SELECT COALESCE(MAX(position)+1, 0) FROM custom_rules").fetchone()[0]
-        cur = con.execute(
-            """INSERT INTO custom_rules (name, description, icon, accent, filter_json, actions_json, position)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (name, description, icon, accent, filter_json, actions_json, pos),
-        )
-        return cur.lastrowid
-
-
-def update_custom_rule(rule_id: int, **fields) -> bool:
-    allowed = {"name", "description", "icon", "accent", "filter_json", "actions_json", "enabled", "position"}
-    updates = {k: v for k, v in fields.items() if k in allowed}
-    if not updates:
-        return False
-    set_clause = ", ".join(f"{k} = ?" for k in updates)
-    params = list(updates.values()) + [rule_id]
-    with _conn() as con:
-        con.execute(f"UPDATE custom_rules SET {set_clause} WHERE id = ?", params)
-    return True
-
-
-def delete_custom_rule(rule_id: int) -> bool:
-    with _conn() as con:
-        con.execute("DELETE FROM custom_rules WHERE id = ?", (rule_id,))
-    return True
-
-
 # ── Attachments ───────────────────────────────────────────────────────────────
 
 def insert_attachment(

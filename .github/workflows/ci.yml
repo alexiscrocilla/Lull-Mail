@@ -59,6 +59,23 @@ jobs:
         working-directory: frontend
         run: pnpm quality
 
+      # The cleanup rules engine was removed because nothing ever ran it: a
+      # "rule" was a saved filter behind a 48-control form that the user had
+      # to come back and trigger by hand. Reintroducing any of these symbols
+      # would bring back the empty-filter hazard the card ids were designed
+      # to retire, so fail here rather than in review.
+      - name: No trace of the retired rules engine
+        shell: bash
+        run: |
+          set -e
+          patterns='find_by_filter|RuleFilter|RuleRunReq|CustomRuleBody|CustomRulePatch|cleanup/rules/(preview|run)|cleanup/custom-rules|db\.bulk_set_folder\(|db\.bulk_mark_read\('
+          if grep -rEn "$patterns" src frontend --include='*.py' --include='*.js' \
+               | grep -v 'custom_rules_removed_v1'; then
+            echo "::error::the cleanup rules engine is back; see the commit that removed it"
+            exit 1
+          fi
+          echo "clean"
+
   browser:
     needs: test
     runs-on: windows-latest

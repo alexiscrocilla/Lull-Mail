@@ -155,7 +155,11 @@ export async function mountCleanup(host, opts = {}) {
     // mailbox the queue can sit at thousands while the mail already read
     // produces perfectly good suggestions.
     let html = '';
-    if (window.aiEnabled === false) {
+    if (payload.migrated_rules > 0) {
+      html =
+        `<span>${escapeHtml(t('cleanup.migrated', { n: payload.migrated_rules }))}</span>` +
+        `<button type="button" class="cln-banner-btn" id="cln-migrated-ok">${escapeHtml(t('cleanup.hide'))}</button>`;
+    } else if (window.aiEnabled === false) {
       html = escapeHtml(t('cleanup.banner.noai'));
     } else if (payload.analysing > 0 && payload.cards.length) {
       html = escapeHtml(t('cleanup.banner.analysing', { n: payload.analysing }));
@@ -169,6 +173,10 @@ export async function mountCleanup(host, opts = {}) {
     bannerEl.innerHTML = html;
     bannerEl.hidden = !html;
     bannerEl.querySelector('#cln-scan')?.addEventListener('click', runHeaderScan);
+    bannerEl.querySelector('#cln-migrated-ok')?.addEventListener('click', async () => {
+      try { render((await api.hideCleanupCard('migrated_rules')).suggestions); }
+      catch (_) { bannerEl.hidden = true; }
+    });
   }
 
   function render(payload) {

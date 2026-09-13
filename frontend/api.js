@@ -390,24 +390,6 @@ export const api = {
   // section — the call threw before its .catch(() => null) could attach.
   getDashboard(requestOptions = {}) { return j('/api/dashboard/status', requestOptions); },
 
-  getTopSenders(params = {}) {
-    const q = new URLSearchParams();
-    for (const [k, v] of Object.entries(params)) {
-      if (v === undefined || v === null || v === '') continue;
-      q.set(k, v);
-    }
-    const qs = q.toString();
-    return j(`/api/cleanup/senders${qs ? '?' + qs : ''}`);
-  },
-
-  cleanupSender(sender, action, account) {
-    return j('/api/cleanup/sender', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sender, action, account }),
-    });
-  },
-
   getCleanupJob(jobId) {
     return j(`/api/cleanup/jobs/${encodeURIComponent(jobId)}`);
   },
@@ -453,33 +435,6 @@ export const api = {
     });
   },
 
-  previewCleanupRule(filter, limit = 200) {
-    const qs = limit ? `?limit=${encodeURIComponent(limit)}` : '';
-    return j(`/api/cleanup/rules/preview${qs}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(filter),
-    });
-  },
-
-  runCleanupRule(filter, action) {
-    return j('/api/cleanup/rules/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filter, action }),
-    });
-  },
-
-  getUnsubscribeSenders(account) {
-    const qs = account ? `?account=${encodeURIComponent(account)}` : '';
-    return j(`/api/cleanup/unsubscribe/senders${qs}`);
-  },
-
-  getUnsubscribeStats(account) {
-    const qs = account ? `?account=${encodeURIComponent(account)}` : '';
-    return j(`/api/cleanup/unsubscribe/stats${qs}`);
-  },
-
   runHeaderBackfill(account) {
     const qs = account ? `?account=${encodeURIComponent(account)}` : '';
     return j(`/api/cleanup/unsubscribe/backfill${qs}`, { method: 'POST' });
@@ -509,30 +464,6 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ senders, account, purge }),
     });
-  },
-
-  getCustomRules() {
-    return j('/api/cleanup/custom-rules');
-  },
-
-  createCustomRule(body) {
-    return j('/api/cleanup/custom-rules', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  },
-
-  updateCustomRule(id, patch) {
-    return j(`/api/cleanup/custom-rules/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch),
-    });
-  },
-
-  deleteCustomRule(id) {
-    return j(`/api/cleanup/custom-rules/${id}`, { method: 'DELETE' });
   },
 
   triggerSync() {

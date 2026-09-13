@@ -361,5 +361,9 @@ def compute(account: Optional[str] = None) -> Dict[str, Any]:
         # commitment this app can actually honour.
         "unsubscribed_total": db.count_unsubscribed_senders(),
         "missing_headers": db.count_emails_missing_headers(account),
+        # Said once to anyone who had built custom rules, then dismissed like
+        # a card. Their rows are renamed, not dropped.
+        "migrated_rules": (0 if "migrated_rules" in dismissed
+                           else int(db.get_kv("cleanup.migrated_rules") or 0)),
         "mailbox": {"live": live, "unread": unread},
     }
