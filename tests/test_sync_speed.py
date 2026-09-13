@@ -607,3 +607,51 @@ def test_notify_new_mail_coalesces_into_one_targeted_fetch(fresh_app, monkeypatc
     assert _wait(lambda: len(calls) == 1, timeout=2)
     time.sleep(0.2)
     assert calls == [(("a@x.fr", "b@x.fr"), "idle")]
+
+
+def test_concurrent_claims_never_hand_out_the_same_row(fresh_app):
+    """Two claimers draining the same backlog must partition it, not share it.
+
+    The claim used to be a SELECT followed by a separate UPDATE inside one
+    `with _conn()` block. sqlite3's default isolation level opens a
+    transaction only before DML, so the SELECT ran in autocommit and two
+    threads could read the same rows before either wrote. Duplicated rows
+    are downloaded twice, and the second pass's attachment file is written
+    and then never served.
+
+    Only lot 4 makes this reachable — opening a message now claims the row
+    it hydrates — so the guard lands before the second claimer does.
+    """
+    import threading
+    from src import database as db
+
+    rows = 400
+    for uid in range(rows):
+        db.insert_email({**_em("u@x.fr", uid), "body_state": "envelope",
+                         "body_text": "", "body_html": ""})
+
+    seen: list = []
+    lock = threading.Lock()
+    start = threading.Event()
+
+    def drain():
+        start.wait()
+        while True:
+            got = db.claim_emails_for_body_hydration(limit=30, account="u@x.fr")
+            if not got:
+                return
+            with lock:
+                seen.extend(r["int_id"] for r in got)
+
+    workers = [threading.Thread(target=drain, name=f"claim-{i}") for i in range(2)]
+    for w in workers:
+        w.start()
+    start.set()
+    for w in workers:
+        w.join(timeout=30)
+        assert not w.is_alive(), "a claimer never finished"
+
+    assert len(seen) == rows, f"{len(seen)} claims handed out for {rows} rows"
+    assert len(set(seen)) == len(seen), (
+        f"{len(seen) - len(set(seen))} rows were handed to both claimers"
+    )

@@ -1523,29 +1523,38 @@ def bulk_set_read_tx(email_int_ids: List[int], is_read: bool) -> List[Dict]:
 # ── Body hydration queue primitives ──────────────────────────────────
 
 def claim_emails_for_body_hydration(limit: int = 20, account: Optional[str] = None) -> List[Dict]:
+    """Take up to `limit` rows that still need a body, marking them in flight.
+
+    One statement, not a SELECT followed by an UPDATE. sqlite3's default
+    isolation level opens a transaction only before DML, so the old shape
+    ran its SELECT in autocommit and two claimers could read the same rows
+    before either wrote — measured at 460 claims over 400 rows with two
+    threads. A duplicated row is downloaded twice and its second attachment
+    file is written and then never served (see `insert_attachment`).
+
+    The returned rows are post-update, so their `body_state` reads
+    'hydrating'. Callers use `uid` and `message_id` only.
+    """
     now_iso = datetime.now(timezone.utc).isoformat()
+    inner = """
+        SELECT int_id FROM emails
+        WHERE (body_state = 'envelope' OR (body_state = 'body_failed' AND (body_next_retry_at IS NULL OR body_next_retry_at <= ?)))
+          AND uid IS NOT NULL AND uid != ''
+          AND folder != 'deleted'
+    """
+    params: list = [now_iso]
+    if account:
+        inner += " AND account_email = ?"
+        params.append(account)
+    inner += " ORDER BY date_received_iso DESC LIMIT ?"
+    params.append(limit)
     with _conn() as con:
-        q = """
-            SELECT * FROM emails
-            WHERE (body_state = 'envelope' OR (body_state = 'body_failed' AND (body_next_retry_at IS NULL OR body_next_retry_at <= ?)))
-              AND uid IS NOT NULL AND uid != ''
-              AND folder != 'deleted'
-        """
-        params: list = [now_iso]
-        if account:
-            q += " AND account_email = ?"
-            params.append(account)
-        q += " ORDER BY date_received_iso DESC LIMIT ?"
-        params.append(limit)
-        rows = [dict(r) for r in con.execute(q, params).fetchall()]
-        if rows:
-            ids = [r["int_id"] for r in rows]
-            placeholders = ",".join("?" for _ in ids)
-            con.execute(
-                f"UPDATE emails SET body_state = 'hydrating', body_updated_at = datetime('now') WHERE int_id IN ({placeholders})",
-                ids,
-            )
-        return rows
+        rows = con.execute(
+            "UPDATE emails SET body_state = 'hydrating', body_updated_at = datetime('now') "
+            f"WHERE int_id IN ({inner}) RETURNING *",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def claim_single_email_for_hydration(int_id: int) -> Optional[Dict]:
