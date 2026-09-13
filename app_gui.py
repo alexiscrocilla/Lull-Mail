@@ -634,6 +634,14 @@ def main() -> int:
                 tray.stop()   # else the icon can linger in the tray after exit
             except Exception:  # noqa: BLE001
                 pass
+        # Before stop(), not from a shutdown hook: uvicorn drains open
+        # connections first and runs lifespan shutdown after, so an open
+        # event stream is exactly what stops the drain from finishing.
+        try:
+            from src.events import hub as event_hub
+            event_hub.close_all()
+        except Exception:  # noqa: BLE001 — quitting must not fail on this
+            pass
         server.stop()
         lifecycle.stop_email_services()
         server.join(timeout=3.0)

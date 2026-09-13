@@ -455,7 +455,6 @@ def get_status() -> Dict[str, Any]:
         "analysis": snap["analysis"],
         "accounts": snap["accounts"],
         "push": snap["push"],
-        "revision": snap["revision"],
     }
 
 

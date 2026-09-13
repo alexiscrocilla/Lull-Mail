@@ -232,3 +232,41 @@ def test_status_changes_are_coalesced_into_at_most_four_frames_a_second(fresh_ap
         hub.close_all()
 
     asyncio.run(scenario())
+
+
+# ── the route ────────────────────────────────────────────────────────────────
+#
+# The stream itself is exercised end to end by the Playwright suite, against
+# the real server. TestClient parks on a response that never ends, so what is
+# asserted here is the property a live test cannot see: that the stream and
+# the poll describe the same world. The poll is the stream's fallback, and two
+# builders would drift.
+
+
+def test_the_stream_and_the_poll_are_built_from_one_payload(client):
+    from src import api
+
+    polled = client.get("/api/sync/status").json()
+    pushed = api._sync_snapshot()
+
+    assert pushed == polled, "the pushed snapshot and the polled one differ"
+    for key in ("running", "fetching", "analysing", "phase", "accounts",
+                "queue_pending", "pending_ops", "fetch", "analysis"):
+        assert key in pushed
+
+
+def test_the_hub_snapshot_provider_is_wired_to_that_payload(client):
+    """Registered at import, so a `sync` frame cannot carry something else."""
+    from src import api
+    from src.events import hub
+
+    assert hub.snapshot() == api._sync_snapshot()
+
+
+def test_the_stream_refuses_to_open_past_the_cap(client, monkeypatch):
+    """A GET route gets no origin check and no rate limit; the cap is the brake."""
+    from src import events
+
+    monkeypatch.setattr(events.hub, "subscribe", lambda loop: None)
+    r = client.get("/api/events")
+    assert r.status_code == 503

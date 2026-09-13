@@ -70,7 +70,12 @@ def main():
     app.state.bound_port = port
 
     logger.info(f"Dashboard : http://localhost:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    # A parked event stream keeps a non-daemon worker alive, and the
+    # interpreter joins it forever at exit, so Ctrl-C would need a second
+    # press. This entry point owns the signal handler and cannot reach the
+    # hub, so the drain timeout is the only lever it has.
+    uvicorn.run(app, host=host, port=port, log_level="warning",
+                timeout_graceful_shutdown=2)
 
 
 if __name__ == "__main__":

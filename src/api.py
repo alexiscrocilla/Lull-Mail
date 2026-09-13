@@ -95,6 +95,15 @@ def _frontend_dir() -> Path:
 
 FRONTEND = _frontend_dir()
 
+# Wire the event hub to the two things it must not import: how to build the
+# status payload, and when the sync machinery changed. Both are late-bound
+# so `src/events.py` stays free of a scheduler or API import.
+from src.events import hub as _event_hub  # noqa: E402
+from src.sync_progress import progress as _sync_board  # noqa: E402
+
+_event_hub.set_snapshot_provider(lambda: _sync_snapshot())
+_sync_board.set_on_change(_event_hub.mark_dirty)
+
 
 # ── Models ────────────────────────────────────────────────────────────────────
 
@@ -2043,13 +2052,18 @@ def _sqlite_utc_to_iso(value: Optional[str]) -> Optional[str]:
     return s
 
 
-@app.get("/api/sync/status")
-def sync_status():
-    """Polled every 3 s by the rail (rail-toast.js) and every 5 s by the
-    mailbox while a pass runs. Cheap: an in-memory progress snapshot, two
-    COUNTs and the (tiny) sync_state table. Per account it says what is
-    happening right now (phase), when the last successful fetch was, whether
-    the account is paused after errors, and whether IMAP IDLE is live."""
+def _sse(seq: int, event: str, data) -> bytes:
+    return (f"id: {seq}\nevent: {event}\n"
+            f"data: {json.dumps(data, ensure_ascii=False, default=str)}\n\n").encode("utf-8")
+
+
+def _sync_snapshot() -> dict:
+    """The status payload, built once and shared.
+
+    `GET /api/sync/status` and the stream must return the same thing: the
+    poll is the stream's fallback, and two builders would eventually
+    describe two different worlds.
+    """
     from datetime import datetime as _dt, timezone as _tz
     from src.scheduler import get_status
 
@@ -2094,6 +2108,82 @@ def sync_status():
     status["queue_pending"] = db.count_pending()
     status["pending_ops"] = db.count_pending_ops()
     return status
+
+
+@app.get("/api/sync/status")
+def sync_status():
+    """The stream's fallback, and the only lever a client has when it fails.
+
+    Kept on purpose even though nothing polls it at rest any more: an
+    EventSource that cannot open has to have somewhere to go, and the
+    payload is the same one the stream pushes.
+    """
+    return _sync_snapshot()
+
+
+# ── Event stream ─────────────────────────────────────────────────────────────
+# One long-lived connection replaces the polling the window used to do. The
+# route is `async def` on purpose: Starlette iterates a sync generator through
+# the thread pool, one task per frame, and a generator parked waiting for an
+# event holds one of the pool's forty slots for the whole park. Forty parked
+# streams and the server answers nothing at all, with no warning before that.
+
+
+@app.get("/api/events")
+async def event_stream(request: Request):
+    """Push what changed, instead of being asked twenty-three times a minute.
+
+    Deliberately not rate-limited. A non-2xx puts EventSource in its closed
+    state with no retry at all, so a 429 on a reconnect burst would leave
+    the window permanently blind — strictly worse than the polling this
+    replaces, which always recovered on the next tick. The subscriber cap in
+    the hub is the brake instead.
+    """
+    import asyncio
+
+    from src.events import KEEPALIVE, KEEPALIVE_SECONDS, hub
+
+    loop = asyncio.get_running_loop()
+    hub.start_ticker(loop)
+    sub = hub.subscribe(loop)
+    if sub is None:
+        raise HTTPException(503, "Trop de flux ouverts")
+
+    last_id = request.headers.get("last-event-id")
+    run_id = request.query_params.get("run")
+    missed = hub.replay_since(last_id, run_id)
+
+    async def gen():
+        try:
+            yield _sse(0, "hello", {"run_id": hub.run_id, "snapshot": _sync_snapshot()})
+            if missed:
+                for frame in missed:
+                    yield frame
+            elif missed is None and last_id:
+                # The client had a cursor we cannot honour: a restart, or a
+                # gap longer than the ring. Say so rather than resume and
+                # leave it quietly wrong.
+                yield _sse(0, "resync", {"reason": "gap", "snapshot": _sync_snapshot()})
+            while True:
+                try:
+                    frame = await asyncio.wait_for(sub.queue.get(), KEEPALIVE_SECONDS)
+                except asyncio.TimeoutError:
+                    # Writing this is what discovers a peer that went away
+                    # without closing; on a quiet mailbox nothing else would.
+                    yield KEEPALIVE
+                    continue
+                if frame is None:
+                    return  # close_all, or a subscriber that fell too far behind
+                yield frame
+        finally:
+            hub.unsubscribe(sub)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                 "Connection": "keep-alive"},
+    )
 
 
 # ── Local LLM management ─────────────────────────────────────────────────────

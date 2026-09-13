@@ -155,7 +155,10 @@ def main() -> None:
         return {"ok": True}
 
     app.state.bound_port = port
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    # Same reason as main.py: a parked stream must not keep the test
+    # server alive past the run that started it.
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning",
+                timeout_graceful_shutdown=2)
 
 
 if __name__ == "__main__":
