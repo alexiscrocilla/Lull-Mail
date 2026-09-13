@@ -59,9 +59,11 @@ and registers the app in *Installed apps* for clean uninstallation.
   when something genuinely urgent lands. For everything else,
   radio silence. Your phone gets to be a phone again.
 
-- **Cleans up continuously.** Detects newsletters you haven't read
-  in months. Spots the unsubscribe link in one click. Suggests
-  automatic rules: move, mark read, delete.
+- **Cleans up in one click.** The Cleanup page is a short list of
+  things worth doing, computed from your mailbox: unsubscribe from
+  the lists you never open, bin the spam, clear the old newsletters
+  you already read. One sentence, one number, one button each, and
+  everything is undoable. Nothing to configure.
 
 - **Multi-account.** Gmail, Outlook/Microsoft 365, iCloud, Yahoo,
   ProtonMail (via Bridge), and any standard IMAP server.
@@ -74,8 +76,9 @@ and registers the app in *Installed apps* for clean uninstallation.
 ## What Lull Mail is NOT
 
 - **Not a new email client.** Keep using Outlook, Gmail Web, Apple
-  Mail. Lull Mail works alongside them, read-only on your mailboxes
-  (unless you authorise it to apply rules).
+  Mail. Lull Mail works alongside them and only ever writes to your
+  mailboxes when you press a button — marking read, moving to the
+  trash, unsubscribing.
 
 - **Not a new address.** It plugs into your existing accounts.
 
