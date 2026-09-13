@@ -9,6 +9,8 @@ import {
 import { rewriteRemoteImages, senderDomain } from '/static/image-blocker.js';
 import { confirmAsync } from '/static/confirm.js';
 import { LatestRequest } from '/static/request-latest.js';
+import { dropOperator, freeText, isExpressible, readOperator, setOperator, tokens }
+  from '/static/search-query.js';
 
 // Build the HTML <body> block for an email — sandboxed iframe with the
 // remote-image blocker applied unless the sender is trusted. Includes a
@@ -191,14 +193,6 @@ export function printOpenEmail() {
   return true;
 }
 window.printOpenEmail = printOpenEmail;
-
-// The `after:` example in the search help is a working "last 30 days", not
-// a date from a year that has already passed. The parser also accepts
-// dd/mm/yyyy, which is what the `before:` example shows.
-function _thirtyDaysAgo() {
-  const d = new Date(Date.now() - 30 * 86400000);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
 
 function autoSizeBodyIframe(iframe) {
   if (!iframe) return;
@@ -722,37 +716,54 @@ export async function mountMailbox(host, _opts) {
           <div class="mb-search-input">
             <i data-lucide="search" class="icn w-4 h-4"></i>
             <input type="text" id="search" data-role="search" placeholder="${t('mb.search.placeholder')}" aria-label="${t('mb.search.label')}" />
-            <!-- Replaces a permanent row of three controls that filtered
-                 nothing: two of them spliced a literal operator into this
-                 very field and the third appended an after: date. Native
-                 <details>, so it is in the tab order, Enter and Space work,
-                 the browser owns aria-expanded, and it needs no
-                 outside-click listener. Placed right after the input so a
-                 user who pressed "/" reaches it with one Tab. -->
-            <details class="mb-search-help">
-              <summary aria-label="${t('mb.search.help_open')}" title="${t('mb.search.help_open')}">?</summary>
-              <div class="mb-search-help-panel" role="note">
-                <p class="mb-search-help-scope">${t('mb.search.help_scope')}</p>
-                <dl>
-                  <dt><code>from:marie@exemple.fr</code></dt><dd>${t('mb.search.help_from')}</dd>
-                  <dt><code>from:"Marie Dupont"</code></dt><dd>${t('mb.search.help_from_name')}</dd>
-                  <dt><code>subject:facture</code></dt><dd>${t('mb.search.help_subject')}</dd>
-                  <dt><code>is:unread</code></dt><dd>${t('mb.search.help_unread')}</dd>
-                  <dt><code>is:starred</code></dt><dd>${t('mb.search.help_starred')}</dd>
-                  <dt><code>has:attachment</code></dt><dd>${t('mb.search.help_attachment')}</dd>
-                  <dt><code>in:sent</code></dt><dd>${t('mb.search.help_in')}</dd>
-                  <dt><code>label:Clients</code></dt><dd>${t('mb.search.help_label')}</dd>
-                  <dt><code>category:newsletter</code></dt><dd>${t('mb.search.help_category')}</dd>
-                  <dt><code>after:${_thirtyDaysAgo()}</code></dt><dd>${t('mb.search.help_after')}</dd>
-                  <dt><code>before:01/03/2026</code></dt><dd>${t('mb.search.help_before')}</dd>
-                  ${window.aiEnabled ? `
-                  <dt><code>is:needs_reply</code></dt><dd>${t('mb.search.help_reply')}</dd>
-                  <dt><code>min_score:7</code></dt><dd>${t('mb.search.help_score')}</dd>` : ''}
-                </dl>
-              </div>
+          </div>
+          <!-- The chip row is where a filter is turned on, shown, and turned
+               off again. Filtres is the first thing in it: a native
+               <details>, so it is in the tab order, Enter and Space work,
+               the browser owns aria-expanded, and no outside-click listener
+               is needed. It sits here rather than inside the field because
+               its panel has to span the header, and an absolutely positioned
+               summary inside .mb-search-input cannot. It is still the first
+               focusable after the input, so a user who pressed "/" reaches
+               it with one Tab. -->
+          <div class="mb-chips" id="filter-chips" role="group" aria-label="${t('mb.filters.group')}">
+            <details class="mb-refine" id="mb-refine">
+              <summary class="mb-chip mb-refine-toggle" aria-label="${t('mb.filters.open')}">
+                <i data-lucide="sliders-horizontal" class="w-3 h-3"></i>
+                <span>${t('mb.filters.label')}</span>
+                <span class="mb-refine-badge" id="mb-refine-badge" hidden>0</span>
+              </summary>
+              <form class="mb-refine-panel" id="mb-refine-form" aria-label="${t('mb.filters.group')}">
+                <label class="mb-refine-field">
+                  <span>${t('mb.filters.from')}</span>
+                  <input type="text" data-op="from" list="mb-refine-senders" autocomplete="off">
+                </label>
+                <label class="mb-refine-field">
+                  <span>${t('mb.filters.subject')}</span>
+                  <input type="text" data-op="subject" autocomplete="off">
+                </label>
+                <label class="mb-refine-field">
+                  <span>${t('mb.filters.after')}</span>
+                  <input type="date" data-op="after">
+                </label>
+                <label class="mb-refine-field">
+                  <span>${t('mb.filters.before')}</span>
+                  <input type="date" data-op="before">
+                </label>
+                <label class="mb-refine-check">
+                  <input type="checkbox" data-op="has" data-value="attachment">
+                  <span>${t('mb.filters.attachment')}</span>
+                </label>
+                <label class="mb-refine-check">
+                  <input type="checkbox" data-op="is" data-value="starred" data-family="starred">
+                  <span>${t('mb.filters.starred')}</span>
+                </label>
+                <p class="mb-refine-hint">${t('mb.search.help_scope')}</p>
+                <p class="mb-refine-hint">${t('mb.filters.typed_hint')}</p>
+                <datalist id="mb-refine-senders"></datalist>
+              </form>
             </details>
           </div>
-          <div class="mb-chips" id="filter-chips"></div>
           <div class="mb-search-actions">
             <button class="mb-select-all-btn" id="sel-all-global" title="${t('mb.sel.all')}" aria-label="${t('mb.sel.all')}">
               <i data-lucide="check-square" class="w-4 h-4"></i>
@@ -1908,6 +1919,193 @@ export async function mountMailbox(host, _opts) {
     loadEmails();
   }
 
+  // ── The filter row ────────────────────────────────────────
+  //
+  // Every filter that is on says so here, and every one of them can be
+  // taken off from here on its own. Before this the row held three toggles
+  // and a reset: an operator typed into the field, an account picked in the
+  // sidebar and a label picked in the sidebar were all invisible from the
+  // list, and the only way to undo any of them was to clear everything.
+
+  // Which query operators get a control in the panel. Everything else in
+  // the grammar stays typeable and still gets a chip -- what has no control
+  // is not the same as what is unsupported.
+  const REFINE_OPS = [
+    { op: 'from',    kind: 'text' },
+    { op: 'subject', kind: 'text' },
+    { op: 'after',   kind: 'date' },
+    { op: 'before',  kind: 'date' },
+    { op: 'has',     kind: 'check', value: 'attachment' },
+    { op: 'is',      kind: 'check', value: 'starred', family: 'starred' },
+  ];
+
+  // op → how a chip for it reads. `is:` and `has:` name a state, so their
+  // label depends on the value; the rest are "key : value".
+  function _queryChips() {
+    const out = [];
+    for (const tk of tokens(state.query)) {
+      const v = String(tk.value || '');
+      let label = null;
+      let family;
+      if (tk.op === 'is') {
+        const key = v.toLowerCase();
+        const named = {
+          unread: 'mb.filter.is_unread', read: 'mb.filter.is_read',
+          starred: 'mb.filter.is_starred', unstarred: 'mb.filter.is_unstarred',
+          needs_reply: 'mb.filter.is_reply', reply: 'mb.filter.is_reply',
+        }[key];
+        if (!named) continue;      // a value the server does not know either
+        label = t(named);
+        family = key === 'unread' || key === 'read' ? 'read'
+               : key === 'starred' || key === 'unstarred' ? 'starred' : 'reply';
+      } else if (tk.op === 'has') {
+        if (v.toLowerCase() !== 'attachment') continue;
+        label = t('mb.filter.has_attachment');
+      } else if (tk.op === 'min_score') {
+        label = t('mb.filter.min_score', { n: v });
+      } else {
+        const named = {
+          from: 'mb.filter.from', to: 'mb.filter.to', subject: 'mb.filter.subject',
+          in: 'mb.filter.in', category: 'mb.filter.category', label: 'mb.filter.label',
+          after: 'mb.filter.after', before: 'mb.filter.before',
+        }[tk.op];
+        if (!named) continue;
+        label = t(named, { v });
+      }
+      out.push({ label, op: tk.op, family, value: v });
+    }
+    return out;
+  }
+
+  // Filters that live outside the query string: the sidebar's account
+  // selection, its label row, its category row. Nothing in the header said
+  // any of them was on.
+  function _stateChips() {
+    const out = [];
+    if (state.accounts.length > 1 && state.accountFilters.size) {
+      const only = state.accountFilters.size === 1 ? [...state.accountFilters][0] : null;
+      const acc = only ? state.accounts.find((a) => a.email === only) : null;
+      out.push({
+        label: only ? t('mb.filter.account', { v: acc?.name || only })
+                    : t('mb.filter.accounts', { n: state.accountFilters.size }),
+        drop: 'accounts',
+      });
+    }
+    if (state.labelFilter) {
+      out.push({ label: t('mb.filter.label', { v: state.labelFilter }), drop: 'label' });
+    }
+    if (state.category) {
+      const meta = LABELS.find((l) => l.id === state.category);
+      out.push({
+        label: t('mb.filter.category', { v: meta?.label || state.category }),
+        drop: 'category',
+      });
+    }
+    return out;
+  }
+
+  function _activeFilters() {
+    return [..._stateChips(), ..._queryChips()];
+  }
+
+  function _dropFilter(chip) {
+    if (chip.drop === 'accounts') {
+      state.accountFilters.clear();
+      _filterDidChange = true;
+      renderChips();
+      renderAccounts();
+      loadEmails();
+      return;
+    }
+    if (chip.drop === 'label') {
+      state.labelFilter = null;
+      _filterDidChange = true;
+      renderChips();
+      renderUserLabels();
+      loadEmails();
+      return;
+    }
+    if (chip.drop === 'category') {
+      state.category = '';
+      _filterDidChange = true;
+      renderChips();
+      renderLabels();
+      applyFilter();
+      return;
+    }
+    _setQuery(dropOperator(state.query, chip.op, chip.family));
+  }
+
+  // The field is the single source of truth. A control writes into it, and
+  // the field parses back into the controls -- one string, one request, one
+  // thing to share, and the same grammar the AI agent's search tool takes.
+  function _setQuery(next) {
+    state.query = next;
+    const inp = $('#search');
+    if (inp && inp.value !== next) inp.value = next;
+    _filterDidChange = true;
+    renderChips();
+    renderRefine();
+    if (next.trim()) {
+      runServerSearch();
+    } else {
+      _searchToken++;
+      _searches.cancel('search-cleared');
+      state.searchResults = null;
+      applyFilter();
+    }
+  }
+
+  // Repaint the panel's controls from the field. Never innerHTML, and never
+  // the control the user is typing in: the field's own input handler calls
+  // this, and re-setting .value under a caret moves it to the end.
+  function renderRefine() {
+    const form = $('#mb-refine-form');
+    if (!form) return;
+    const active = document.activeElement;
+    for (const spec of REFINE_OPS) {
+      const sel = spec.kind === 'check'
+        ? `input[data-op="${spec.op}"][data-value="${spec.value}"]`
+        : `input[data-op="${spec.op}"]`;
+      const el = form.querySelector(sel);
+      if (!el || el === active) continue;
+      if (spec.kind === 'check') {
+        el.checked = readOperator(state.query, spec.op, spec.family).toLowerCase()
+                     === spec.value;
+      } else {
+        el.value = readOperator(state.query, spec.op, spec.family);
+      }
+    }
+    const badge = $('#mb-refine-badge');
+    if (badge) {
+      const n = _activeFilters().length;
+      badge.textContent = String(n);
+      badge.hidden = n === 0;
+      const summary = form.parentElement?.querySelector('summary');
+      if (summary) {
+        summary.setAttribute('aria-label',
+          n ? t('mb.filters.open_n', { n }) : t('mb.filters.open'));
+      }
+    }
+    // Native autocomplete over the senders already on screen. Degrades to a
+    // plain text field where <datalist> is unsupported.
+    const list = $('#mb-refine-senders');
+    if (list) {
+      const seen = new Set();
+      for (const em of state.emails || []) {
+        const addr = senderEmail(em.sender);
+        if (addr && !seen.has(addr)) seen.add(addr);
+        if (seen.size >= 60) break;
+      }
+      const wanted = [...seen].sort().join('\u0000');
+      if (list.dataset.fp !== wanted) {
+        list.dataset.fp = wanted;
+        list.innerHTML = [...seen].sort()
+          .map((a) => `<option value="${escapeHtml(a)}"></option>`).join('');
+      }
+    }
+  }
+
   function renderChips() {
     const el = $('#filter-chips');
     // A search debounce or a loadEmails() still in flight can land after the
@@ -1921,47 +2119,63 @@ export async function mountMailbox(host, _opts) {
       state.onlyReply = false;
       if (state.category === 'important') state.category = '';
     }
-    const existing = el.querySelectorAll('[data-quick]');
-    const anyActive = _anyFilterActive();
+    // The refine <details> is markup, not something this function owns: it
+    // holds open state and focus, and rebuilding it would close the panel on
+    // every keystroke typed inside it.
+    const keep = el.querySelector('#mb-refine');
+    const rest = [...el.children].filter((c) => c !== keep);
+    for (const node of rest) node.remove();
 
-    // Refresh the reset button visibility
-    const resetBtn = el.querySelector('[data-reset]');
-    if (existing.length === (window.aiEnabled ? 3 : 2)) {
-      const noQuick = !state.onlyUnread && !state.onlyReply;
-      existing.forEach((b) => {
-        const k = b.dataset.quick;
-        b.classList.toggle('active',
-          k === 'all'    ? noQuick :
-          k === 'unread' ? state.onlyUnread :
-          k === 'reply'  ? state.onlyReply  : false
-        );
-      });
-      if (resetBtn) resetBtn.classList.toggle('visible', anyActive);
-      return;
-    }
+    const filters = _activeFilters();
+    const frag = document.createDocumentFragment();
 
-    // First render — create buttons and attach listeners.
-    const noQuick = !state.onlyUnread && !state.onlyReply;
-    el.innerHTML = `
-      <button class="mb-chip ${noQuick ? 'active' : ''}" data-quick="all">${t('mb.chip.all')}</button>
-      <button class="mb-chip ${state.onlyUnread ? 'active' : ''}" data-quick="unread">${t('mb.chip.unread')}</button>
-      ${window.aiEnabled ? `<button class="mb-chip ${state.onlyReply ? 'active' : ''}" data-quick="reply">${t('mb.chip.reply')}</button>` : ''}
-      <button class="mb-chip mb-chip-reset ${anyActive ? 'visible' : ''}" data-reset title="${t('mb.chip.reset_tip')}">
-        <i data-lucide="x" class="w-3 h-3"></i> ${t('mb.chip.reset')}
-      </button>
-    `;
-    el.querySelectorAll('[data-quick]').forEach((b) => {
+    const quick = (key, on, label) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `mb-chip${on ? ' active' : ''}`;
+      b.dataset.quick = key;
+      b.textContent = label;
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
       b.addEventListener('click', () => {
-        const k = b.dataset.quick;
-        if (k === 'all')    { state.onlyUnread = false; state.onlyReply = false; }
-        if (k === 'unread') { state.onlyUnread = !state.onlyUnread; state.onlyReply = false; }
-        if (k === 'reply')  { state.onlyReply  = !state.onlyReply;  state.onlyUnread = false; }
+        if (key === 'unread') { state.onlyUnread = !state.onlyUnread; state.onlyReply = false; }
+        if (key === 'reply')  { state.onlyReply = !state.onlyReply;  state.onlyUnread = false; }
         _filterDidChange = true;
         renderChips();
         applyFilter();
       });
-    });
-    el.querySelector('[data-reset]')?.addEventListener('click', _clearAllFilters);
+      return b;
+    };
+    frag.appendChild(quick('unread', state.onlyUnread, t('mb.chip.unread')));
+    if (window.aiEnabled) frag.appendChild(quick('reply', state.onlyReply, t('mb.chip.reply')));
+
+    for (const chip of filters) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'mb-chip mb-chip-filter';
+      b.dataset.drop = chip.drop || chip.op;
+      b.setAttribute('aria-label', t('mb.filter.remove', { name: chip.label }));
+      b.title = t('mb.filter.remove', { name: chip.label });
+      b.innerHTML = `<span>${escapeHtml(chip.label)}</span>`
+        + '<svg class="mb-chip-x" viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+        + ' stroke-width="2.6" stroke-linecap="round" aria-hidden="true">'
+        + '<path d="M6 6l12 12M18 6L6 18"/></svg>';
+      b.addEventListener('click', () => _dropFilter(chip));
+      frag.appendChild(b);
+    }
+
+    if (_anyFilterActive()) {
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'mb-chip mb-chip-reset visible';
+      reset.dataset.reset = '';
+      reset.title = t('mb.chip.reset_tip');
+      reset.textContent = t('mb.chip.reset');
+      reset.addEventListener('click', _clearAllFilters);
+      frag.appendChild(reset);
+    }
+
+    el.appendChild(frag);
+    renderRefine();
   }
 
   // ── Render: list ──────────────────────────────────────────
@@ -5601,12 +5815,80 @@ export async function mountMailbox(host, _opts) {
     applyFilter();
   }
 
+  // The panel writes into the field; the field is what runs the search.
+  // A click is a commit, so checkboxes and dates fire straight away; the two
+  // text fields wait 400 ms so a typed address is one request, not twelve.
+  (function wireRefinePanel() {
+    const form = $('#mb-refine-form');
+    if (!form) return;
+    let typeTimer = null;
+
+    const write = (spec, raw) => {
+      const value = String(raw || '');
+      if (value && !isExpressible(value)) {
+        // `"([^"]*)"` has no escape: a value carrying a quote cannot be
+        // written back. Say so by dropping the character rather than
+        // producing a query that means something else.
+        const clean = value.replace(/"/g, '');
+        _setQuery(setOperator(state.query, spec.op, clean, spec.family));
+        return;
+      }
+      _setQuery(value
+        ? setOperator(state.query, spec.op, value, spec.family)
+        : dropOperator(state.query, spec.op, spec.family));
+    };
+
+    const specFor = (el) => REFINE_OPS.find((sp) =>
+      sp.op === el.dataset.op
+      && (sp.kind !== 'check' || sp.value === el.dataset.value));
+
+    form.addEventListener('change', (e) => {
+      const el = e.target;
+      const spec = specFor(el);
+      if (!spec) return;
+      if (spec.kind === 'check') write(spec, el.checked ? spec.value : '');
+      else write(spec, el.value);
+    });
+
+    form.addEventListener('input', (e) => {
+      const el = e.target;
+      const spec = specFor(el);
+      if (!spec || spec.kind !== 'text') return;
+      if (typeTimer) clearTimeout(typeTimer);
+      typeTimer = setTimeout(() => write(spec, el.value), 400);
+    });
+
+    // Enter in a panel field must not submit-and-navigate.
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (typeTimer) { clearTimeout(typeTimer); typeTimer = null; }
+      const el = document.activeElement;
+      const spec = el && specFor(el);
+      if (spec && spec.kind === 'text') write(spec, el.value);
+    });
+
+    // Escape closes the panel and stops there. onEscape exempts INPUT and
+    // TEXTAREA but not the summary, so without stopPropagation an Escape
+    // pressed on the toggle also cleared the user's checked rows.
+    const details = $('#mb-refine');
+    details?.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape' || !details.open) return;
+      e.stopPropagation();
+      e.preventDefault();
+      details.open = false;
+      details.querySelector('summary')?.focus();
+    });
+  })();
+
   $('#search').addEventListener('input', (e) => {
     state.query = e.target.value;
     // Typing is a filter change like any chip. Without this, renderList took
     // the scroll-anchor path and opened the result list already scrolled to
     // wherever the previous view happened to be.
     _filterDidChange = true;
+    // Repaint the controls and the chips from what was typed -- never the
+    // other way round. Re-serialising here would move the caret.
+    renderChips();
     if (_searchTimer) clearTimeout(_searchTimer);
     if (!state.query.trim()) {
       _searchToken++;

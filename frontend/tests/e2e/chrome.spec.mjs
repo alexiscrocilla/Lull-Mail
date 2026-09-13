@@ -28,15 +28,20 @@ test('the rail carries eight entries', async ({ page }) => {
   expect(rail).not.toContain('cheat-toggle');
 });
 
-test('the list header is seven controls', async ({ page }) => {
+test('the list header is six controls at rest', async ({ page }) => {
+  // checkVisibility, not offsetParent: the filter panel's own controls live
+  // inside a closed <details>, which Chromium hides with
+  // content-visibility -- the elements keep a box and an offsetParent while
+  // being genuinely unrendered.
   const header = await page.$$eval('.mb-search button, .mb-search input, .mb-search summary',
     (n) => n
-      .filter((e) => e.offsetParent !== null && getComputedStyle(e).visibility !== 'hidden')
+      .filter((e) => e.checkVisibility({ checkVisibilityCSS: true, contentVisibilityAuto: true }))
       .map((e) => e.id || e.className.trim()));
-  // The search field and its help summary, the three quick chips, select-all
-  // and the sort button. The "reset filters" chip is not among them: it is
-  // visibility:hidden until a filter is actually on.
-  expect(header).toHaveLength(7);
+  // The search field, the Filtres toggle, the two quick chips, select-all
+  // and the sort button. Not the "reset filters" chip -- it only exists
+  // while a filter is on -- and not the panel's six controls, which are
+  // behind the toggle.
+  expect(header).toHaveLength(6);
   expect(await page.locator('#thread-toggle').count()).toBe(0);
 });
 
