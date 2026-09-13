@@ -64,6 +64,12 @@ MAX_SUBSCRIBERS = 8
 KEEPALIVE = b": ka\n\n"
 KEEPALIVE_SECONDS = 15.0
 
+# Sent once, at the top of every stream. Without it the browser picks its own
+# reconnect delay (about three seconds in Chromium, not configurable), which
+# is the window a wake-from-sleep lands in — and the moment the server kicks
+# a fetch, so it is also the window most likely to have frames in it.
+RETRY_HINT = b"retry: 1000\n\n"
+
 # How often the hub turns "something changed" into a snapshot frame. Four a
 # second is far below anything a person perceives and far above anything the
 # analysis pass can make expensive.
@@ -105,6 +111,12 @@ class EventHub:
     def run_id(self) -> str:
         return self._run_id
 
+    @property
+    def last_seq(self) -> int:
+        """The sequence number of the most recent frame, published or not."""
+        with self._lock:
+            return self._seq
+
     def set_snapshot_provider(self, fn: Callable[[], Dict[str, Any]]) -> None:
         """Register what a `sync` frame carries.
 
@@ -130,15 +142,21 @@ class EventHub:
 
         Safe from any thread. Never blocks: a subscriber whose queue is
         full is dropped rather than waited for.
+
+        Every frame is sequenced and kept, whether or not anyone is
+        listening. A browser between reconnect attempts is nobody — and it
+        comes back with a cursor. Skipping the sequence there meant its
+        cursor still matched, so it was told it was up to date and the mail
+        published during the outage stayed invisible, with no reload and no
+        resync. The ring is a few tens of kilobytes; the gap it detects is
+        the whole point of numbering frames.
         """
         with self._lock:
-            if not self._subs:
-                # Still sequence nothing and keep no ring entry — a frame
-                # nobody can receive is not a gap anyone can detect.
-                return 0
             self._seq += 1
             payload = _frame(self._seq, event, data)
             self._ring.append((self._seq, payload))
+            if not self._subs:
+                return 0
             targets = list(self._subs)
 
         delivered = 0

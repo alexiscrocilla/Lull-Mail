@@ -2065,8 +2065,16 @@ def _sqlite_utc_to_iso(value: Optional[str]) -> Optional[str]:
     return s
 
 
-def _sse(seq: int, event: str, data) -> bytes:
-    return (f"id: {seq}\nevent: {event}\n"
+def _sse(event: str, data) -> bytes:
+    """A frame with no id.
+
+    `hello` and `resync` carry no sequence number on purpose: per the SSE
+    spec, a frame without an `id` leaves the browser's Last-Event-ID
+    alone. Stamping them 0 reset the cursor on every connection, so a
+    socket that dropped before the first live frame came back asking to be
+    replayed from the beginning of the ring.
+    """
+    return (f"event: {event}\n"
             f"data: {json.dumps(data, ensure_ascii=False, default=str)}\n\n").encode("utf-8")
 
 
@@ -2154,7 +2162,7 @@ async def event_stream(request: Request):
     """
     import asyncio
 
-    from src.events import KEEPALIVE, KEEPALIVE_SECONDS, hub
+    from src.events import KEEPALIVE, KEEPALIVE_SECONDS, RETRY_HINT, hub
 
     loop = asyncio.get_running_loop()
     hub.start_ticker(loop)
@@ -2168,7 +2176,8 @@ async def event_stream(request: Request):
 
     async def gen():
         try:
-            yield _sse(0, "hello", {"run_id": hub.run_id, "snapshot": _sync_snapshot()})
+            yield RETRY_HINT
+            yield _sse("hello", {"run_id": hub.run_id, "snapshot": _sync_snapshot()})
             if missed:
                 for frame in missed:
                     yield frame
@@ -2176,7 +2185,7 @@ async def event_stream(request: Request):
                 # The client had a cursor we cannot honour: a restart, or a
                 # gap longer than the ring. Say so rather than resume and
                 # leave it quietly wrong.
-                yield _sse(0, "resync", {"reason": "gap", "snapshot": _sync_snapshot()})
+                yield _sse("resync", {"reason": "gap", "snapshot": _sync_snapshot()})
             while True:
                 try:
                     frame = await asyncio.wait_for(sub.queue.get(), KEEPALIVE_SECONDS)

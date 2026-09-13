@@ -342,3 +342,54 @@ def test_a_body_that_could_not_be_fetched_on_demand_is_announced_too(client, mon
     bodies = [d for e, d in published if e == "body"]
     assert bodies, "a permanent failure told the window nothing"
     assert bodies[0]["body_state"] == "failed"
+
+
+def test_a_client_that_was_away_is_told_what_it_missed(fresh_app):
+    """The gap the hub promised to detect, and did not.
+
+    `publish` returned before sequencing whenever nobody was listening --
+    and a browser between reconnect attempts is exactly nobody. It came
+    back with a cursor equal to the hub's, was told it was up to date, and
+    the mail published during the outage stayed invisible with no reload
+    and no resync.
+    """
+    from src.events import EventHub
+
+    async def scenario():
+        hub = EventHub()
+        sub = hub.subscribe(asyncio.get_running_loop())
+        assert sub is not None
+        for i in range(4):
+            hub.publish("mail", {"n": i})
+        cursor = str(hub.last_seq)
+        assert cursor == "4"
+
+        # The socket dies. The browser is not a subscriber any more.
+        hub.unsubscribe(sub)
+        for i in range(12):
+            hub.publish("mail", {"account": "u@x.fr", "count": 5})
+
+        missed = hub.replay_since(cursor, hub.run_id)
+        assert missed is not None, "the client was told it was up to date"
+        assert len(missed) == 12, f"replayed {len(missed)} of 12 missed frames"
+
+    asyncio.run(scenario())
+
+
+def test_an_outage_longer_than_the_ring_asks_for_a_resync(fresh_app):
+    from src.events import EventHub, RING_SIZE
+
+    async def scenario():
+        hub = EventHub()
+        sub = hub.subscribe(asyncio.get_running_loop())
+        assert sub is not None
+        hub.publish("mail", {"n": 0})
+        cursor = str(hub.last_seq)
+        hub.unsubscribe(sub)
+        for i in range(RING_SIZE + 10):
+            hub.publish("mail", {"n": i})
+        assert hub.replay_since(cursor, hub.run_id) is None, (
+            "a gap longer than the ring must ask for a resync, not replay half of it"
+        )
+
+    asyncio.run(scenario())
