@@ -1471,6 +1471,26 @@ button { font: inherit; }
 }
 /* --muted, not --muted-2: this is text (2.41:1 vs 5.07:1 on --bg). */
 .mb-date { font-size: 11.5px; color: var(--muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+/* Which mailbox a row belongs to. Rendered only when several accounts feed
+   the list, so it never costs anything on a single-account install. It sits
+   at the end of the subject line, where the row has slack, rather than in
+   the sender line, which is already the crowded one. */
+.mb-card-acc {
+  margin-left: auto;
+  flex-shrink: 0;
+  max-width: 38%;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px 1px 4px;
+  border-radius: 999px;
+  background: var(--surface-2, rgba(127, 127, 127, .1));
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.mb-card-acc-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.mb-card-acc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mb-subj {
   display: flex;
   align-items: center;

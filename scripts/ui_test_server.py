@@ -22,6 +22,28 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 
+# The suite is single-account by default so its screenshots stay pinned to
+# the chrome a first install actually shows. LULLMAIL_TEST_ACCOUNTS switches
+# the same server to several mailboxes, which is what the multi-account specs
+# run against -- on their own port, with their own baselines.
+PRIMARY = "demo@lullmail.test"
+
+
+def _accounts() -> list[tuple[str, str]]:
+    """(name, email) for every configured mailbox, primary first."""
+    raw = os.environ.get("LULLMAIL_TEST_ACCOUNTS", "").strip()
+    if not raw:
+        return [("Demo", PRIMARY)]
+    out = []
+    for entry in raw.split(","):
+        email = entry.strip()
+        if not email:
+            continue
+        local = email.split("@")[0]
+        out.append((local.capitalize(), email))
+    return out or [("Demo", PRIMARY)]
+
+
 def _prepare_environment() -> tuple[str, int]:
     os.environ["LULLMAIL_TEST_MODE"] = "1"
     data_dir = os.environ.get("LULLMAIL_DATA") or tempfile.mkdtemp(prefix="lullmail-ui-")
@@ -31,7 +53,7 @@ def _prepare_environment() -> tuple[str, int]:
 
 
 def _write_config(data_dir: str, port: int) -> None:
-    """A single-account, AI-on config so the suite needs nothing outside itself.
+    """An AI-on config so the suite needs nothing outside itself.
 
     Without it `/api/accounts` raises FileNotFoundError and the sidebar's
     COMPTES section never renders, so the screenshots would not show the
@@ -40,6 +62,21 @@ def _write_config(data_dir: str, port: int) -> None:
     path = os.path.join(data_dir, "config.yaml")
     if os.path.exists(path):
         return
+    accounts_yaml = "".join(
+        textwrap.dedent(
+            """            - name: {name}
+              type: imap
+              email: {email}
+              imap_host: 127.0.0.1
+              imap_port: 1
+              username: {email}
+              password: not-a-real-password
+              ssl: false
+              enabled: true
+            """
+        ).format(name=name, email=email)
+        for name, email in _accounts()
+    )
     yaml_text = textwrap.dedent(
         """\
         openai:
@@ -57,17 +94,8 @@ def _write_config(data_dir: str, port: int) -> None:
           host: 127.0.0.1
           port: {port}
         accounts:
-        - name: Demo
-          type: imap
-          email: demo@lullmail.test
-          imap_host: 127.0.0.1
-          imap_port: 1
-          username: demo@lullmail.test
-          password: not-a-real-password
-          ssl: false
-          enabled: true
         """
-    ).format(port=port)
+    ).format(port=port) + accounts_yaml
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(yaml_text)
 
@@ -125,6 +153,59 @@ def _seed_mailbox() -> None:
         })
 
 
+def _seed_other_accounts() -> None:
+    """Mail for every mailbox after the first.
+
+    The primary account keeps exactly the 18 messages the single-account
+    baselines were shot against, so turning this on cannot move them. What
+    it adds is what a single account cannot express: the same newsletter,
+    from the same sender, landing in two different mailboxes -- the case
+    where a row that does not name its account is unreadable, and where a
+    cleanup suggestion that ignores the account unsubscribes the wrong one.
+    """
+    from src import database as db
+
+    extra = _accounts()[1:]
+    if not extra:
+        return
+
+    now = datetime(2026, 8, 25, 9, 30, tzinfo=timezone.utc)
+    for a_idx, (name, email) in enumerate(extra):
+        for index in range(6):
+            shared = index % 3 == 0
+            sender = ("Lettre Rivage <news@rivage-studio.fr>" if shared
+                      else f"Contact {name} <contact{index}@{email.split('@')[1]}>")
+            subject = ("Votre sélection de la semaine" if shared
+                       else f"Dossier {name} {index + 1}")
+            received = now - timedelta(minutes=13 + index * 41 + a_idx * 7)
+            message_id = f"<pw-{a_idx}-{index}@lullmail.test>"
+            db.insert_email({
+                "message_id": message_id,
+                "account": email,
+                "uid": str(3000 + a_idx * 100 + index),
+                "subject": subject,
+                "sender": sender,
+                "recipient": email,
+                "date_str": received.strftime("%a, %d %b %Y %H:%M:%S +0000"),
+                "body_text": "Bonjour,\n\nMessage de démonstration multi-comptes.",
+                "body_html": ('<p>Bonjour,</p><p>Message de démonstration multi-comptes.</p>'
+                              '<p><a href="https://rivage-studio.fr/unsub">Se désabonner</a></p>'
+                              if shared else
+                              '<p>Bonjour,</p><p>Message de démonstration multi-comptes.</p>'),
+                "is_read": index % 2 == 1,
+                "auth_results": '{"spf": "pass", "dkim": "pass", "dmarc": "pass"}',
+                "list_unsubscribe": ("<https://rivage-studio.fr/unsub>" if shared else None),
+            })
+            db.update_email_ai(message_id, {
+                "category": "newsletter" if shared else "other",
+                "importance_score": 3 if shared else 5,
+                "importance_reason": "Information, pas d'action attendue.",
+                "summary": "Message de démonstration multi-comptes.",
+                "needs_reply": False,
+                "analyzed_by": "playwright-seed",
+            })
+
+
 def main() -> None:
     data_dir, port = _prepare_environment()
     from src import paths
@@ -134,6 +215,7 @@ def main() -> None:
     _write_config(data_dir, port)
     db.init_db()
     _seed_mailbox()
+    _seed_other_accounts()
 
     import uvicorn
     from src.api import app
@@ -141,7 +223,7 @@ def main() -> None:
     from src import events
 
     @app.post("/__test__/emit")
-    def _emit(kind: str, int_id: int = 0):
+    def _emit(kind: str, int_id: int = 0, account: str = PRIMARY):
         """Make the server announce something, the way the real code does.
 
         This server never starts the scheduler or the IDLE watchers, so
@@ -153,14 +235,14 @@ def main() -> None:
             now = _dt.now(_tz.utc)
             mid = f"<streamed-{now.timestamp()}@lullmail.test>"
             db.insert_email({
-                "message_id": mid, "account": "demo@lullmail.test",
+                "message_id": mid, "account": account,
                 "uid": "9999", "subject": "Message arrivé pendant le test",
                 "sender": "Flux <flux@lullmail.test>",
-                "recipient": "demo@lullmail.test",
+                "recipient": account,
                 "date_str": now.strftime("%a, %d %b %Y %H:%M:%S +0000"),
                 "body_text": "corps", "body_html": "<p>corps</p>",
             })
-            events.hub.publish("mail", {"account": "demo@lullmail.test", "count": 1})
+            events.hub.publish("mail", {"account": account, "count": 1})
             return {"ok": True, "message_id": mid}
 
         if kind == "envelope":
@@ -201,7 +283,10 @@ def main() -> None:
         with db._conn() as con:
             con.execute("DELETE FROM emails")
             con.execute("DELETE FROM drafts")
+            con.execute("DELETE FROM pending_ops")
+            con.execute("DELETE FROM kv WHERE key LIKE 'cleanup%'")
         _seed_mailbox()
+        _seed_other_accounts()
         return {"ok": True}
 
     app.state.bound_port = port

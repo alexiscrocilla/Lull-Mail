@@ -115,6 +115,14 @@ jobs:
         working-directory: frontend
         run: pnpm test:e2e
 
+      # Its own server, its own port, three mailboxes. Separate because the
+      # account count is fixed when the server boots, and because mixing it
+      # into the suite above would have moved every single-account baseline.
+      - name: Run Playwright (multi-account)
+        shell: cmd
+        working-directory: frontend
+        run: pnpm test:e2e:multi
+
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@v4

@@ -2034,6 +2034,15 @@ export async function mountMailbox(host, _opts) {
   // True only on the very first render after mounting (i.e. page navigation).
   // Set to false after first renderList so subsequent reloads don't re-animate.
   let _firstRender = true;
+  // What the rendered rows believe the account roster to be. Empty until the
+  // first /api/accounts answer, which is deliberately not "the config has one
+  // account": a first paint with no accounts and a first paint with one look
+  // identical, and both are wrong once a second mailbox exists.
+  let _accountsSignature = '';
+  // Resolves when /api/accounts has answered once. Both calls are fired
+  // together at mount; this only orders the first *paint*, not the two
+  // requests. See loadEmails().
+  let _accountsReady = null;
   // Set to true when user changes a filter chip or sort mode (not background refresh).
   let _filterDidChange = false;
   // Last card explicitly checked (avatar-click, Ctrl+click, Shift+click anchor) for range-select.
@@ -2301,6 +2310,17 @@ export async function mountMailbox(host, _opts) {
     return true;
   }
 
+  // Throw away what the rendered rows were built from, so the next
+  // renderList takes the rebuild path instead of patching in place. The
+  // in-place patch only touches the handful of attributes it knows about;
+  // anything a row derives from outside the email itself -- the account it
+  // belongs to, above all -- is invisible to it. The accounts arrive after
+  // the first paint, so without this the mailbox column never learned it
+  // was serving more than one mailbox until the user changed a filter.
+  function invalidateRenderedRows() {
+    _listAllItems = [];
+  }
+
   function renderList(items) {
     if (!$('#email-list')) return;   // view already unmounted — see renderChips
     // Fast-path 1: same ids in the same order, no flag change → in-place
@@ -2493,6 +2513,22 @@ export async function mountMailbox(host, _opts) {
     const isSelected = state.selectedId === em.int_id;
     const isChecked = state.selectedIds.has(em.int_id);
 
+    // Which mailbox this landed in. Only ever shown when more than one
+    // account feeds the list: with a single one it stamped the same badge on
+    // every row. With several, it is the difference between two identical
+    // newsletters — the reduced row dropped it, and nothing else on the row
+    // says where a message came from.
+    const accEmail = em.account_email || '';
+    const accObj = state.accounts.find((a) => a.email === accEmail);
+    const accLabel = accObj?.name || accEmail.split('@')[0] || accEmail;
+    const showAcc = !!accEmail && state.accounts.length > 1;
+    const accChip = showAcc
+      ? `<span class="mb-card-acc" title="${escapeHtml(accEmail)}">
+           <span class="mb-card-acc-dot" style="background:${avatarColor(accEmail)}"></span>
+           <span class="mb-card-acc-name">${escapeHtml(accLabel)}</span>
+         </span>`
+      : '';
+
     // Attachments: three threat tiers, the one signal on this row that is
     // about safety rather than convenience.
     const att = em.attachments || { total: 0, dangerous: 0, suspicious: 0 };
@@ -2515,6 +2551,7 @@ export async function mountMailbox(host, _opts) {
     if (em.injection_flag) states.push(t('mb.injection.flag'));
     if (aiOn && em.needs_reply) states.push(t('mb.ai.needs_reply'));
     if (aiOn && em.draft_response) states.push(draftLabel);
+    if (showAcc) states.push(t('mb.card.account', { name: accLabel }));
     // `role="option"` computes its name from its contents, which after the
     // cut are two text runs and a handful of icons. Name it explicitly.
     const cardLabel = [
@@ -2550,6 +2587,7 @@ export async function mountMailbox(host, _opts) {
           </div>
           <div class="mb-subj">
             <span>${escapeHtml(em.subject || t('mb.no_subject'))}</span>
+            ${accChip}
           </div>
         </div>
       </article>
@@ -5222,6 +5260,14 @@ export async function mountMailbox(host, _opts) {
       for (const em of [...state.accountFilters]) {
         if (!activeEmails.has(em)) state.accountFilters.delete(em);
       }
+      // Rows carry the account's name, and only when there is more than one
+      // account to tell apart. Both of those come from this call, which
+      // lands after the list has already painted.
+      const signature = accs.map((a) => `${a.email}|${a.name || ''}`).join(',');
+      if (signature !== _accountsSignature) {
+        _accountsSignature = signature;
+        invalidateRenderedRows();
+      }
     } catch (_) {
       // Transient error — keep state.accounts and state.accountFilters
       // as-is. The next successful tick will reconcile them.
@@ -5313,6 +5359,17 @@ export async function mountMailbox(host, _opts) {
       };
       const fresh = await api.getEmails(params, { signal: _emailLoads.next() });
       if (myToken !== _loadEmailsToken) return;  // stale → drop
+      // A row shows which mailbox it belongs to, and only when there is
+      // more than one. That is knowledge from /api/accounts, fired at the
+      // same moment as this call but usually answering just after it. Paint
+      // without it and every row is built account-blind, then has to be
+      // thrown away and rebuilt the instant the roster lands -- a full list
+      // flash on every cold start. Waiting here costs the few milliseconds
+      // between two local calls that are already in flight together.
+      if (_firstRender && _accountsReady) {
+        try { await _accountsReady; } catch (_) { /* rendered account-blind */ }
+        if (myToken !== _loadEmailsToken) return;
+      }
       state.emails = fresh;
       // Drop selections that are no longer present in the loaded set.
       if (state.selectedIds.size) {
@@ -6216,8 +6273,9 @@ export async function mountMailbox(host, _opts) {
   // produced a delayed entrance that lined up exactly with mail arrival
   // (the previous "re-fire" symptom). The email list has its own
   // fade-in via `.mb-list-wrap`.
+  _accountsReady = loadAccounts();
   const _emailsLoading = loadEmails();
-  await loadAccounts();
+  await _accountsReady;
 
   const sidebar = host.querySelector('.mb-side');
   if (sidebar) {
