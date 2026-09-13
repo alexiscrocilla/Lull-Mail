@@ -438,15 +438,19 @@ async function refreshAiFlag() {
     } finally {
       clearTimeout(timer);
     }
-    if (!r.ok) return;
+    // A non-2xx used to leave the flag `undefined` forever: nothing
+    // retries the probe, so the UI sat in an unresolved state where every
+    // "is AI on?" test read falsy and every "is AI off?" test read false.
+    // Off is the honest answer to a backend that will not say.
+    if (!r.ok) { window.aiEnabled = false; return; }
     const s = await r.json();
     // Backwards compat : older builds expose only `has_openai`.
     window.aiEnabled = (s.ai_enabled !== undefined)
       ? !!s.ai_enabled
       : !!s.has_openai;
   } catch (_) {
-    // Network hiccup at boot — default to off so the no-AI UI renders;
-    // a successful future probe will flip it back on.
+    // Network hiccup at boot — default to off so the no-AI UI renders.
+    // `ai-config-changed` is what flips it back on; nothing polls.
     window.aiEnabled = false;
   }
 }
@@ -510,7 +514,12 @@ function syncAiRailButton() {
 }
 
 // ── Boot ───────────────────────────────────────────────────
-if (!location.hash) location.hash = '#/inbox';
+// `replaceState`, not an assignment: pywebview opens the page with no
+// fragment, so assigning to location.hash fired `hashchange` on every cold
+// launch. That queued a second render() which ran before the AI probe had
+// resolved — a duplicate /api/emails load and, with AI on, a visible flash
+// of the no-AI mailbox.
+if (!location.hash) history.replaceState(null, '', '#/inbox');
 // Resolve the AI flag before the first render so the initial paint is
 // already correct. Awaiting here is fine — /api/setup/status is local,
 // served by the same process.

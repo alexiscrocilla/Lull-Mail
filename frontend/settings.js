@@ -1038,6 +1038,10 @@ export async function mountSettings(host, opts = {}) {
       if (out.warning) {
         alert(t('set.llm.activate_warning_' + out.warning) || out.warning);
       }
+      // Activating a local model turns AI on server-side. Without this the
+      // UI stayed in no-AI mode until the process restarted — and pywebview
+      // has no reload affordance.
+      window.dispatchEvent(new CustomEvent('ai-config-changed', { detail: { enabled: true } }));
       // Reload pour rafraîchir le banner "services running"
       await loadAll();
     } catch (e) {
@@ -1073,6 +1077,11 @@ export async function mountSettings(host, opts = {}) {
       .then(() => {
         if (provider === 'local' && !state.localLoaded) loadLocalLLM();
         if (provider === 'ollama') refreshOllamaModels();
+        // Switching the tile can turn AI off as well as on — picking `local`
+        // with no GGUF on disk leaves `ai_enabled()` false while the UI still
+        // believes it is on, and every AI control answers 409. The listener
+        // re-probes rather than trusting a value passed here.
+        window.dispatchEvent(new CustomEvent('ai-config-changed'));
         return loadAll();  // refresh services_running banner
       })
       .catch((e) => {
@@ -1113,6 +1122,8 @@ export async function mountSettings(host, opts = {}) {
         model: els.ollamaModel.value || '',
       });
       window.toast?.(t('set.toast.saved'));
+      // An Ollama base URL plus a model name is enough for `ai_enabled()`.
+      window.dispatchEvent(new CustomEvent('ai-config-changed', { detail: { enabled: true } }));
       await loadAll();
     } catch (e) { window.toast?.(t('set.toast.error', { msg: e.message }), 3500); }
   }

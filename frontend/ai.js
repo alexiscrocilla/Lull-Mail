@@ -133,7 +133,11 @@ export async function mountAI(host, opts = {}) {
   const body = $('#aiw-body');
 
   // ── AI off → one message, one button. ───────────────────────────
-  if (!window.aiEnabled) {
+  // Strictly `=== false`: this branch asserts "AI is disabled" in prose, and
+  // asserting it while the probe is still in flight would be a false
+  // statement that then flashes away. Controls gate on truthiness; copy that
+  // makes a claim gates on the resolved value.
+  if (window.aiEnabled === false) {
     input.disabled = true;
     body.innerHTML = `
       <div class="aiw-empty">
