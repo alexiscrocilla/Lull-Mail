@@ -815,15 +815,23 @@ def _backfill_unsubscribe_headers(accounts: List[Dict], deadline: float) -> int:
         by_acc.setdefault(r["account_email"], []).append(r)
 
     done = 0
-    for acc in accounts:
+    # Accounts we actually opened a connection for, and accounts that had
+    # work but could not be reached this pass. The give-up below is only
+    # allowed to speak for mailboxes that were genuinely tried.
+    attempted = 0
+    deferred = 0
+    for idx, acc in enumerate(accounts):
         if time.monotonic() > deadline:
+            deferred += sum(1 for a in accounts[idx:] if by_acc.get(a["email"]))
             break
         pending = by_acc.get(acc["email"]) or []
         if not pending:
             continue
         state = db.get_sync_state(acc["email"])
         if state and state.get("backoff_until") and state["backoff_until"] > now_iso:
+            deferred += 1
             continue
+        attempted += 1
 
         batch = pending[:UNSUB_BACKFILL_PER_PASS]
         index = {r["uid"]: r["message_id"] for r in batch}
@@ -852,14 +860,26 @@ def _backfill_unsubscribe_headers(accounts: List[Dict], deadline: float) -> int:
     if remaining == 0:
         db.set_kv("unsubscribe_backfill_done_at", datetime.now(timezone.utc).isoformat())
         logger.info("Liens de désabonnement : analyse initiale terminée")
-    elif done == 0:
-        # Nothing moved this pass and rows are still missing: every reachable
-        # account either failed or is in backoff. Stop retrying every minute;
-        # the Nettoyage page keeps a manual re-run.
+    elif done == 0 and attempted and not deferred:
+        # Every mailbox that still had work was tried, and none of them gave
+        # anything back. Stop retrying every pass; the Nettoyage page keeps a
+        # manual re-run.
+        #
+        # `deferred` is what this used to get wrong. One account in backoff,
+        # or a deadline reached before its turn, produced done == 0 -- and the
+        # flag was set for the whole app. Every other mailbox then lost
+        # unsubscribe discovery permanently, over a failure that was not
+        # theirs and that clears on its own.
         db.set_kv("unsubscribe_backfill_done_at", datetime.now(timezone.utc).isoformat())
         logger.info(
             "Liens de désabonnement : %d message(s) non inspectés, reprise manuelle depuis Nettoyage",
             remaining,
+        )
+    elif done == 0 and deferred:
+        logger.info(
+            "Liens de désabonnement : %d compte(s) injoignables cette passe, "
+            "%d message(s) toujours en attente",
+            deferred, remaining,
         )
     return done
 

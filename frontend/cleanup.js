@@ -163,8 +163,11 @@ export async function mountCleanup(host, opts = {}) {
       html = escapeHtml(t('cleanup.banner.noai'));
     } else if (payload.analysing > 0 && payload.cards.length) {
       html = escapeHtml(t('cleanup.banner.analysing', { n: payload.analysing }));
-    } else if (payload.missing_headers > 0 && !payload.cards.some(
-      (c) => c.id === 'unsub_bulk' || c.id === 'unsub_one')) {
+    } else if (payload.missing_headers > 0) {
+      // No longer hidden as soon as one unsubscribe card exists. With
+      // several mailboxes that card can come entirely from one of them
+      // while another has not had a single header read -- and the offer to
+      // read them was the only way back.
       html =
         `<span>${escapeHtml(t('cleanup.banner.scan.title', { n: payload.missing_headers }))} ` +
         `${escapeHtml(t('cleanup.banner.scan.body'))}</span>` +
