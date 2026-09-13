@@ -96,7 +96,7 @@ function relativeFrench(iso) {
   return _t('cleanup.rel.year', { n: years });
 }
 
-export async function mountCleanup(host, _opts) {
+export async function mountCleanup(host, opts = {}) {
   const t = window.t || ((k) => k);
 
   // See the same helper in settings.js: document-level listeners survive the
@@ -333,11 +333,9 @@ export async function mountCleanup(host, _opts) {
     const list = $('#cln-senders');
     if (!list) return;
     const items = sortSenders(state.senders);
-    const totalEmails = items.reduce((acc, s) => acc + s.total, 0);
-    const totalUnread = items.reduce((acc, s) => acc + s.unread, 0);
-    $('#cln-count').textContent = t('cleanup.senders.count', {
-      senders: items.length, emails: totalEmails, unread: totalUnread,
-    });
+    // The string takes {n}; passing {senders, emails, unread} left the literal
+    // "{n} expéditeurs analysés" on screen, placeholder and all.
+    $('#cln-count').textContent = t('cleanup.senders.count', { n: items.length });
 
     if (!items.length) {
       list.innerHTML = `
@@ -485,12 +483,11 @@ export async function mountCleanup(host, _opts) {
     const jobId = res?.job_id;
 
     if (!jobId || total === 0) {
-      // Nothing for IMAP to push (e.g. all already in trash). DB is in sync.
-      window.toast(
-        action === 'delete'
-          ? (affected ? t('cleanup.toast.deleted', { n: affected }) : t('cleanup.toast.nothing_to_delete'))
-          : (affected ? t('cleanup.toast.marked_read', { n: affected }) : t('cleanup.toast.already_read'))
-      );
+      // Always taken now: the server queues the IMAP move behind a delay
+      // instead of running it as a tracked job, which is what lets the undo
+      // below cancel it outright. The job branch under this one is dead and
+      // goes away with the page redesign.
+      toastWithUndo(_bulkResultMessage(action, affected), res?.undo);
       finishLocalUpdate(email, action);
       return;
     }
@@ -512,6 +509,63 @@ export async function mountCleanup(host, _opts) {
     if (row) renderProgress(row, job);
 
     pollJob(job);
+  }
+
+  // Shared undo affordance, same shape as the inbox's. The server returns
+  // everything needed to put things back — including the folder each message
+  // actually came from — and cancels the queued IMAP move when we call it
+  // inside the delay window, so the mail server never sees the deletion.
+  function _hasUndo(undo) {
+    if (!undo) return false;
+    return Object.keys(undo.folders || {}).length > 0 || (undo.unread_ids || []).length > 0;
+  }
+
+  function toastWithUndo(message, undo) {
+    if (!_hasUndo(undo)) { window.toast(message); return; }
+    window.toast({
+      variant: 'success',
+      message,
+      duration: 8000,
+      action: {
+        // Same three strings the inbox uses. One wording, no drift.
+        label: t('mb.toast.undo'),
+        onClick: async () => {
+          try {
+            await api.cleanupUndo(undo);
+            window.toast(t('mb.toast.undone'));
+          } catch (err) {
+            window.toast({ variant: 'error', message: t('mb.toast.undo_failed') });
+          }
+          await refreshAfterMutation();
+        },
+      },
+    });
+  }
+
+  // Counts everywhere are stale after a mutation or its undo: deleting the
+  // low-score mails also empties "Autres non lus", and the senders list shifts.
+  async function refreshAfterMutation() {
+    for (const r of RULES_L) state.ruleStats.delete(r.id);
+    for (const r of state.customRules) state.customStats.delete(`c-${r.id}`);
+    state.sendersStale = true;
+    if (state.tab === 'senders') {
+      await loadSenders();
+    } else if (state.tab === 'rules') {
+      for (const r of RULES_L) loadRuleStats(r.id);
+      for (const r of state.customRules) loadCustomRuleStats(r.id);
+      if (state.selectedRule) renderRuleDetail(state.selectedRule);
+      if (state.selectedCustomRule != null) renderCustomRuleDetail(state.selectedCustomRule);
+    } else {
+      loadUnsubStats().then(paintUnsubStatus).catch(() => {});
+    }
+  }
+
+  // The message for a finished bulk action, with the honest count.
+  function _bulkResultMessage(action, affected) {
+    if (action === 'delete') {
+      return affected ? t('cleanup.toast.deleted', { n: affected }) : t('cleanup.toast.nothing_to_delete');
+    }
+    return affected ? t('cleanup.toast.marked_read', { n: affected }) : t('cleanup.toast.already_read');
   }
 
   function finishLocalUpdate(email, action) {
@@ -581,10 +635,18 @@ export async function mountCleanup(host, _opts) {
     tick();
   }
 
+  // Single navigation helper. The router hands us onRouteChange, but the page
+  // has to work when mounted without options too — the read-pane row handler
+  // called `opts.onRouteChange` directly and threw on every click.
+  function navigateTo(hash) {
+    if (typeof opts.onRouteChange === 'function') opts.onRouteChange(hash);
+    else location.hash = hash;
+  }
+
   // Pre-fill the Inbox search with this sender's email so the user lands
   // on a filtered view of just their messages.
   function viewInInbox(email) {
-    location.hash = `#/inbox?q=${encodeURIComponent(email)}`;
+    navigateTo(`#/inbox?q=${encodeURIComponent(email)}`);
   }
 
   // ── Rules tab (master-detail layout) ─────────────────────
@@ -978,50 +1040,10 @@ export async function mountCleanup(host, _opts) {
     return raw;
   }
 
-  // ── Confirmation modale pour suppression ─────────────────────────────────
-  function confirmDelete(count, label) {
-    return new Promise((resolve) => {
-      const id = `del-modal-${Date.now()}`;
-      const el = document.createElement('div');
-      el.id = id;
-      el.innerHTML = `
-        <div class="cln-del-overlay" id="${id}-overlay">
-          <div class="cln-del-modal" role="alertdialog" aria-modal="true"
-               aria-label="${(window.t||((k)=>k))('cleanup.confirm.delete_aria')}">
-            <div class="cln-del-icon">
-              <i data-lucide="trash-2" class="w-6 h-6"></i>
-            </div>
-            <div class="cln-del-title">${(window.t||((k)=>k))('cleanup.confirm.delete_count_title', { n: count })}</div>
-            <div class="cln-del-body">
-              ${(window.t||((k)=>k))('cleanup.confirm.delete_body_html', { label: escapeHtml(label) })}
-            </div>
-            <div class="cln-del-actions">
-              <button class="cln-rule-act" id="${id}-cancel">${(window.t||((k)=>k))('cleanup.cancel')}</button>
-              <button class="cln-rule-act cln-rule-act-danger" id="${id}-confirm">
-                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-                ${(window.t||((k)=>k))('cleanup.act.delete_n', { n: count })}
-              </button>
-            </div>
-          </div>
-        </div>
-      `;
-      document.body.appendChild(el);
-      window.lucide?.createIcons({ el });
-
-      const cleanup = (result) => {
-        el.querySelector(`#${id}-overlay`).classList.add('cln-del-closing');
-        setTimeout(() => { el.remove(); resolve(result); }, 180);
-      };
-
-      el.querySelector(`#${id}-cancel`).addEventListener('click', () => cleanup(false));
-      el.querySelector(`#${id}-confirm`).addEventListener('click', () => cleanup(true));
-      el.querySelector(`#${id}-overlay`).addEventListener('click', (e) => {
-        if (e.target === e.currentTarget) cleanup(false);
-      });
-      // Focus confirm for keyboard accessibility
-      setTimeout(() => el.querySelector(`#${id}-confirm`)?.focus(), 50);
-    });
-  }
+  // A bespoke delete modal used to live here, making three different
+  // confirmation designs on one page — and it pre-focused its own destructive
+  // button, so Enter deleted. Both callers now use the shared confirmAsync,
+  // which focuses Cancel on a dangerous action.
 
   async function runRule(ruleId, action) {
     if (state.ruleBusy.has(ruleId)) return;
@@ -1030,7 +1052,12 @@ export async function mountCleanup(host, _opts) {
     if (!rule || !stats || stats.total === 0) return;
 
     if (action === 'delete') {
-      const ok = await confirmDelete(stats.total, rule.label);
+      const ok = await confirmAsync({
+        title: t('cleanup.confirm.delete_count_title', { n: stats.total }),
+        message: t('cleanup.confirm.delete_rule_msg', { label: rule.label }),
+        confirmLabel: t('cleanup.act.delete_n', { n: stats.total }),
+        danger: true,
+      });
       if (!ok) return;
     }
 
@@ -1051,7 +1078,7 @@ export async function mountCleanup(host, _opts) {
     const total = res?.total ?? 0;
     const jobId = res?.job_id;
     if (!jobId || total === 0) {
-      window.toast(t('cleanup.toast.nothing_required', { n: res?.affected ?? 0 }));
+      toastWithUndo(_bulkResultMessage(action, res?.affected ?? 0), res?.undo);
       finishRule(ruleId, action);
       return;
     }
@@ -1180,8 +1207,10 @@ export async function mountCleanup(host, _opts) {
     },
     {
       id: 'promotions',
-      nameKey: 'cleanup.tpl.promotions.name',
-      descKey: 'cleanup.tpl.promotions.desc',
+      // i18n defines these under `promo`, not `promotions`: the card and every
+      // rule created from it showed the raw key.
+      nameKey: 'cleanup.tpl.promo.name',
+      descKey: 'cleanup.tpl.promo.desc',
       icon: 'tag',
       accent: '#F472B6',
       filter: {
@@ -1420,7 +1449,12 @@ export async function mountCleanup(host, _opts) {
     const stats = state.customStats.get(key);
     if (!r || !stats || stats.total === 0) return;
     if (action === 'delete') {
-      const ok = await confirmDelete(stats.total, r.name);
+      const ok = await confirmAsync({
+        title: t('cleanup.confirm.delete_count_title', { n: stats.total }),
+        message: t('cleanup.confirm.delete_rule_msg', { label: r.name }),
+        confirmLabel: t('cleanup.act.delete_n', { n: stats.total }),
+        danger: true,
+      });
       if (!ok) return;
     }
     state.customBusy.add(customId);
@@ -1438,7 +1472,7 @@ export async function mountCleanup(host, _opts) {
     const total = res?.total ?? 0;
     const jobId = res?.job_id;
     if (!jobId || total === 0) {
-      window.toast(t('cleanup.toast.nothing_required', { n: res?.affected ?? 0 }));
+      toastWithUndo(_bulkResultMessage(action, res?.affected ?? 0), res?.undo);
       finishCustomRule(customId, action);
       return;
     }
@@ -1910,7 +1944,7 @@ export async function mountCleanup(host, _opts) {
       el.innerHTML = `
         <div class="cln-unsub-status-row">
           <i data-lucide="refresh-cw" class="w-4 h-4" style="animation: spin 1s linear infinite"></i>
-          <span><strong>${t('cleanup.unsub.reanalyzing')}</strong> ${job.done + job.failed} / ${job.total} ${t('cleanup.unsub.headers')}</span>
+          <span>${t('cleanup.unsub.searching', { done: job.done + job.failed, total: job.total })}</span>
         </div>
         <div class="cln-progress-track" style="height:4px;margin-top:6px">
           <div class="cln-progress-fill" style="width:${pct}%"></div>
@@ -1932,34 +1966,48 @@ export async function mountCleanup(host, _opts) {
       (x) => x.has_one_click && !x.unsubscribed_at,
     );
 
+    // The search for unsubscribe links now runs by itself after a sync, so the
+    // banner announces it instead of asking the user to press a button they
+    // had to find first.
     let banner = '';
-    if (!lastBackfill && missN > 0 && haveN === 0 && linkN === 0) {
+    if (!lastBackfill && missN > 0 && linkN === 0) {
       banner = `
         <div class="cln-unsub-banner">
           <i data-lucide="info" class="w-4 h-4"></i>
-          <span>${t('cleanup.unsub.no_links_yet')}</span>
+          <span>${t('cleanup.unsub.searching_auto')}</span>
         </div>`;
     }
 
-    const btnLabel =
-      missN === 0   ? t('cleanup.unsub.btn_up_to_date') :
-      !lastBackfill ? t('cleanup.unsub.btn_analyze') :
-                      t('cleanup.unsub.btn_refresh');
+    const btnLabel = lastBackfill ? t('cleanup.unsub.btn_refresh') : t('cleanup.unsub.btn_analyze');
 
+    // Counts were printed twice — the template put <strong>{n}</strong> in
+    // front of a string that already interpolated {n}, so the bar read
+    // "14 14 avec lien". The middle stat is gone too: it counted messages
+    // belonging to senders that have a link, under a label that said
+    // "analysé(s)", which matched nothing a user could check.
     el.innerHTML = `
       ${banner}
       <div class="cln-unsub-status-row">
-        <span class="cln-unsub-stat"><strong>${linkN}</strong> ${t('cleanup.unsub.senders_with_link', { n: linkN })}</span>
-        <span class="cln-unsub-stat-muted">·</span>
-        <span class="cln-unsub-stat"><strong>${haveN}</strong> ${t('cleanup.unsub.inspected', { n: haveN })}</span>
-        ${missN > 0 ? `<span class="cln-unsub-stat-muted">·</span><span class="cln-unsub-stat cln-unsub-stat-warn"><strong>${missN}</strong> ${t('cleanup.unsub.not_analyzed', { n: missN })}</span>` : ''}
-        <button class="cln-unsub-backfill" id="btn-backfill" ${missN === 0 ? 'disabled' : ''} style="margin-left:auto">
-          <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
-          ${btnLabel}
-        </button>
+        <span class="cln-unsub-stat">${t('cleanup.unsub.senders_with_link', { n: linkN })}</span>
+        ${missN > 0 ? `<span class="cln-unsub-stat-muted">·</span><span class="cln-unsub-stat cln-unsub-stat-warn">${t('cleanup.unsub.not_analyzed', { n: missN })}</span>` : ''}
+        <span class="cln-unsub-actions">
+          ${bulkEligible.length ? `
+            <button class="cln-unsub-backfill is-primary" id="btn-bulk-unsub">
+              <i data-lucide="zap" class="w-3.5 h-3.5"></i>
+              ${t('cleanup.unsub.bulk_btn', { n: bulkEligible.length })}
+            </button>` : ''}
+          ${missN > 0 ? `
+            <button class="cln-unsub-backfill" id="btn-backfill">
+              <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+              ${btnLabel}
+            </button>` : ''}
+        </span>
       </div>
     `;
     $('#btn-backfill')?.addEventListener('click', () => runBackfill());
+    // Bulk unsubscribe was written on both sides months ago and never wired
+    // to anything: users unsubscribed one sender at a time, five clicks each.
+    $('#btn-bulk-unsub')?.addEventListener('click', () => runBulkUnsubscribe());
     window.lucide?.createIcons();
   }
 
@@ -2285,7 +2333,7 @@ export async function mountCleanup(host, _opts) {
       const score = em.importance_score != null ? em.importance_score : '—';
       const scoreClass = em.importance_score >= 7 ? 'score-hi' : em.importance_score >= 4 ? 'score-mid' : 'score-lo';
       return `
-        <div class="cln-unsub-mail-row ${read}" data-id="${em.id}" role="button" tabindex="0">
+        <div class="cln-unsub-mail-row ${read}" data-id="${em.int_id}" role="button" tabindex="0">
           <span class="cln-unsub-mail-score ${scoreClass}">${score}</span>
           <span class="cln-unsub-mail-subj">${subj}</span>
           <span class="cln-unsub-mail-date">${dt}</span>
@@ -2293,7 +2341,11 @@ export async function mountCleanup(host, _opts) {
     }).join('');
 
     listEl.querySelectorAll('.cln-unsub-mail-row').forEach((row) => {
-      const open = () => opts.onRouteChange(`#/inbox?id=${row.dataset.id}`);
+      // Three bugs in one line before this: `opts` was named `_opts` at the
+      // mount signature so the click threw ReferenceError, the rows carried
+      // `em.id` which the API never returns (it is `int_id`), and the inbox
+      // honours `focus=`, not `id=`.
+      const open = () => navigateTo(`#/inbox?focus=${encodeURIComponent(row.dataset.id)}`);
       row.addEventListener('click', open);
       row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
     });
@@ -2624,7 +2676,14 @@ export async function mountCleanup(host, _opts) {
           : t('cleanup.senders.empty');
       renderSenderList();
     } catch (err) {
-      $('#cln-pane').innerHTML = `<div class="cln-empty cln-error">${escapeHtml(t('cleanup.toast.fail', { msg: err.message }))}</div>`;
+      // Only the senders list may report a senders failure. This used to
+      // overwrite #cln-pane, so a hiccup on a background load wiped whichever
+      // tab the user was actually looking at.
+      $('#cln-sub').textContent = t('cleanup.senders.error');
+      const list = $('#cln-senders');
+      if (list) {
+        list.innerHTML = `<div class="cln-empty cln-error">${escapeHtml(t('cleanup.toast.fail', { msg: err.message }))}</div>`;
+      }
     }
   }
 

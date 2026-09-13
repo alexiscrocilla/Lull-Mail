@@ -5708,65 +5708,26 @@ kbd {
 
 /* ── Confirmation de suppression (modale custom) ────────────────────────── */
 
-.cln-del-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-overlay);  /* cleanup delete overlay */
-  background: rgba(0,0,0,.45);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+/* Right-hand action group of the unsubscribe status bar: the bulk button
+   plus the (now rare) manual re-scan. */
+.cln-unsub-actions {
+  margin-left: auto;
   display: flex;
   align-items: center;
-  justify-content: center;
-  animation: cln-del-fade-in .15s ease;
-}
-.cln-del-overlay.cln-del-closing {
-  animation: cln-del-fade-out .18s ease forwards;
-}
-@keyframes cln-del-fade-in  { from { opacity: 0; } to { opacity: 1; } }
-@keyframes cln-del-fade-out { from { opacity: 1; } to { opacity: 0; } }
-
-.cln-del-modal {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  box-shadow: 0 24px 64px rgba(0,0,0,.22);
-  padding: 28px 28px 22px;
-  width: 380px;
-  max-width: calc(100vw - 32px);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  animation: cln-del-slide-in .18s cubic-bezier(.34,1.56,.64,1);
-}
-@keyframes cln-del-slide-in {
-  from { transform: translateY(12px) scale(.97); opacity: 0; }
-  to   { transform: none; opacity: 1; }
-}
-.cln-del-icon {
-  width: 44px; height: 44px;
-  border-radius: 12px;
-  display: flex; align-items: center; justify-content: center;
-  background: color-mix(in oklab, var(--danger) 12%, transparent);
-  color: var(--danger);
-  margin-bottom: 4px;
-}
-.cln-del-title {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--fg);
-}
-.cln-del-body {
-  font-size: 13.5px;
-  color: var(--muted);
-  line-height: 1.5;
-}
-.cln-del-actions {
-  display: flex;
-  justify-content: flex-end;
   gap: 8px;
-  margin-top: 8px;
+  flex-wrap: wrap;
 }
+.cln-unsub-backfill.is-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--surface);
+  font-weight: 600;
+}
+.cln-unsub-backfill.is-primary:hover { filter: brightness(1.06); }
+
+/* The bespoke .cln-del-* delete modal is gone: the page had three
+   different confirmation designs, and this one pre-focused its own
+   destructive button. Both callers use the shared .confirm-* dialog. */
 
 /* ── Custom rules – rail additions ─────────────────────────────────────── */
 

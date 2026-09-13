@@ -412,6 +412,19 @@ export const api = {
     return j(`/api/cleanup/jobs/${encodeURIComponent(jobId)}`);
   },
 
+  // Put back what a cleanup action just did. `undo` is the payload the action
+  // returned: {folders: {name: [int_id]}} and/or {unread_ids: [int_id]}.
+  cleanupUndo(undo) {
+    return j('/api/cleanup/undo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        folders: undo?.folders || {},
+        unread_ids: undo?.unread_ids || [],
+      }),
+    });
+  },
+
   previewCleanupRule(filter, limit = 200) {
     const qs = limit ? `?limit=${encodeURIComponent(limit)}` : '';
     return j(`/api/cleanup/rules/preview${qs}`, {

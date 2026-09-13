@@ -51,6 +51,10 @@ export function confirmAsync({ title = '', message = '', confirmLabel = '', dang
 
     document.body.appendChild(backdrop);
     window.lucide?.createIcons({ nodes: [backdrop] });
-    backdrop.querySelector('.confirm-btn-ok').focus();
+    // Focus the safe choice when the action is destructive: with the confirm
+    // button focused, the Enter keypress that opened the dialog — or a stray
+    // second Enter — deleted the mail. Non-destructive dialogs still land on
+    // the confirm button so a plain Enter carries the flow forward.
+    backdrop.querySelector(danger ? '.confirm-btn-cancel' : '.confirm-btn-ok').focus();
   });
 }
