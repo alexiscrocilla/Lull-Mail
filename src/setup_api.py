@@ -347,6 +347,19 @@ def _load_or_default() -> Dict[str, Any]:
     return cfg.default_skeleton()
 
 
+def _reconcile_idle() -> None:
+    """Restart the IDLE watchers after the account list changed on disk.
+
+    Imported lazily and never allowed to fail the write: the account was
+    already saved by the time this runs, and push is an accelerator.
+    """
+    try:
+        from src import lifecycle
+        lifecycle.reconcile_idle()
+    except Exception:  # noqa: BLE001
+        logger.exception("Reconfiguration IMAP IDLE après écriture des comptes")
+
+
 def _persist(data: Dict[str, Any]) -> None:
     """Save + reload + try to (re)start services. Raises HTTPException
     with the validation error if the config is incomplete."""
@@ -885,6 +898,7 @@ def add_account(
     accounts.append(acc_dict)
     data["accounts"] = accounts
     _persist(data)
+    _reconcile_idle()
 
     # Auto-test: run an IMAP login right after save and persist the
     # outcome via record_test_result. Save always succeeds (the user's
@@ -935,6 +949,7 @@ def update_account(
             accounts[i] = new
             data["accounts"] = accounts
             _persist(data)
+            _reconcile_idle()
             test = _safe_test_and_record(payload, actual_pwd_for_test, locale)
             return {
                 "ok": True,
@@ -954,6 +969,7 @@ def delete_account(request: Request, email: str, locale: str = Depends(get_local
         raise HTTPException(404, tr("setup.account.not_found_email", locale, email=email))
     data["accounts"] = new_list
     _persist(data)
+    _reconcile_idle()
     # Drop the test/sync state too so a re-add of the same email starts
     # clean (no stale red icon from a previous test).
     try:

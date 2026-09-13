@@ -149,6 +149,35 @@ def _start_idle(conf: dict) -> None:
         logger.exception("Démarrage IMAP IDLE a échoué (polling seul)")
 
 
+def reconcile_idle() -> None:
+    """Bring the IDLE watchers back in line with config.yaml.
+
+    Adding, editing, disabling or deleting an account rewrote the config
+    and nothing else: the watchers kept running against the roster they
+    were started with. A deleted account held its IMAP connection open
+    until the next restart, and a new one had no push at all -- which,
+    from the user's side, is a mailbox that simply does not deliver
+    instantly while its neighbour does.
+
+    Safe to call when the services are not running: IdleManager.start()
+    stops first, so this either restarts the set or leaves it stopped.
+    """
+    if _scheduler is None:
+        # Still in setup mode -- start_email_services() will do it.
+        return
+    try:
+        conf = cfg.reload()
+        if not conf:
+            # The rewrite left the config unusable (a secret the keyring no
+            # longer holds, say). Stop the watchers rather than keep them on
+            # a roster nobody can vouch for.
+            idle_manager.stop()
+            return
+        _start_idle(conf)
+    except Exception:  # noqa: BLE001 — IDLE is an accelerator, never a blocker
+        logger.exception("Reconfiguration IMAP IDLE a échoué (polling seul)")
+
+
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def start_email_services(*, restart: bool = False) -> bool:
