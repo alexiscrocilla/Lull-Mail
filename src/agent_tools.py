@@ -141,7 +141,9 @@ def unsubscribe_candidates(limit: int = 10, account: Optional[str] = None) -> di
             "name": r.get("name"),
             "total": r.get("total") or r.get("count"),
             "last_seen": r.get("last_seen"),
-            "one_click": bool(r.get("one_click")),
+            # db.unsubscribe_senders emits `has_one_click`; reading `one_click`
+            # meant this tool reported false for every sender in the mailbox.
+            "one_click": bool(r.get("has_one_click")),
             "already_unsubscribed": bool(r.get("unsubscribed_at")),
         })
     return {"senders": out}

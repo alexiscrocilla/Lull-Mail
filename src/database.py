@@ -43,6 +43,40 @@ def _chunks(seq: List[Any], size: int = _SQL_VARS_PER_CHUNK):
         yield seq[i:i + size]
 
 
+# SQL twin of `_canonical_sender(raw)[1]`: the address inside the first
+# <angle brackets>, or the whole header when there are none, trimmed and
+# lowercased. Used as the body of the `sender_addr` generated column.
+#
+# It must keep agreeing with the Python function, which is still the one that
+# extracts display names — tests/test_sender_addr.py fuzzes one against the
+# other over realistic headers and pins the two known divergences:
+#
+#   1. SQLite's lower() is ASCII-only, so a non-ASCII uppercase letter in a
+#      local part folds in Python and not here. Domains are ASCII by the time
+#      they reach us.
+#   2. This takes the first '<'; the Python regex skips an empty '<>' and
+#      matches a later one, so "Bounce <> <real@x.fr>" canonicalises to the
+#      whole header here and to the address there.
+#
+# Neither can make counts wrong: grouping is now done here and only here, so a
+# header that canonicalises oddly still lands in exactly one bucket. The cost
+# of case 2 is an ugly label on a malformed sender, not a split sender. Making
+# SQLite backtrack the way the regex does would take a recursive CTE, which a
+# generated column cannot contain.
+_SENDER_ADDR_WS = "' ' || char(9) || char(10) || char(13) || char(11) || char(12)"
+_SENDER_ADDR_SQL = f"""
+    CASE
+      WHEN instr(sender, '<') > 0
+           AND instr(substr(sender, instr(sender, '<') + 1), '>') > 1
+      THEN lower(trim(substr(sender,
+                             instr(sender, '<') + 1,
+                             instr(substr(sender, instr(sender, '<') + 1), '>') - 1),
+                      {_SENDER_ADDR_WS}))
+      ELSE lower(trim(sender, {_SENDER_ADDR_WS}))
+    END
+"""
+
+
 def init_db():
     with _conn() as con:
         con.executescript("""
@@ -420,6 +454,28 @@ def init_db():
         con.execute("CREATE INDEX IF NOT EXISTS idx_emails_cat_date ON emails(category, date_received_iso DESC)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_emails_thread_date ON emails(thread_id, date_received_iso DESC)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_emails_body_state ON emails(body_state, body_next_retry_at)")
+
+        # ── Canonical sender address, computed by SQLite ──────────────────
+        # Grouping by sender used to happen in Python: every caller pulled the
+        # matching rows out of the database and ran _canonical_sender over each
+        # one. mark_sender_unsubscribed did it over *every row in the table*,
+        # on the unsubscribe button's own code path.
+        #
+        # VIRTUAL, not STORED: ALTER TABLE cannot add a STORED column to a
+        # non-empty table, and virtual costs nothing here because the index
+        # below materialises the value once per row.
+        #
+        # The guard MUST use table_xinfo. Generated columns are invisible to
+        # PRAGMA table_info — which every other migration in this file uses —
+        # so with that pragma the ALTER re-runs on the second launch and
+        # kills init_db with "duplicate column name".
+        xcols = {row["name"] for row in con.execute("PRAGMA table_xinfo(emails)")}
+        if "sender_addr" not in xcols:
+            con.execute(f"""
+                ALTER TABLE emails ADD COLUMN sender_addr TEXT
+                GENERATED ALWAYS AS ({_SENDER_ADDR_SQL}) VIRTUAL
+            """)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_emails_sender_addr ON emails(sender_addr)")
 
 
 def email_exists(message_id: str) -> bool:
@@ -1780,99 +1836,85 @@ def _backfill_threads(con) -> int:
     return updated
 
 
-def top_senders(limit: int = 50, account: Optional[str] = None) -> List[Dict]:
-    """Aggregate emails by canonical sender for the cleanup view.
+def _freshest_names(con, where: str, params: list, addrs: List[str]) -> Dict[str, str]:
+    """Display name from each sender's most recent message, in one query.
 
-    Excludes the trash so users only see what is still cluttering their inboxes.
+    A sender's From header changes between campaigns ("Le Monde" then
+    "Le Monde — La Matinale"); the newest one is the label to show.
+    """
+    names: Dict[str, str] = {}
+    for batch in _chunks(addrs, _SQL_VARS_PER_CHUNK - len(params) - 4):
+        placeholders = ",".join("?" for _ in batch)
+        rows = con.execute(f"""
+            SELECT sender_addr, sender FROM (
+                SELECT sender_addr, sender,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY sender_addr
+                           ORDER BY date_received_iso DESC, int_id DESC
+                       ) AS rn
+                  FROM emails
+                 WHERE {where} AND sender_addr IN ({placeholders})
+            ) WHERE rn = 1
+        """, [*params, *batch]).fetchall()
+        for r in rows:
+            display, _ = _canonical_sender(r["sender"] or "")
+            names[r["sender_addr"]] = display or r["sender_addr"]
+    return names
+
+
+def top_senders(limit: int = 50, account: Optional[str] = None) -> List[Dict]:
+    """Aggregate emails by canonical sender.
+
+    Excludes the trash so callers only see what is still cluttering the inbox.
     Display name kept is the most recent one seen for that address.
+
+    Grouped by SQLite on the indexed `sender_addr` column. This used to read
+    every live row into Python and run a regex over each one.
+
+    Note on dates: first_seen/last_seen are MIN/MAX over `date_received_iso`,
+    compared as strings. Those strings carry the sender's UTC offset, so two
+    messages less than a day apart from opposite ends of the world can order
+    the wrong way. It moves a label by hours and cannot move a sender between
+    buckets, which is why it is not worth normalising every row to compare.
     """
-    q = """
-        SELECT message_id, account_email, sender, category,
-               importance_score, is_read, date_received
-        FROM emails
-        WHERE folder != 'deleted'
-    """
+    where = "folder != 'deleted' AND sender_addr <> ''"
     params: list = []
     if account:
-        q += " AND account_email = ?"
+        where += " AND account_email = ?"
         params.append(account)
 
-    groups: Dict[str, Dict] = {}
     with _conn() as con:
-        rows = con.execute(q, params).fetchall()
+        rows = [dict(r) for r in con.execute(f"""
+            SELECT sender_addr AS email,
+                   COUNT(*)                                AS total,
+                   COALESCE(SUM(is_read = 0), 0)           AS unread,
+                   COALESCE(SUM(category = 'newsletter'), 0)    AS newsletter,
+                   COALESCE(SUM(category = 'important'), 0)     AS important,
+                   COALESCE(SUM(category = 'transactional'), 0) AS transactional,
+                   COALESCE(SUM(category = 'other'), 0)         AS other,
+                   COALESCE(SUM(category = 'spam'), 0)          AS spam,
+                   COALESCE(SUM(category = 'pending'), 0)       AS pending,
+                   AVG(CASE WHEN category != 'pending' AND importance_score > 0
+                            THEN importance_score END)     AS avg_score,
+                   MIN(date_received_iso)                  AS first_seen,
+                   MAX(date_received_iso)                  AS last_seen,
+                   GROUP_CONCAT(DISTINCT account_email)    AS accounts
+              FROM emails
+             WHERE {where}
+             GROUP BY sender_addr
+             ORDER BY total DESC, unread DESC
+             LIMIT ?
+        """, [*params, max(1, limit)]).fetchall()]
+
+        names = _freshest_names(con, where, params, [r["email"] for r in rows])
 
     for r in rows:
-        display, addr = _canonical_sender(r["sender"] or "")
-        if not addr:
-            continue
-        g = groups.get(addr)
-        if g is None:
-            g = {
-                "email": addr,
-                "name": display,
-                "total": 0,
-                "unread": 0,
-                "newsletter": 0,
-                "important": 0,
-                "transactional": 0,
-                "other": 0,
-                "spam": 0,
-                "pending": 0,
-                "_score_sum": 0,
-                "_score_n": 0,
-                "_last_dt": None,
-                "_first_dt": None,
-                "last_seen": "",
-                "first_seen": "",
-                "accounts": set(),
-            }
-            groups[addr] = g
-        g["total"] += 1
-        if not r["is_read"]:
-            g["unread"] += 1
-        cat = (r["category"] or "other")
-        if cat in g:
-            g[cat] += 1
-        score = int(r["importance_score"] or 0)
-        if cat != "pending" and score > 0:
-            g["_score_sum"] += score
-            g["_score_n"] += 1
-        raw_d = r["date_received"] or ""
-        dt = _parse_email_date(raw_d)
-        if dt is not None:
-            if g["_last_dt"] is None or dt > g["_last_dt"]:
-                g["_last_dt"] = dt
-                g["last_seen"] = dt.isoformat()
-                # Refresh the display label with the most-recent name seen.
-                if display:
-                    g["name"] = display
-            if g["_first_dt"] is None or dt < g["_first_dt"]:
-                g["_first_dt"] = dt
-                g["first_seen"] = dt.isoformat()
-        g["accounts"].add(r["account_email"])
-
-    out = []
-    for g in groups.values():
-        avg = (g["_score_sum"] / g["_score_n"]) if g["_score_n"] else 0
-        out.append({
-            "email": g["email"],
-            "name": g["name"],
-            "total": g["total"],
-            "unread": g["unread"],
-            "newsletter": g["newsletter"],
-            "important": g["important"],
-            "transactional": g["transactional"],
-            "other": g["other"],
-            "spam": g["spam"],
-            "pending": g["pending"],
-            "avg_score": round(avg, 1),
-            "last_seen": g["last_seen"],
-            "first_seen": g["first_seen"],
-            "accounts": sorted(g["accounts"]),
-        })
-
-    out.sort(key=lambda s: (s["total"], s["unread"]), reverse=True)
-    return out[: max(1, limit)]
+        r["name"] = names.get(r["email"], r["email"])
+        r["avg_score"] = round(r["avg_score"], 1) if r["avg_score"] is not None else 0
+        r["first_seen"] = r["first_seen"] or ""
+        r["last_seen"] = r["last_seen"] or ""
+        r["accounts"] = sorted((r["accounts"] or "").split(",")) if r["accounts"] else []
+    return rows
 
 
 def find_by_sender(sender_email: str, account: Optional[str] = None) -> List[Dict]:
@@ -1887,20 +1929,14 @@ def find_by_sender(sender_email: str, account: Optional[str] = None) -> List[Dic
     q = """
         SELECT int_id, message_id, account_email, uid, sender, is_read, folder
         FROM emails
-        WHERE folder != 'deleted'
+        WHERE folder != 'deleted' AND sender_addr = ?
     """
-    params: list = []
+    params: list = [target]
     if account:
         q += " AND account_email = ?"
         params.append(account)
     with _conn() as con:
-        rows = con.execute(q, params).fetchall()
-    out = []
-    for r in rows:
-        _, addr = _canonical_sender(r["sender"] or "")
-        if addr == target:
-            out.append(dict(r))
-    return out
+        return [dict(r) for r in con.execute(q, params).fetchall()]
 
 
 def find_by_filter(
@@ -2095,8 +2131,26 @@ def find_uids_missing_headers(account: Optional[str] = None) -> List[Dict]:
 
 
 def count_emails_missing_headers(account: Optional[str] = None) -> int:
-    rows = find_uids_missing_headers(account)
-    return len(rows)
+    """How many messages have never been inspected for an unsubscribe link.
+
+    Counted in SQL. This used to materialise every matching row just to take
+    len() of the list, and every analysis pass calls it.
+    Keep the WHERE clause identical to find_uids_missing_headers, which feeds
+    the same loop: a mismatch would make the pass either loop forever or stop
+    early.
+    """
+    q = """
+        SELECT COUNT(*) FROM emails
+        WHERE folder != 'deleted'
+          AND uid IS NOT NULL AND uid != ''
+          AND list_unsubscribe IS NULL
+    """
+    params: list = []
+    if account:
+        q += " AND account_email = ?"
+        params.append(account)
+    with _conn() as con:
+        return int(con.execute(q, params).fetchone()[0])
 
 
 def unsubscribe_senders(account: Optional[str] = None) -> List[Dict]:
@@ -2104,81 +2158,70 @@ def unsubscribe_senders(account: Optional[str] = None) -> List[Dict]:
     captured unsubscribe URL or mailto. Returns the freshest URL/mailto for
     that sender (so the action targets a recent endpoint) and a flag for
     one-click eligibility."""
-    q = """
-        SELECT message_id, account_email, sender, subject, date_received,
-               is_read, list_unsubscribe_post,
-               unsubscribe_url, unsubscribe_mailto, unsubscribed_at
-        FROM emails
-        WHERE folder != 'deleted'
-          AND (unsubscribe_url IS NOT NULL OR unsubscribe_mailto IS NOT NULL)
-    """
+    where = ("folder != 'deleted' AND sender_addr <> ''"
+             " AND (unsubscribe_url IS NOT NULL OR unsubscribe_mailto IS NOT NULL)")
     params: list = []
     if account:
-        q += " AND account_email = ?"
+        where += " AND account_email = ?"
         params.append(account)
+
     with _conn() as con:
-        rows = con.execute(q, params).fetchall()
+        rows = [dict(r) for r in con.execute(f"""
+            SELECT sender_addr AS email,
+                   COUNT(*)                             AS total,
+                   COALESCE(SUM(is_read = 0), 0)        AS unread,
+                   MAX(date_received_iso)               AS last_seen,
+                   MAX(unsubscribed_at)                 AS unsubscribed_at,
+                   GROUP_CONCAT(DISTINCT account_email) AS accounts
+              FROM emails
+             WHERE {where}
+             GROUP BY sender_addr
+        """, params).fetchall()]
+        if not rows:
+            return []
 
-    groups: Dict[str, Dict] = {}
-    for r in rows:
-        display, addr = _canonical_sender(r["sender"] or "")
-        if not addr:
-            continue
-        g = groups.get(addr)
-        if g is None:
-            g = {
-                "email": addr,
-                "name": display,
-                "total": 0,
-                "unread": 0,
-                "_last_dt": None,
-                "last_seen": "",
-                "http_url": None,
-                "mailto": None,
-                "has_one_click": False,
-                "unsubscribed_at": None,
-                "accounts": set(),
-                "sample_uids": [],  # one (account, uid, message_id) per row, recent-first
-            }
-            groups[addr] = g
-        g["total"] += 1
-        if not r["is_read"]:
-            g["unread"] += 1
-        g["accounts"].add(r["account_email"])
-        # Track unsubscribed state — set if ANY message has it (we mark every
-        # row when the user successfully unsubscribes from a sender).
-        if r["unsubscribed_at"]:
-            g["unsubscribed_at"] = r["unsubscribed_at"]
-
-        dt = _parse_email_date(r["date_received"] or "")
-        is_newer = dt is not None and (g["_last_dt"] is None or dt > g["_last_dt"])
-        if is_newer:
-            g["_last_dt"] = dt
-            g["last_seen"] = dt.isoformat()
-            if display:
-                g["name"] = display
-        # Pick the URL/mailto from the most recent row that has them.
-        if is_newer or (g["http_url"] is None and r["unsubscribe_url"]):
-            if r["unsubscribe_url"]:
-                g["http_url"] = r["unsubscribe_url"]
-            if r["unsubscribe_mailto"]:
-                g["mailto"] = r["unsubscribe_mailto"]
-            if r["list_unsubscribe_post"] and "one-click" in r["list_unsubscribe_post"].lower():
-                g["has_one_click"] = True
+        # Endpoint AND one-click flag both come from the SAME freshest row.
+        # They used to be read from different places: has_one_click was set
+        # if *any* message ever carried List-Unsubscribe-Post, while the
+        # action read the flag off the newest one. A sender whose latest
+        # campaign dropped the header was shown as one-click, then silently
+        # skipped by the bulk route.
+        fresh: Dict[str, Dict] = {}
+        addrs = [r["email"] for r in rows]
+        for batch in _chunks(addrs, _SQL_VARS_PER_CHUNK - len(params) - 4):
+            placeholders = ",".join("?" for _ in batch)
+            for r in con.execute(f"""
+                SELECT sender_addr, sender, unsubscribe_url, unsubscribe_mailto,
+                       list_unsubscribe_post
+                  FROM (
+                    SELECT sender_addr, sender, unsubscribe_url, unsubscribe_mailto,
+                           list_unsubscribe_post,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY sender_addr
+                               ORDER BY date_received_iso DESC, int_id DESC
+                           ) AS rn
+                      FROM emails
+                     WHERE {where} AND sender_addr IN ({placeholders})
+                  ) WHERE rn = 1
+            """, [*params, *batch]).fetchall():
+                fresh[r["sender_addr"]] = dict(r)
 
     out = []
-    for g in groups.values():
+    for r in rows:
+        f = fresh.get(r["email"], {})
+        display, _ = _canonical_sender(f.get("sender") or "")
+        post = (f.get("list_unsubscribe_post") or "").lower()
         out.append({
-            "email": g["email"],
-            "name": g["name"],
-            "total": g["total"],
-            "unread": g["unread"],
-            "last_seen": g["last_seen"],
-            "http_url": g["http_url"],
-            "mailto": g["mailto"],
-            "has_one_click": g["has_one_click"],
-            "unsubscribed_at": g["unsubscribed_at"],
-            "accounts": sorted(g["accounts"]),
+            "email": r["email"],
+            "name": display or r["email"],
+            "total": r["total"],
+            "unread": r["unread"],
+            "last_seen": r["last_seen"] or "",
+            "http_url": f.get("unsubscribe_url"),
+            "mailto": f.get("unsubscribe_mailto"),
+            "has_one_click": "one-click" in post,
+            "unsubscribed_at": r["unsubscribed_at"],
+            "accounts": sorted((r["accounts"] or "").split(",")) if r["accounts"] else [],
         })
     out.sort(key=lambda s: (s["unsubscribed_at"] is not None, -s["total"], s["email"]))
     return out
@@ -2189,39 +2232,32 @@ def unsubscribe_sender_target(sender_email: str, account: Optional[str] = None) 
     for a sender. Returns None when no row has any. Used by the action
     endpoint when the user clicks "Se désabonner" — we want the most recent
     URL because senders rotate them per-campaign."""
-    q = """
-        SELECT date_received, list_unsubscribe_post,
-               unsubscribe_url, unsubscribe_mailto, sender
-        FROM emails
-        WHERE folder != 'deleted'
-          AND (unsubscribe_url IS NOT NULL OR unsubscribe_mailto IS NOT NULL)
-    """
-    params: list = []
-    if account:
-        q += " AND account_email = ?"
-        params.append(account)
     target = (sender_email or "").strip().lower()
     if not target:
         return None
+    q = """
+        SELECT list_unsubscribe_post, unsubscribe_url, unsubscribe_mailto
+        FROM emails
+        WHERE folder != 'deleted'
+          AND sender_addr = ?
+          AND (unsubscribe_url IS NOT NULL OR unsubscribe_mailto IS NOT NULL)
+    """
+    params: list = [target]
+    if account:
+        q += " AND account_email = ?"
+        params.append(account)
+    # Rows with no parseable date sort last under DESC, matching the old
+    # Python pass, which only replaced its candidate on a strictly newer date.
+    q += " ORDER BY date_received_iso DESC, int_id DESC LIMIT 1"
     with _conn() as con:
-        rows = con.execute(q, params).fetchall()
-    best: Optional[Dict] = None
-    best_dt = None
-    for r in rows:
-        _, addr = _canonical_sender(r["sender"] or "")
-        if addr != target:
-            continue
-        dt = _parse_email_date(r["date_received"] or "")
-        if best is None or (dt is not None and (best_dt is None or dt > best_dt)):
-            best = dict(r)
-            best_dt = dt
-    if best is None:
+        row = con.execute(q, params).fetchone()
+    if row is None:
         return None
-    one_click = bool(best.get("list_unsubscribe_post") and "one-click" in best["list_unsubscribe_post"].lower())
+    post = (row["list_unsubscribe_post"] or "").lower()
     return {
-        "url": best.get("unsubscribe_url"),
-        "mailto": best.get("unsubscribe_mailto"),
-        "one_click": one_click,
+        "url": row["unsubscribe_url"],
+        "mailto": row["unsubscribe_mailto"],
+        "one_click": "one-click" in post,
     }
 
 
@@ -2232,29 +2268,16 @@ def mark_sender_unsubscribed(sender_email: str, account: Optional[str] = None) -
     target = (sender_email or "").strip().lower()
     if not target:
         return 0
-    q = "SELECT message_id, sender FROM emails WHERE 1=1"
-    params: list = []
+    # One indexed UPDATE. This used to read every row in the table — trash
+    # included — through a Python regex, on the unsubscribe button's own path,
+    # then write back a chunked list of message ids.
+    q = "UPDATE emails SET unsubscribed_at = datetime('now') WHERE sender_addr = ?"
+    params: list = [target]
     if account:
         q += " AND account_email = ?"
         params.append(account)
     with _conn() as con:
-        rows = con.execute(q, params).fetchall()
-        ids = []
-        for r in rows:
-            _, addr = _canonical_sender(r["sender"] or "")
-            if addr == target:
-                ids.append(r["message_id"])
-        if not ids:
-            return 0
-        total = 0
-        for batch in _chunks(ids):
-            placeholders = ",".join("?" for _ in batch)
-            cur = con.execute(
-                f"UPDATE emails SET unsubscribed_at = datetime('now') WHERE message_id IN ({placeholders})",
-                batch,
-            )
-            total += cur.rowcount
-        return total
+        return con.execute(q, params).rowcount
 
 
 # ── Tiny KV (app-level flags) ─────────────────────────────────────────────────
