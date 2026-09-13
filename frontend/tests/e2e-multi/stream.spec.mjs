@@ -55,3 +55,26 @@ test('mail for the mailbox in view lands in the list', async ({ page }) => {
   await expect(page.locator('#email-list .mb-card').first())
     .toContainText('Message arrivé pendant le test');
 });
+
+test('a refresh refused mid-selection is drained when the selection clears', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto('/#/inbox');
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(TOTAL);
+  await expect(page.locator('#queue-ind')).toBeVisible();
+
+  // A live multi-selection blocks a background rebuild: it would evict the
+  // checked rows from the visible window.
+  await page.locator('#email-list .mb-card').first().locator('.mb-avatar').click();
+  await expect(page.locator('#email-list .mb-card.checked')).toHaveCount(1);
+
+  await page.request.post('/__test__/emit?kind=mail&account=demo@lullmail.test');
+  // Past the 1 s coalescing window, so the reload has been attempted and
+  // refused -- not merely still pending. With no clock left in the app,
+  // nothing was going to retry it.
+  await page.waitForTimeout(1600);
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(TOTAL);
+
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#email-list .mb-card.checked')).toHaveCount(0);
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(TOTAL + 1);
+});

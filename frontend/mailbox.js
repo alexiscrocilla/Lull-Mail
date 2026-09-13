@@ -2698,6 +2698,10 @@ export async function mountMailbox(host, _opts) {
     });
     refreshGlobalSelectAll();
     renderSelectionBar();
+    // A live selection is one of the two reasons a refresh gets refused.
+    // With no clock left to retry on, the moment it clears is the moment
+    // the deferred reload has to happen.
+    _drainPendingReload();
   }
 
   function renderSelectionBar() {
@@ -2999,7 +3003,13 @@ export async function mountMailbox(host, _opts) {
   // ── Popover (Move + Tag dropdowns) ────────────────────────
   let _popCleanup = null;
   function closePopover() {
-    if (_popCleanup) { _popCleanup(); _popCleanup = null; }
+    if (!_popCleanup) return;
+    _popCleanup();
+    _popCleanup = null;
+    // The popover was one of the two reasons a refresh gets refused. With
+    // no clock left to retry on, nothing else would have picked it up
+    // until the next arrival -- which on a quiet mailbox is never.
+    _drainPendingReload();
   }
 
   function openPopover(anchor, items, onPick) {
@@ -5991,14 +6001,11 @@ export async function mountMailbox(host, _opts) {
   }
   document.addEventListener('keydown', onEscape);
 
-  // Auto-refresh every 60s — was 20s but on a 750-mail / 14-account
-  // session that hammered the DB and CPU for no UX win. The Sync button
-  // is one click away if the user wants something newer.
-  //
-  // Mid-interaction guard: a popover open or a multi-selection live
-  // means a background refresh that rebuilds the list would close the
-  // popover and may evict the checked rows from the visible window —
-  // both feel broken. Skip this tick; the next 60s tick will catch up.
+  // A rebuild closes an open popover and can evict checked rows from the
+  // visible window, so a refresh waits for the user to be done. There is no
+  // 60 s clock behind it any more: what is refused here is drained the
+  // moment the popover closes, the selection clears, or the window comes
+  // back — see _drainPendingReload's callers.
   function _userIsBusy() {
     if (_popCleanup) return true;
     if (state.selectedIds && state.selectedIds.size) return true;
@@ -6142,6 +6149,9 @@ export async function mountMailbox(host, _opts) {
     // Drain a reload a guard refused while the window was hidden or the user
     // had a popover open.
     _drainPendingReload();
+    // And re-read the roster: an account may have been added, disabled or
+    // removed in another window while this one was in the background.
+    loadAccounts().catch(() => {});
   };
   document.addEventListener('visibilitychange', onVisibility);
   // The native window regaining focus (tray → open, alt-tab) fires `focus`,
@@ -6150,8 +6160,22 @@ export async function mountMailbox(host, _opts) {
     if (document.hidden) return;
     _maybeFetchOnReturn();
     _drainPendingReload();
+    loadAccounts().catch(() => {});
   };
   window.addEventListener('focus', onFocus);
+
+  // The stream announces mail, bodies, verdicts and sync status. It does not
+  // announce that an account was disabled, renamed, removed, put in backoff
+  // or taken out of it -- and those change the sidebar, the chips and every
+  // row's account name. Coming back to the window covers the common case;
+  // this covers a window that never lost focus. Five minutes is a twentieth
+  // of the traffic the old 60 s list poll made, and it fetches counters, not
+  // mail.
+  const ROSTER_REFRESH_MS = 300_000;
+  const _rosterTimer = setInterval(() => {
+    if (document.hidden) return;
+    loadAccounts().catch(() => {});
+  }, ROSTER_REFRESH_MS);
 
   // ── Initial render ────────────────────────────────────────
   const _mountedAt = Date.now(); // used to synchronise accounts stagger with static stagger
@@ -6337,6 +6361,8 @@ export async function mountMailbox(host, _opts) {
     _invalidateSearchCache();
     if (_selModeTimer) { clearTimeout(_selModeTimer); _selModeTimer = null; }
     if (_announceTimer) { clearTimeout(_announceTimer); _announceTimer = null; }
+    clearInterval(_rosterTimer);
+    if (_reloadTimer) { clearTimeout(_reloadTimer); _reloadTimer = null; }
     // Snapshot the view so coming back lands where the user left.
     try {
       _persistedView = _captureView(state, $('#email-list')?.scrollTop || 0);
