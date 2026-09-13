@@ -63,6 +63,19 @@ def _chunks(seq: List[Any], size: int = _SQL_VARS_PER_CHUNK):
 # of case 2 is an ugly label on a malformed sender, not a split sender. Making
 # SQLite backtrack the way the regex does would take a recursive CTE, which a
 # generated column cannot contain.
+# What "a message the cleanup page may act on" means, in one place.
+#
+# Written verbatim into both the partial-index predicates and the WHERE clause
+# of every card query. SQLite matches a partial index by term analysis, so a
+# re-spelling here that is not mirrored there loses the index silently.
+#
+# It is also the safety guard: a starred message, one the AI flagged as
+# needing a reply, anything already in the trash, and anything the user filed
+# into Sent, Drafts or a folder of their own are all out of reach of every
+# card. That replaces the old "refuse a filter that matches everything" check,
+# because there is no user-supplied filter left.
+_CLEANUP_LIVE = "folder = 'inbox' AND is_favourite = 0 AND needs_reply = 0"
+
 _SENDER_ADDR_WS = "' ' || char(9) || char(10) || char(13) || char(11) || char(12)"
 _SENDER_ADDR_SQL = f"""
     CASE
@@ -476,6 +489,61 @@ def init_db():
                 GENERATED ALWAYS AS ({_SENDER_ADDR_SQL}) VIRTUAL
             """)
         con.execute("CREATE INDEX IF NOT EXISTS idx_emails_sender_addr ON emails(sender_addr)")
+
+        # ── Partial indexes covering the cleanup aggregates ───────────────
+        # Every one of them is restricted to _CLEANUP_LIVE, so they stay small
+        # (they hold the inbox, not the archive) and they cover their query
+        # end to end — no row is ever visited.
+        #
+        # SQLite matches a partial index by comparing the WHERE clause term by
+        # term against the index predicate. Re-spelling or reordering the
+        # predicate silently drops the index: no error, no warning, roughly a
+        # hundredfold slowdown. That is why the predicate is one constant used
+        # verbatim in both places, and why test_cleanup_perf asserts the plan.
+        #
+        # account_email trails every one so the index still covers the query
+        # when the optional account filter is set. It cannot be used to seek
+        # there, but a residual filter over a covered scan costs nothing.
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cleanup_cat ON emails("
+            "  category, is_read, date_received_iso, unsubscribe_url, local_classified"
+            f") WHERE {_CLEANUP_LIVE}")
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cleanup_unread ON emails("
+            "  is_read, date_received_iso, account_email"
+            f") WHERE {_CLEANUP_LIVE}")
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cleanup_sender ON emails("
+            "  sender_addr, date_received_iso, is_read, unsubscribed_at, account_email"
+            f") WHERE {_CLEANUP_LIVE}")
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cleanup_unsub ON emails("
+            "  sender_addr, date_received_iso DESC, unsubscribed_at, is_read, account_email"
+            f") WHERE {_CLEANUP_LIVE}"
+            "   AND (unsubscribe_url IS NOT NULL OR unsubscribe_mailto IS NOT NULL)")
+
+        # Two indexes that can never be used, dropped rather than left to
+        # confuse the next reader and slow every insert down:
+        #   idx_emails_date indexes the raw RFC 2822 header, which sorts on
+        #     the weekday name. Nothing has ordered by it since
+        #     date_received_iso landed.
+        #   idx_emails_unsub is (unsubscribe_url, unsubscribe_mailto) — no
+        #     query has an equality term on a URL, so it is never seekable.
+        con.execute("DROP INDEX IF EXISTS idx_emails_date")
+        con.execute("DROP INDEX IF EXISTS idx_emails_unsub")
+
+        # One ANALYZE, once. Without statistics the planner prefers
+        # idx_emails_read (two distinct values, not covering) over
+        # idx_cleanup_unread. Guarded through the same connection rather than
+        # get_kv/set_kv so it cannot deadlock against this open transaction.
+        if con.execute(
+            "SELECT 1 FROM kv WHERE key = 'cleanup_analyze_at'"
+        ).fetchone() is None:
+            con.execute("ANALYZE")
+            con.execute(
+                "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+                ("cleanup_analyze_at", datetime.now(timezone.utc).isoformat()),
+            )
 
 
 def email_exists(message_id: str) -> bool:
