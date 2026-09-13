@@ -40,6 +40,16 @@ export async function mountCleanup(host, opts = {}) {
 
   let state = null;      // last payload
   let destroyed = false;
+  // Which mailbox the page is about. Every count, every card and every
+  // button is scoped to it. Empty means all of them -- which is a real
+  // answer, not a missing one: "1 400 newsletters across everything" is
+  // the number most people want first.
+  //
+  // Deliberately not remembered across mounts. A destructive page that
+  // silently reopens filtered is a page that deletes the wrong mailbox's
+  // mail the one time the user forgets which filter they left on.
+  let account = '';
+  let accounts = [];
 
   function navigateTo(hash) {
     if (typeof opts.onRouteChange === 'function') opts.onRouteChange(hash);
@@ -51,6 +61,8 @@ export async function mountCleanup(host, opts = {}) {
       <header class="cln-head">
         <h1 id="cln-title">${escapeHtml(t('cleanup.title'))}</h1>
         <p class="cln-head-sub" id="cln-sub"></p>
+        <div class="cln-accounts" id="cln-accounts" role="group"
+             aria-label="${escapeHtml(t('cleanup.account.group'))}" hidden></div>
       </header>
       <p class="cln-live sr-only" aria-live="polite" id="cln-live"></p>
       <div class="cln-banner" id="cln-banner" hidden></div>
@@ -65,6 +77,7 @@ export async function mountCleanup(host, opts = {}) {
     </section>`;
 
   const $ = (sel) => host.querySelector(sel);
+  const accountsEl = $('#cln-accounts');
   const listEl = $('#cln-list');
   const stateEl = $('#cln-state');
   const bannerEl = $('#cln-banner');
@@ -73,6 +86,35 @@ export async function mountCleanup(host, opts = {}) {
   const announce = (msg) => { if (liveEl) liveEl.textContent = msg; };
 
   // ── rendering ─────────────────────────────────────────────────────────
+
+  function renderAccounts() {
+    // One mailbox needs no picker: every card already means "your mail".
+    if (!accountsEl || accounts.length < 2) {
+      if (accountsEl) accountsEl.hidden = true;
+      return;
+    }
+    accountsEl.hidden = false;
+    const chip = (value, label, title) =>
+      `<button type="button" class="cln-acc${value === account ? ' active' : ''}"
+               data-account="${escapeHtml(value)}"
+               aria-pressed="${value === account ? 'true' : 'false'}"
+               title="${escapeHtml(title || label)}">${escapeHtml(label)}</button>`;
+    accountsEl.innerHTML =
+      chip('', t('cleanup.account.all')) +
+      accounts.map((a) => chip(a.email, a.name || a.email, a.email)).join('');
+    accountsEl.querySelectorAll('[data-account]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const next = b.dataset.account;
+        if (next === account) return;
+        account = next;
+        renderAccounts();
+        // A full reload, not a client-side filter: the counts, the floors
+        // and the ranking are all computed per scope on the server.
+        state = null;
+        load();
+      });
+    });
+  }
 
   function cardTitle(card) {
     return t(`cleanup.card.${card.id}.title`, card.vars);
@@ -177,7 +219,7 @@ export async function mountCleanup(host, opts = {}) {
     bannerEl.hidden = !html;
     bannerEl.querySelector('#cln-scan')?.addEventListener('click', runHeaderScan);
     bannerEl.querySelector('#cln-migrated-ok')?.addEventListener('click', async () => {
-      try { render((await api.hideCleanupCard('migrated_rules')).suggestions); }
+      try { render((await api.hideCleanupCard('migrated_rules', account || undefined)).suggestions); }
       catch (_) { bannerEl.hidden = true; }
     });
   }
@@ -263,7 +305,7 @@ export async function mountCleanup(host, opts = {}) {
 
     let res;
     try {
-      res = await api.applyCleanupCard(card.id, state?.account || undefined);
+      res = await api.applyCleanupCard(card.id, account || undefined);
     } catch (err) {
       showError(li, err);
       return;
@@ -331,7 +373,7 @@ export async function mountCleanup(host, opts = {}) {
 
   async function hideCard(card, li) {
     li.remove();
-    try { render((await api.hideCleanupCard(card.id)).suggestions); }
+    try { render((await api.hideCleanupCard(card.id, account || undefined)).suggestions); }
     catch (_) { /* it will be back next mount */ }
   }
 
@@ -355,7 +397,14 @@ export async function mountCleanup(host, opts = {}) {
     li.querySelector('.cln-card-foot').hidden = true;
     let res;
     try {
-      res = await api.unsubscribeBulk({ senders: card.senders, purge: false });
+      // One entry per (sender, mailbox): the link is a per-subscription
+      // token, and the personal account's token does not unsubscribe the
+      // work account.
+      res = await api.unsubscribeBulk({
+        entries: card.entries || card.senders.map((sender) => ({ sender, account: account || null })),
+        account: account || undefined,
+        purge: false,
+      });
     } catch (err) { showError(li, err); return; }
 
     if (!res.job_id) {
@@ -420,7 +469,11 @@ export async function mountCleanup(host, opts = {}) {
     go.disabled = true;
     let res;
     try {
-      res = await api.unsubscribeSender({ sender: card.senders[0], mode: 'auto' });
+      res = await api.unsubscribeSender({
+        sender: card.senders[0],
+        account: card.entries?.[0]?.account || account || undefined,
+        mode: 'auto',
+      });
     } catch (err) { showError(li, err); return; }
 
     if (res.action_required === 'open_url' || res.action_required === 'open_mailto') {
@@ -439,7 +492,10 @@ export async function mountCleanup(host, opts = {}) {
       `<button type="button" class="cln-card-hide" data-no>${escapeHtml(t('cleanup.card.unsub_one.no'))}</button>`;
     box.querySelector('[data-yes]').addEventListener('click', async () => {
       try {
-        await api.markUnsubscribed({ sender: card.senders[0] });
+        await api.markUnsubscribed({
+          sender: card.senders[0],
+          account: card.entries?.[0]?.account || account || undefined,
+        });
         announce(t('cleanup.unsub.marked', { name: card.vars.name }));
       } catch (_) { /* the card simply comes back */ }
       load();
@@ -488,7 +544,7 @@ export async function mountCleanup(host, opts = {}) {
   async function load() {
     if (!state) renderState('loading');
     try {
-      const payload = await api.getCleanupSuggestions();
+      const payload = await api.getCleanupSuggestions(account || undefined);
       if (destroyed) return;
       render(payload);
     } catch (err) {
@@ -512,6 +568,15 @@ export async function mountCleanup(host, opts = {}) {
     }
   };
   window.addEventListener('sync-status', onSyncStatus);
+
+  // The roster before the suggestions: with two mailboxes the page's first
+  // paint is already scoped, and with one it renders exactly as it did.
+  try {
+    accounts = await api.getAccounts();
+  } catch (_) {
+    accounts = [];   // no picker; the page still works, unscoped
+  }
+  if (!destroyed) renderAccounts();
 
   await load();
 

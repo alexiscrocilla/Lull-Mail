@@ -615,6 +615,8 @@ const STRINGS = {
 
     'confirm.default_title':         'Confirmer',
     'confirm.default_ok':            'Confirmer',
+    'cleanup.account.all':              'Tous les comptes',
+    'cleanup.account.group':            'Compte concerné',
     'cleanup.title':                    'Nettoyage',
     // Honest: "supprimer" moves the mail to the Corbeille, where it can be
     // restored. The old copy said the action was irreversible, which was both
@@ -1493,6 +1495,8 @@ const STRINGS = {
 
     'confirm.default_title':         'Confirm',
     'confirm.default_ok':            'Confirm',
+    'cleanup.account.all':              'All accounts',
+    'cleanup.account.group':            'Mailbox in scope',
     'cleanup.title':                    'Cleanup',
 
     // ── Mailbox (mb.*) ────────────────────────────────────────────────────

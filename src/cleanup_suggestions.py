@@ -218,20 +218,30 @@ def _months_observed(first: Optional[str], last: Optional[str]) -> float:
 
 
 def _unsub_senders(con, account: Optional[str]) -> List[Dict]:
-    """Senders still writing, still unsubscribable, worth a decision."""
+    """Senders still writing, still unsubscribable, worth a decision.
+
+    One entry per (sender, mailbox), not per sender. A newsletter reaching
+    three accounts is three subscriptions: three links, three tokens, three
+    decisions. Collapsed into one, the page offered a single button, fired
+    one POST with one account's token, and then -- because
+    `HAVING MAX(unsubscribed_at) IS NULL` is evaluated over the group --
+    dropped the sender from the list for all three, leaving two live
+    subscriptions the page had just promised were gone.
+    """
     where = _live("(unsubscribe_url IS NOT NULL OR unsubscribe_mailto IS NOT NULL)"
                   " AND sender_addr <> ''")
     params: list = []
     where = _acct(where, account, params)
     rows = [dict(r) for r in con.execute(f"""
         SELECT sender_addr,
+               account_email,
                COUNT(*)                      AS total,
                COALESCE(SUM(is_read = 0), 0) AS unread,
                MIN(date_received_iso)        AS first_seen,
                MAX(date_received_iso)        AS last_seen
           FROM emails
          WHERE {where}
-         GROUP BY sender_addr
+         GROUP BY sender_addr, account_email
         HAVING MAX(unsubscribed_at) IS NULL
            AND COUNT(*) >= ?
          ORDER BY total DESC
@@ -245,13 +255,15 @@ def _unsub_senders(con, account: Optional[str]) -> List[Dict]:
         # Endpoint, display name and one-click flag all come from the SAME
         # freshest message. Reading the flag from one row and the URL from
         # another is what used to advertise a sender as one-click and then
-        # silently skip it.
+        # silently skip it. The row is picked inside the same mailbox: the
+        # link is a per-subscription token, and the personal account's token
+        # does not unsubscribe the work account.
         fresh = con.execute(f"""
             SELECT sender, unsubscribe_url, unsubscribe_mailto, list_unsubscribe_post
               FROM emails
-             WHERE sender_addr = ? AND {where}
+             WHERE sender_addr = ? AND account_email = ? AND {where}
              ORDER BY date_received_iso DESC, int_id DESC LIMIT 1
-        """, [r["sender_addr"], *params]).fetchone()
+        """, [r["sender_addr"], r["account_email"], *params]).fetchone()
         if fresh is None:
             continue
         months = _months_observed(r["first_seen"], r["last_seen"])
@@ -262,6 +274,7 @@ def _unsub_senders(con, account: Optional[str]) -> List[Dict]:
         post = (fresh["list_unsubscribe_post"] or "").lower()
         out.append({
             "email": r["sender_addr"],
+            "account": r["account_email"],
             "name": display or r["sender_addr"],
             "total": r["total"],
             "unread": r["unread"],
@@ -319,8 +332,16 @@ def compute(account: Optional[str] = None) -> Dict[str, Any]:
                 "read": sum(s["total"] - s["unread"] for s in one_click),
                 "rate": rate,
                 "names": [s["name"] for s in one_click[:3]],
+                # How many mailboxes this press reaches into. A card saying
+                # "9 senders" over three accounts is nine subscriptions on
+                # three sets of credentials, which is worth knowing before
+                # pressing something with no undo.
+                "accounts": len({s["account"] for s in one_click}),
             },
-            "senders": [s["email"] for s in one_click],
+            "senders": sorted({s["email"] for s in one_click}),
+            # The unit the action actually works on: one link per mailbox.
+            "entries": [{"sender": s["email"], "account": s["account"]}
+                        for s in one_click],
             "reversible": False, "confirm": True, "peek": None,
             "score": _score(3 * rate, 1.0),
         })
@@ -332,8 +353,10 @@ def compute(account: Optional[str] = None) -> Dict[str, Any]:
                 "id": "unsub_one", "verb": "unsubscribe_manual",
                 "gain": {"value": top["rate"], "unit": "mails_per_year"},
                 "vars": {"n": 1, "name": top["name"], "total": top["total"],
-                         "unread": top["unread"], "rate": top["rate"]},
+                         "unread": top["unread"], "rate": top["rate"],
+                         "account": top["account"], "accounts": 1},
                 "senders": [top["email"]],
+                "entries": [{"sender": top["email"], "account": top["account"]}],
                 "reversible": False, "confirm": False,
                 "peek": {"query": f"in:inbox from:{top['email']}"},
                 # Leaving the app and coming back to say "it's done" is real

@@ -140,8 +140,18 @@ class UnsubscribeReq(BaseModel):
     force: bool = False  # bypass `unsubscribed_at IS NULL` idempotency gate
 
 
+class UnsubscribeEntry(BaseModel):
+    sender: str
+    account: Optional[str] = None
+
+
 class UnsubscribeBulkReq(BaseModel):
-    senders: List[str]
+    # `senders` plus one account was the whole request when a sender could
+    # only belong to one mailbox. It cannot: the same newsletter reaches
+    # three accounts with three tokens. `entries` carries the pairs; the flat
+    # list stays for a client that has not been reloaded.
+    senders: List[str] = []
+    entries: Optional[List[UnsubscribeEntry]] = None
     account: Optional[str] = None
     purge: bool = False
 
@@ -1925,9 +1935,15 @@ def cleanup_unsubscribe_bulk(request: Request, req: UnsubscribeBulkReq, bg: Back
     one-click senders, but we double-check server-side)."""
     plan: List[Dict] = []
     skipped: List[str] = []
-    for raw_sender in req.senders:
+    pairs = ([(e.sender, e.account) for e in req.entries] if req.entries
+             else [(s, req.account) for s in req.senders])
+    for raw_sender, raw_account in pairs:
         sender = (raw_sender or "").strip().lower()
-        target = db.unsubscribe_sender_target(sender, account=req.account)
+        account = raw_account or req.account
+        # The link is a per-subscription token. Resolving it without the
+        # account picks whichever mailbox has the freshest message and
+        # unsubscribes that one -- possibly three times, always the same one.
+        target = db.unsubscribe_sender_target(sender, account=account)
         if not target or not target.get("one_click") or not target.get("url"):
             skipped.append(sender)
             continue
@@ -1935,10 +1951,10 @@ def cleanup_unsubscribe_bulk(request: Request, req: UnsubscribeBulkReq, bg: Back
             "kind": "http_post",
             "sender": sender,
             "url": target["url"],
-            "account": req.account,
+            "account": account,
         })
         if req.purge:
-            _purge_sender(sender, req.account)
+            _purge_sender(sender, account)
 
     if not plan:
         return {"ok": True, "job_id": None, "total": 0, "skipped": skipped}
