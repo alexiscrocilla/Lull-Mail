@@ -192,6 +192,14 @@ export function printOpenEmail() {
 }
 window.printOpenEmail = printOpenEmail;
 
+// The `after:` example in the search help is a working "last 30 days", not
+// a date from a year that has already passed. The parser also accepts
+// dd/mm/yyyy, which is what the `before:` example shows.
+function _thirtyDaysAgo() {
+  const d = new Date(Date.now() - 30 * 86400000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 function autoSizeBodyIframe(iframe) {
   if (!iframe) return;
   let raf = 0;
@@ -719,6 +727,35 @@ export async function mountMailbox(host, _opts) {
           <div class="mb-search-input">
             <i data-lucide="search" class="icn w-4 h-4"></i>
             <input type="text" id="search" data-role="search" placeholder="${t('mb.search.placeholder')}" aria-label="${t('mb.search.label')}" />
+            <!-- Replaces a permanent row of three controls that filtered
+                 nothing: two of them spliced a literal operator into this
+                 very field and the third appended an after: date. Native
+                 <details>, so it is in the tab order, Enter and Space work,
+                 the browser owns aria-expanded, and it needs no
+                 outside-click listener. Placed right after the input so a
+                 user who pressed "/" reaches it with one Tab. -->
+            <details class="mb-search-help">
+              <summary aria-label="${t('mb.search.help_open')}" title="${t('mb.search.help_open')}">?</summary>
+              <div class="mb-search-help-panel" role="note">
+                <p class="mb-search-help-scope">${t('mb.search.help_scope')}</p>
+                <dl>
+                  <dt><code>from:marie@exemple.fr</code></dt><dd>${t('mb.search.help_from')}</dd>
+                  <dt><code>from:"Marie Dupont"</code></dt><dd>${t('mb.search.help_from_name')}</dd>
+                  <dt><code>subject:facture</code></dt><dd>${t('mb.search.help_subject')}</dd>
+                  <dt><code>is:unread</code></dt><dd>${t('mb.search.help_unread')}</dd>
+                  <dt><code>is:starred</code></dt><dd>${t('mb.search.help_starred')}</dd>
+                  <dt><code>has:attachment</code></dt><dd>${t('mb.search.help_attachment')}</dd>
+                  <dt><code>in:sent</code></dt><dd>${t('mb.search.help_in')}</dd>
+                  <dt><code>label:Clients</code></dt><dd>${t('mb.search.help_label')}</dd>
+                  <dt><code>category:newsletter</code></dt><dd>${t('mb.search.help_category')}</dd>
+                  <dt><code>after:${_thirtyDaysAgo()}</code></dt><dd>${t('mb.search.help_after')}</dd>
+                  <dt><code>before:01/03/2026</code></dt><dd>${t('mb.search.help_before')}</dd>
+                  ${window.aiEnabled ? `
+                  <dt><code>is:needs_reply</code></dt><dd>${t('mb.search.help_reply')}</dd>
+                  <dt><code>min_score:7</code></dt><dd>${t('mb.search.help_score')}</dd>` : ''}
+                </dl>
+              </div>
+            </details>
           </div>
           <div class="mb-chips" id="filter-chips"></div>
           <div class="mb-search-actions">
@@ -761,21 +798,6 @@ export async function mountMailbox(host, _opts) {
               <i data-lucide="trash-2" class="w-4 h-4"></i>
             </button>
           </div>
-        </div>
-        <div class="mb-filter-bar" id="search-filters">
-          <span class="mb-filter-lead"><i data-lucide="sliders-horizontal" class="w-3.5 h-3.5"></i></span>
-          <button class="mb-fbtn" type="button" data-op="has:attachment" aria-pressed="false">
-            <i data-lucide="paperclip" class="w-3.5 h-3.5"></i><span>${t('mb.filter.attachment')}</span>
-          </button>
-          <button class="mb-fbtn" type="button" data-op="is:starred" aria-pressed="false">
-            <i data-lucide="star" class="w-3.5 h-3.5"></i><span>${t('mb.filter.starred')}</span>
-          </button>
-          <select class="mb-fdate" id="search-date" aria-label="${t('mb.filter.date')}">
-            <option value="">${t('mb.filter.date_any')}</option>
-            <option value="7">${t('mb.filter.date_7')}</option>
-            <option value="30">${t('mb.filter.date_30')}</option>
-            <option value="365">${t('mb.filter.date_year')}</option>
-          </select>
         </div>
         <div class="mb-list" id="email-list" role="listbox" aria-multiselectable="true"
              aria-label="${t('mb.aria.list')}" tabindex="0"></div>
@@ -1920,7 +1942,6 @@ export async function mountMailbox(host, _opts) {
     renderLabels();
     renderUserLabels();             // drop the active label highlight
     renderAccounts();               // drop the active account highlight
-    renderSearchFilters();          // reset the operator buttons + date select
     // account/label are server-side filters, so state.emails only holds the
     // previously-scoped subset — reload the full folder set rather than
     // re-filtering the stale in-memory list.
@@ -2541,7 +2562,6 @@ export async function mountMailbox(host, _opts) {
         state.query = '';
         _searchToken++;
         state.searchResults = null;
-        renderSearchFilters();
         applyFilter();
       } else {
         _clearAllFilters();
@@ -5653,7 +5673,6 @@ export async function mountMailbox(host, _opts) {
     // the scroll-anchor path and opened the result list already scrolled to
     // wherever the previous view happened to be.
     _filterDidChange = true;
-    renderSearchFilters();  // reflect operators typed by hand on the buttons
     if (_searchTimer) clearTimeout(_searchTimer);
     if (!state.query.trim()) {
       _searchToken++;
@@ -5664,59 +5683,6 @@ export async function mountMailbox(host, _opts) {
     }
     _searchTimer = setTimeout(runServerSearch, 250);
   });
-
-  // ── Filter bar: buttons that BUILD the search query ───────────────
-  // No need to know the operator syntax — click a chip and it adds/removes
-  // the matching operator in the search box, then runs the search.
-  function _hasOp(op) {
-    return state.query.split(/\s+/).some((tk) => tk.toLowerCase() === op.toLowerCase());
-  }
-  function _toggleOp(op) {
-    const tokens = state.query.split(/\s+/).filter(Boolean);
-    const i = tokens.findIndex((tk) => tk.toLowerCase() === op.toLowerCase());
-    if (i >= 0) tokens.splice(i, 1); else tokens.push(op);
-    state.query = tokens.join(' ');
-  }
-  function _setAfterDays(days) {
-    state.query = state.query.replace(/(^|\s)after:\S+/ig, ' ').replace(/\s+/g, ' ').trim();
-    if (days > 0) {
-      // Build the date in LOCAL time. toISOString() is UTC, so "7 derniers
-      // jours" landed a day off for users west of UTC around midnight.
-      const dt = new Date(Date.now() - days * 86400000);
-      const d = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
-      state.query = (state.query + ' after:' + d).trim();
-    }
-  }
-  function _afterPreset() {
-    const m = state.query.match(/after:(\d{4}-\d{2}-\d{2})/i);
-    if (!m) return '';
-    const diff = Math.round((Date.now() - new Date(m[1]).getTime()) / 86400000);
-    for (const v of [7, 30, 365]) if (Math.abs(diff - v) <= 2) return String(v);
-    return '';  // a hand-typed custom date → leave the dropdown on "Any date"
-  }
-  function renderSearchFilters() {
-    host.querySelectorAll('#search-filters .mb-fbtn').forEach((b) => {
-      const on = _hasOp(b.dataset.op);
-      b.classList.toggle('active', on);
-      b.setAttribute('aria-pressed', on ? 'true' : 'false');
-    });
-    const dsel = $('#search-date');
-    if (dsel) dsel.value = _afterPreset();
-  }
-  function _applyQueryChange() {
-    const inp = $('#search');
-    if (inp) inp.value = state.query;
-    renderSearchFilters();
-    runServerSearch();
-  }
-  host.querySelectorAll('#search-filters .mb-fbtn').forEach((b) => {
-    b.addEventListener('click', () => { _toggleOp(b.dataset.op); _applyQueryChange(); });
-  });
-  $('#search-date')?.addEventListener('change', (e) => {
-    _setAfterDays(parseInt(e.target.value, 10) || 0);
-    _applyQueryChange();
-  });
-  renderSearchFilters();
 
   // Conversation-view toggle: collapse the list by thread (server-side).
   (function wireThreadToggle() {
@@ -5749,7 +5715,6 @@ export async function mountMailbox(host, _opts) {
     // Run it through the SERVER search like a typed query, so operators
     // (from:, subject:, has:…) are honoured — not just treated as a local
     // substring by the initial applyFilter.
-    renderSearchFilters();
     runServerSearch();
   })();
 
