@@ -673,3 +673,43 @@ def test_concurrent_claims_never_hand_out_the_same_row(fresh_app):
     assert len(set(seen)) == len(seen), (
         f"{len(seen) - len(set(seen))} rows were handed to both claimers"
     )
+
+
+def test_an_account_the_pass_never_reached_is_not_blamed(fresh_app, monkeypatch):
+    """A slow neighbour must not push a healthy mailbox out of the rotation.
+
+    The pass had one deadline for all of it. When it expired, every future
+    still pending was marked failed -- including the ones the worker pool
+    had never started. Each pass escalated their backoff, and the next pass
+    then skipped them for being in backoff, so a perfectly reachable
+    account dropped out because two others were slow.
+    """
+    from src import scheduler, config as cfg, database as db
+
+    accounts = [_acc(f"a{i}@x.fr") for i in range(6)]
+    monkeypatch.setattr(cfg, "get", lambda: _conf(accounts, fetch_workers=2))
+    monkeypatch.setattr(scheduler, "ACCOUNT_FETCH_TIMEOUT_SECONDS", 0.6)
+    release = threading.Event()
+    entered = []
+
+    def fake_fetch(acc, last_uid=None, limit=50):
+        entered.append(acc["email"])
+        if acc["email"] in ("a0@x.fr", "a1@x.fr"):
+            release.wait(timeout=10)
+        return [], None
+
+    monkeypatch.setattr(scheduler, "fetch_emails", fake_fetch)
+    scheduler.fetch_pass(trigger="test", chain_analysis=False)
+    release.set()
+
+    # Only the two workers' jobs ever ran.
+    assert set(entered) <= {"a0@x.fr", "a1@x.fr"}, f"unexpected accounts ran: {entered}"
+
+    for email in ("a2@x.fr", "a3@x.fr", "a4@x.fr", "a5@x.fr"):
+        state = db.get_sync_state(email) or {}
+        assert not state.get("last_error"), (
+            f"{email} was blamed for a timeout it was never given the chance to hit: "
+            f"{state.get('last_error')!r}"
+        )
+        assert not state.get("backoff_until"), f"{email} was pushed into backoff"
+        assert not state.get("consecutive_failures"), f"{email} was counted as failing"

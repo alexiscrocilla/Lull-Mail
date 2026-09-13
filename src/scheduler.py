@@ -228,10 +228,17 @@ class _AccountCtx:
         return new
 
     def finish(self, error: Optional[str] = None, server_uidvalidity: Optional[str] = None,
-               uidvalidity_changed: bool = False) -> None:
+               uidvalidity_changed: bool = False, skipped: bool = False) -> None:
         if self.done:
             return
         self.done = True
+        if skipped:
+            # The pass ran out of time before a worker ever picked this
+            # account up. It is neither a success nor a failure: writing
+            # either would be a statement about a mailbox nothing contacted.
+            # Just put it back to idle so the sidebar stops showing a spinner.
+            progress.account_fetch_finished(self.email, new=self.new)
+            return
         if error:
             state = db.get_sync_state(self.email) or {}
             fails = state.get("consecutive_failures", 0) + 1
@@ -547,15 +554,29 @@ def _run_fetch_jobs(jobs, limit, att_policy, fetch_workers) -> int:
         thread_name_prefix="imap-fetch",
     )
     futs = {}
+    # When a worker actually picked the job up. A queued job has no entry,
+    # which is exactly how the timeout branch below tells "this mailbox did
+    # not answer" from "we never called it".
+    started_at: Dict[int, float] = {}
+
+    def _run(i, acc, luid, kuid):
+        started_at[i] = time.monotonic()
+        on_chunk = (lambda payload, _i=i: q.put((_i, payload))) if chunked else None
+        return _invoke_fetch(acc, luid, kuid, limit, on_chunk, supports)
+
     for idx, (acc, luid, kuid) in enumerate(jobs):
         progress.account_fetch_started(acc["email"])
         logger.info(f"→ Sync {acc['email']} ...")
-        on_chunk = (lambda payload, i=idx: q.put((i, payload))) if chunked else None
-        futs[ex.submit(_invoke_fetch, acc, luid, kuid, limit, on_chunk, supports)] = idx
+        futs[ex.submit(_run, idx, acc, luid, kuid)] = idx
 
     total_new = 0
     pending = set(futs)
-    deadline = time.monotonic() + ACCOUNT_FETCH_TIMEOUT_SECONDS
+    # Every account is entitled to the full per-account budget, so the pass
+    # as a whole is allowed as many budgets as there are waves of workers.
+    # Without this a queued account inherited whatever was left of the first
+    # account's clock, which with more accounts than workers is nothing.
+    waves = max(1, -(-len(jobs) // max(1, int(fetch_workers))))
+    pass_deadline = time.monotonic() + ACCOUNT_FETCH_TIMEOUT_SECONDS * waves
     try:
         while pending:
             total_new += _drain_chunks(q, ctxs)
@@ -575,12 +596,35 @@ def _run_fetch_jobs(jobs, limit, att_policy, fetch_workers) -> int:
                     ctx.finish(error=err, server_uidvalidity=s_uidval, uidvalidity_changed=changed)
                 pending -= done
                 continue
-            if time.monotonic() > deadline:
+            now = time.monotonic()
+            # A running account that has used up its own budget is timed out,
+            # on its own, without touching the ones still being served.
+            overdue = {
+                f for f in pending
+                if f in futs and started_at.get(futs[f]) is not None
+                and now - started_at[futs[f]] > ACCOUNT_FETCH_TIMEOUT_SECONDS
+            }
+            if overdue:
                 total_new += _drain_chunks(q, ctxs)
-                for f in pending:
+                for f in overdue:
                     ctx = ctxs[futs[f]]
                     f.cancel()
                     ctx.finish(error=f"Délai dépassé ({ACCOUNT_FETCH_TIMEOUT_SECONDS} s sans réponse)")
+                pending -= overdue
+                continue
+            if now > pass_deadline:
+                total_new += _drain_chunks(q, ctxs)
+                for f in pending:
+                    ctx = ctxs[futs[f]]
+                    never_started = f.cancel() or futs[f] not in started_at
+                    if never_started:
+                        # No worker ever opened a socket for this mailbox.
+                        # Blaming it here is what pushed healthy accounts out
+                        # of the rotation behind two slow neighbours.
+                        logger.info(f"[{ctx.email}] non relevé dans cette passe (file d'attente)")
+                        ctx.finish(skipped=True)
+                    else:
+                        ctx.finish(error=f"Délai dépassé ({ACCOUNT_FETCH_TIMEOUT_SECONDS} s sans réponse)")
                 pending.clear()
                 break
             try:
