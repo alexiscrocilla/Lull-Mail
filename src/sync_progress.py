@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, Optional
 
 PHASE_IDLE = "idle"
 PHASE_FETCHING = "fetching"
@@ -30,6 +30,12 @@ class SyncProgress:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._revision = 0
+        # Called on every change, from whichever thread made it. It must do
+        # almost nothing — `_bump` runs inside the fetch pass with the fetch
+        # lock held, and once per message during analysis. The event hub
+        # registers a flag-setter here and builds the actual payload on its
+        # own timer.
+        self._on_change: Optional[Callable[[], None]] = None
         self._fetch: Dict[str, Any] = {
             "active": False, "trigger": None,
             "started_at": None, "finished_at": None,
@@ -45,6 +51,15 @@ class SyncProgress:
     # ── helpers ──────────────────────────────────────────────────────────
     def _bump(self) -> None:
         self._revision += 1
+        cb = self._on_change
+        if cb is not None:
+            try:
+                cb()
+            except Exception:  # noqa: BLE001 — a listener must never break a pass
+                pass
+
+    def set_on_change(self, fn: Optional[Callable[[], None]]) -> None:
+        self._on_change = fn
 
     def _acc(self, email: str) -> Dict[str, Any]:
         entry = self._accounts.get(email)
