@@ -8,8 +8,18 @@ updater, a keyring migration, or an LLM provider.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
+import textwrap
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+# Playwright starts this server with its own cwd (`frontend/`), so the repo
+# root is not on sys.path and `from src import ...` resolved to whatever
+# unrelated `src` package happened to be installed. Anchor on this file.
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 
 def _prepare_environment() -> tuple[str, int]:
@@ -18,6 +28,48 @@ def _prepare_environment() -> tuple[str, int]:
     os.environ["LULLMAIL_DATA"] = data_dir
     port = int(os.environ.get("LULLMAIL_PORT", "8765"))
     return data_dir, port
+
+
+def _write_config(data_dir: str, port: int) -> None:
+    """A single-account, AI-on config so the suite needs nothing outside itself.
+
+    Without it `/api/accounts` raises FileNotFoundError and the sidebar's
+    COMPTES section never renders, so the screenshots would not show the
+    chrome the tests exist to pin.
+    """
+    path = os.path.join(data_dir, "config.yaml")
+    if os.path.exists(path):
+        return
+    yaml_text = textwrap.dedent(
+        """\
+        openai:
+          api_key: 'sk-playwright-not-a-real-key'
+          model: gpt-4o-mini
+        llm:
+          provider: openai
+        polling:
+          interval_minutes: 2
+          initial_fetch_count: 500
+          max_age_days: 0
+          ai_batch_size: 200
+          interval_migrated: true
+        server:
+          host: 127.0.0.1
+          port: {port}
+        accounts:
+        - name: Demo
+          type: imap
+          email: demo@lullmail.test
+          imap_host: 127.0.0.1
+          imap_port: 1
+          username: demo@lullmail.test
+          password: not-a-real-password
+          ssl: false
+          enabled: true
+        """
+    ).format(port=port)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(yaml_text)
 
 
 def _seed_mailbox() -> None:
@@ -35,11 +87,16 @@ def _seed_mailbox() -> None:
         ("Samir Diallo <samir@diallo-conseil.fr>", "Documents pour vendredi"),
         ("Ana Ferreira <ana@ferreira-design.pt>", "Relecture finale du dossier"),
     ]
+    # `insert_email` writes the envelope only — it ignores category, score and
+    # summary, which is why every seeded mail used to render as "En attente"
+    # with a bare card. The verdict is a second write, the same one the
+    # scheduler makes, so the screenshots pin the AI-on card.
     for index in range(18):
         sender, subject = senders[index % len(senders)]
         received = now - timedelta(minutes=index * 37)
+        message_id = f"<playwright-{index}@lullmail.test>"
         db.insert_email({
-            "message_id": f"<playwright-{index}@lullmail.test>",
+            "message_id": message_id,
             "account": "demo@lullmail.test",
             "uid": str(1000 + index),
             "subject": subject,
@@ -48,19 +105,27 @@ def _seed_mailbox() -> None:
             "date_str": received.strftime("%a, %d %b %Y %H:%M:%S +0000"),
             "body_text": "Bonjour,\n\nVoici un message de démonstration déterministe pour les tests LullMail.",
             "body_html": "<p>Bonjour,</p><p>Voici un message de démonstration déterministe pour les tests LullMail.</p>",
-            "category": "important" if index % 4 == 0 else "other",
-            "importance_score": 8 if index % 4 == 0 else 5,
-            "summary": "Message de démonstration pour la validation visuelle.",
             "is_read": index % 3 != 0,
+        })
+        important = index % 4 == 0
+        db.update_email_ai(message_id, {
+            "category": "important" if important else "other",
+            "importance_score": 8 if important else 5,
+            "importance_reason": "Expéditeur connu, échéance proche."
+            if important else "Information, pas d'action attendue.",
+            "summary": "Message de démonstration pour la validation visuelle.",
+            "needs_reply": important,
+            "analyzed_by": "playwright-seed",
         })
 
 
 def main() -> None:
-    _, port = _prepare_environment()
+    data_dir, port = _prepare_environment()
     from src import paths
     from src import database as db
 
     paths.ensure_dirs()
+    _write_config(data_dir, port)
     db.init_db()
     _seed_mailbox()
 

@@ -76,10 +76,20 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 def _frontend_dir() -> Path:
     # When frozen by PyInstaller, static assets live in the temp _MEIPASS dir.
     # In dev / source runs, they sit next to the project root.
-    base = Path(getattr(__import__("sys"), "_MEIPASS", Path.cwd()))
-    bundled = base / "frontend"
-    if bundled.exists():
-        return bundled
+    #
+    # The last candidate is the one anchored on this file: a source run
+    # started from anywhere but the project root used to serve 404 for the
+    # whole UI, which is how the Playwright suite -- whose server runs with
+    # `frontend/` as its cwd -- never managed to load a page.
+    meipass = getattr(__import__("sys"), "_MEIPASS", None)
+    candidates = [
+        Path(meipass) / "frontend" if meipass else None,
+        Path.cwd() / "frontend",
+        Path(__file__).resolve().parent.parent / "frontend",
+    ]
+    for candidate in candidates:
+        if candidate is not None and candidate.exists():
+            return candidate
     return Path("frontend")
 
 
