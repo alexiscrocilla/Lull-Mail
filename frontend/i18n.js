@@ -37,7 +37,6 @@
 const STRINGS = {
   fr: {
     // ── App shell ─────────────────────────────────────────────────────────
-    'app.title': 'Lull Mail',
     'rail.inbox': 'Boîte de réception',
     'rail.queue': 'File d’analyse IA',
     'rail.queue.title': 'File d’analyse IA — cliquer pour lancer une analyse',
@@ -103,15 +102,11 @@ const STRINGS = {
     'aiw.task.news_prompt': 'Quelles newsletters est-ce que je reçois le plus souvent ?',
     'rail.theme': 'Basculer thème',
     'rail.theme.title': 'Basculer clair / sombre',
-    'rail.account': 'Compte actif',
     'shortcuts.title': 'Raccourcis clavier',
     'shortcuts.close': 'Fermer',
     'shortcuts.next_prev': 'Mail suivant / précédent',
     'shortcuts.open': 'Ouvrir le mail sélectionné',
     'shortcuts.mark_read': 'Marquer comme lu',
-    'shortcuts.go_inbox': 'Boîte de réception',
-    'shortcuts.go_cleanup': 'Nettoyage',
-    'shortcuts.compose': 'Composer',
     'shortcuts.search': 'Rechercher',
     'shortcuts.help': 'Afficher cette aide',
     'shortcuts.select': 'Cocher / décocher le mail',
@@ -156,7 +151,6 @@ const STRINGS = {
     'unsub.confirm': 'Se désabonner',
 
     // ── Bug / feedback report ─────────────────────────────────────────────
-    'report.open': 'Signaler un bug / Suggérer une amélioration',
     'report.open_title': 'Signaler un bug ou suggérer une amélioration',
     'report.title': 'Signaler un bug',
     'report.help': "Décrivez ce qui ne marche pas ou l'idée que vous avez. Les infos techniques ci-dessous seront pré-remplies dans le formulaire GitHub. Rien n'est envoyé tant que vous n'avez pas cliqué sur « Ouvrir sur GitHub ».",
@@ -211,10 +205,6 @@ const STRINGS = {
     'update.toast.failed': 'Erreur lors du lancement de la mise à jour.',
 
     // Time abbreviations (relativeShort).
-    'time.short.s': '{n}s',
-    'time.short.m': '{n}m',
-    'time.short.h': '{n}h',
-    'time.short.d': '{n}j',
 
     // ── Email categories (shared) ─────────────────────────────────────────
     'cat.important': 'Important',
@@ -238,8 +228,6 @@ const STRINGS = {
     'ob.step1.local.hw_tier':    'niveau {tier}',
     'ob.step1.local.hw_error':   'Détection du matériel impossible — Medium par défaut.',
     'ob.step1.local.analyzer_role': 'Analyse + tri',
-    'ob.step1.local.drafter_role': 'Rédaction',
-    'ob.step1.local.size_each': '{size} Go',
     'ob.step1.local.total_size': 'Total : ~{size} Go à télécharger',
     'ob.step1.local.eta_hint': '~{minutes} min sur fibre 100 Mb/s',
     'ob.step1.local.already_present': 'Déjà téléchargés ✓',
@@ -252,7 +240,6 @@ const STRINGS = {
     'ob.step1.local.activate_failed': 'Activation échouée : {msg}',
     'ob.step1.local.no_internet_hint': 'Connexion internet requise pour le téléchargement initial uniquement.',
     'ob.step1.openai.toggle': 'Préférez OpenAI ? Utiliser GPT à la place',
-    'ob.step1.openai.title': 'Clé API OpenAI',
     'ob.step1.openai.desc': 'Plus rapide à configurer si vous avez déjà un compte OpenAI. Vos emails transitent par leurs serveurs (chiffré en transit).',
     'ob.step1.key_label': 'Clé API OpenAI',
     'ob.step1.no_key_prefix': 'Pas encore de clé ?',
@@ -261,7 +248,6 @@ const STRINGS = {
     'ob.step1.model_mini': 'gpt-4o-mini — recommandé (rapide & abordable)',
     'ob.step1.model_4o': 'gpt-4o — plus précis, plus cher',
     'ob.step1.openai.continue_btn': 'Enregistrer et continuer',
-    'ob.step1.cta': 'Continuer',
     'ob.step1.skip_cta': 'Continuer sans IA',
     'ob.step1.skip_hint': 'Sans IA, le tri restera basique mais fonctionnel. Vous pourrez activer l\'IA plus tard depuis les Réglages.',
 
@@ -307,7 +293,6 @@ const STRINGS = {
     'ob.toast.invalid_email': 'Adresse email invalide.',
     'ob.toast.host_required': 'Serveur IMAP requis.',
     'ob.toast.password_required': 'Mot de passe requis.',
-    'ob.toast.topic_required': 'Choisissez un topic ntfy ou passez cette étape.',
     'ob.confirm.remove': 'Retirer {email} ?',
 
     'ob.busy.testing': 'Test en cours…',
@@ -389,12 +374,7 @@ const STRINGS = {
     'set.account.ai_threshold_hint': 'Minimum pour notifier et pré-rédiger sur ce compte. Vide = seuil global.',
     'set.account.auto_draft':        'Pré-rédiger un brouillon de réponse',
     'set.account.auto_draft_hint':   'Préparé pour les mails qui attendent une réponse — jamais envoyé sans vous.',
-    'set.ai.toggle':                 'Activée',
-    'set.ai.disabled_msg':           "L'IA est désactivée. Le tri repose uniquement sur les règles locales.",
-    'set.ai.key_label':              'Clé API OpenAI',
     'set.ai.key_ph_set':             'Clé enregistrée',
-    'set.ai.key_ph_empty':           'sk-…',
-    'set.ai.key_hint':               'Récupérée sur platform.openai.com/api-keys. Stockée chiffrée dans le keyring du système.',
     'set.ai.model_label':            'Modèle',
 
     // ── APIs (fournisseurs cloud OpenAI / Claude) ──────────────
@@ -410,8 +390,6 @@ const STRINGS = {
 
     // ── LLM local (provider radio + sous-panneau) ──────────────
     'set.llm.provider_label':        'Fournisseur IA',
-    'set.llm.openai_option':         'OpenAI',
-    'set.llm.local_option':          'Local',
     'set.llm.tile_local':            'Intégré',
     'set.llm.tile_local_sub':        'Hors-ligne, sans clé',
     'set.llm.tile_ollama_sub':       'Votre serveur local',
@@ -424,11 +402,6 @@ const STRINGS = {
     'set.ollama.unreachable':        'Serveur Ollama injoignable à cette adresse.',
     'set.ollama.found':              '{n} modèle(s) détecté(s).',
     'set.ollama.none':               'Aucun modèle installé. Faites « ollama pull <modèle> ».',
-    'set.anthropic.key_label':       'Clé API Anthropic',
-    'set.anthropic.key_ph':          'sk-ant-…',
-    'set.anthropic.key_hint':        'Récupérée sur console.anthropic.com. Stockée chiffrée dans le keyring du système.',
-    'set.llm.hardware_loading':      'Détection du matériel…',
-    'set.llm.hardware_detected':     'Détecté : {ram} Go RAM{gpu} → tier {tier} recommandé',
     'set.llm.tier_light':            'Light',
     'set.llm.tier_medium':           'Medium',
     'set.llm.tier_heavy':            'Heavy',
@@ -440,9 +413,7 @@ const STRINGS = {
     'set.llm.recommended_badge':     'recommandé pour votre machine',
     'set.llm.heavy_warning':         'Trop lourd pour votre RAM disponible — risque de swap',
     'set.llm.ram_warning':           '{peak} Go résident estimé, mais seulement {usable} Go RAM utile disponible — va swapper',
-    'set.llm.gpu_cpu_mode':          '(mode CPU — GPU activable en v2)',
     'set.llm.download_btn':          'Télécharger',
-    'set.llm.select_first':          'Sélectionnez ce modèle pour pouvoir le télécharger',
     'set.llm.downloading':           'Téléchargement…',
     'set.llm.delete_btn':            'Supprimer',
     'set.llm.delete_confirm':        'Supprimer ce modèle GGUF du disque ?',
@@ -450,7 +421,6 @@ const STRINGS = {
     'set.llm.dl_done':               'Téléchargé ✓',
     'set.llm.dl_failed':             'Téléchargement échoué',
     'set.llm.disk_usage':            'Modèles : {size} Go sur disque',
-    'set.llm.activate_btn':          'Activer le mode local',
     'set.llm.apply_btn':             'Appliquer les changements',
     'set.llm.applied_state':         'Mode local actif',
     'set.llm.applied_hint':          'Ces modèles sont déjà actifs. Modifiez la sélection pour appliquer un changement.',
@@ -464,7 +434,6 @@ const STRINGS = {
     'set.llm.load_error':            'Erreur de chargement : {msg}',
 
     'set.notif.title':               'Notifications push',
-    'set.notif.toggle':              'Activées',
     'set.notif.seg_aria':            'Activer ou désactiver les notifications push',
     'set.notif.toggle_off_title':    'Notifications désactivées',
     'set.notif.toggle_on_title':     'Notifications activées',
@@ -546,7 +515,6 @@ const STRINGS = {
     'set.toast.enabled':             '{email} réactivé.',
     'set.toast.disabled':            '{email} mis en pause.',
     'set.toast.ai_on':               'IA activée.',
-    'set.toast.ai_off':              'IA désactivée.',
     'set.toast.restarted':           'Services redémarrés.',
     'set.toast.exported':            'Configuration exportée.',
     'set.toast.imported':            'Configuration importée — services redémarrés.',
@@ -771,7 +739,6 @@ const STRINGS = {
     'mb.toast.read':                 'Marqué comme lu',
     'mb.toast.unread':               'Marqué comme non lu',
     'mb.toast.deleted':              'Message supprimé',
-    'mb.toast.moved_trash':          'Déplacé dans la corbeille',
     'mb.toast.restored':             'Restauré dans la boîte',
     'rt.ai_busy':                    'Tri des messages…',
     'rt.fetching':                   'Relève du courrier…',
@@ -931,7 +898,6 @@ const STRINGS = {
     'mb.sidebar.accounts':           'Comptes',
     'mb.thread.convo_head':          'Conversation · {n} messages',
     'mb.toast.bulk_error':           '{n} action(s) ont échoué.',
-    'mb.list.select_aria':           'Sélectionner ce message',
     'mb.list.select_title':          'Cliquer pour sélectionner, cliquer sur le corps pour ouvrir',
     'mb.card.unread':                'Non lu',
     'mb.list.error':                 'Erreur : {msg}',
@@ -949,7 +915,6 @@ const STRINGS = {
 
   en: {
     // ── App shell ─────────────────────────────────────────────────────────
-    'app.title': 'Lull Mail',
     'rail.inbox': 'Inbox',
     'rail.queue': 'AI analysis queue',
     'rail.queue.title': 'AI analysis queue — click to run a pass',
@@ -1015,15 +980,11 @@ const STRINGS = {
     'aiw.task.news_prompt': 'Which newsletters do I receive most often?',
     'rail.theme': 'Toggle theme',
     'rail.theme.title': 'Toggle light / dark',
-    'rail.account': 'Active account',
     'shortcuts.title': 'Keyboard shortcuts',
     'shortcuts.close': 'Close',
     'shortcuts.next_prev': 'Next / previous email',
     'shortcuts.open': 'Open the selected email',
     'shortcuts.mark_read': 'Mark as read',
-    'shortcuts.go_inbox': 'Inbox',
-    'shortcuts.go_cleanup': 'Cleanup',
-    'shortcuts.compose': 'Compose',
     'shortcuts.search': 'Search',
     'shortcuts.help': 'Show this help',
     'shortcuts.select': 'Tick / untick the message',
@@ -1068,7 +1029,6 @@ const STRINGS = {
     'unsub.confirm': 'Unsubscribe',
 
     // ── Bug / feedback report ─────────────────────────────────────────────
-    'report.open': 'Report a bug / Suggest an improvement',
     'report.open_title': 'Report a bug or suggest an improvement',
     'report.title': 'Report a bug',
     'report.help': "Describe what's broken or the idea you have. The technical info below will be pre-filled in the GitHub form. Nothing is sent until you click “Open on GitHub”.",
@@ -1123,10 +1083,6 @@ const STRINGS = {
     'update.toast.failed': 'Failed to start the update.',
 
     // Time abbreviations (relativeShort).
-    'time.short.s': '{n}s',
-    'time.short.m': '{n}m',
-    'time.short.h': '{n}h',
-    'time.short.d': '{n}d',
 
     // ── Email categories (shared) ─────────────────────────────────────────
     'cat.important': 'Important',
@@ -1150,8 +1106,6 @@ const STRINGS = {
     'ob.step1.local.hw_tier':    '{tier} tier',
     'ob.step1.local.hw_error':   'Hardware detection failed — defaulting to Medium.',
     'ob.step1.local.analyzer_role': 'Analysis + sorting',
-    'ob.step1.local.drafter_role': 'Reply drafting',
-    'ob.step1.local.size_each': '{size} GB',
     'ob.step1.local.total_size': 'Total: ~{size} GB to download',
     'ob.step1.local.eta_hint': '~{minutes} min on a 100 Mb/s connection',
     'ob.step1.local.already_present': 'Already downloaded ✓',
@@ -1164,7 +1118,6 @@ const STRINGS = {
     'ob.step1.local.activate_failed': 'Activation failed: {msg}',
     'ob.step1.local.no_internet_hint': 'Internet required for the initial download only.',
     'ob.step1.openai.toggle': 'Prefer OpenAI? Use GPT instead',
-    'ob.step1.openai.title': 'OpenAI API key',
     'ob.step1.openai.desc': 'Quicker to set up if you already have an OpenAI account. Your emails travel through their servers (encrypted in transit).',
     'ob.step1.key_label': 'OpenAI API key',
     'ob.step1.no_key_prefix': "Don't have a key yet?",
@@ -1173,7 +1126,6 @@ const STRINGS = {
     'ob.step1.model_mini': 'gpt-4o-mini — recommended (fast & affordable)',
     'ob.step1.model_4o': 'gpt-4o — more accurate, more expensive',
     'ob.step1.openai.continue_btn': 'Save and continue',
-    'ob.step1.cta': 'Continue',
     'ob.step1.skip_cta': 'Continue without AI',
     'ob.step1.skip_hint': 'Without AI, sorting will be basic but functional. You can enable AI later from Settings.',
 
@@ -1219,7 +1171,6 @@ const STRINGS = {
     'ob.toast.invalid_email': 'Invalid email address.',
     'ob.toast.host_required': 'IMAP host required.',
     'ob.toast.password_required': 'Password required.',
-    'ob.toast.topic_required': 'Pick an ntfy topic or skip this step.',
     'ob.confirm.remove': 'Remove {email}?',
 
     'ob.busy.testing': 'Testing…',
@@ -1297,12 +1248,7 @@ const STRINGS = {
     'set.account.ai_threshold_hint': 'Minimum to notify and pre-draft on this account. Blank = global threshold.',
     'set.account.auto_draft':        'Pre-write a reply draft',
     'set.account.auto_draft_hint':   'Prepared for mails awaiting a reply — never sent without you.',
-    'set.ai.toggle':                 'Enabled',
-    'set.ai.disabled_msg':           'AI is disabled. Sorting relies on local rules only.',
-    'set.ai.key_label':              'OpenAI API key',
     'set.ai.key_ph_set':             'Key saved',
-    'set.ai.key_ph_empty':           'sk-…',
-    'set.ai.key_hint':               'Get one at platform.openai.com/api-keys. Stored encrypted in the system keyring.',
     'set.ai.model_label':            'Model',
 
     // ── APIs (cloud providers OpenAI / Claude) ─────────────────
@@ -1318,8 +1264,6 @@ const STRINGS = {
 
     // ── Local LLM (provider radio + local sub-panel) ───────────
     'set.llm.provider_label':        'AI provider',
-    'set.llm.openai_option':         'OpenAI',
-    'set.llm.local_option':          'Local',
     'set.llm.tile_local':            'Built-in',
     'set.llm.tile_local_sub':        'Offline, no key',
     'set.llm.tile_ollama_sub':       'Your local server',
@@ -1332,11 +1276,6 @@ const STRINGS = {
     'set.ollama.unreachable':        'No Ollama server reachable at this address.',
     'set.ollama.found':              '{n} model(s) found.',
     'set.ollama.none':               'No models installed. Run "ollama pull <model>".',
-    'set.anthropic.key_label':       'Anthropic API key',
-    'set.anthropic.key_ph':          'sk-ant-…',
-    'set.anthropic.key_hint':        'From console.anthropic.com. Stored encrypted in the OS keyring.',
-    'set.llm.hardware_loading':      'Detecting hardware…',
-    'set.llm.hardware_detected':     'Detected: {ram} GB RAM{gpu} → {tier} tier recommended',
     'set.llm.tier_light':            'Light',
     'set.llm.tier_medium':           'Medium',
     'set.llm.tier_heavy':            'Heavy',
@@ -1348,9 +1287,7 @@ const STRINGS = {
     'set.llm.recommended_badge':     'recommended for your machine',
     'set.llm.heavy_warning':         'Too heavy for your available RAM — risk of swap',
     'set.llm.ram_warning':           '{peak} GB resident estimated, only {usable} GB usable RAM available — will swap',
-    'set.llm.gpu_cpu_mode':          '(CPU mode — GPU coming in v2)',
     'set.llm.download_btn':          'Download',
-    'set.llm.select_first':          'Select this model to enable download',
     'set.llm.downloading':           'Downloading…',
     'set.llm.delete_btn':            'Delete',
     'set.llm.delete_confirm':        'Delete this GGUF model from disk?',
@@ -1358,7 +1295,6 @@ const STRINGS = {
     'set.llm.dl_done':               'Downloaded ✓',
     'set.llm.dl_failed':             'Download failed',
     'set.llm.disk_usage':            'Models: {size} GB on disk',
-    'set.llm.activate_btn':          'Activate local mode',
     'set.llm.apply_btn':             'Apply changes',
     'set.llm.applied_state':         'Local mode active',
     'set.llm.applied_hint':          'These models are already active. Change the selection to apply a different one.',
@@ -1372,7 +1308,6 @@ const STRINGS = {
     'set.llm.load_error':            'Load error: {msg}',
 
     'set.notif.title':               'Push notifications',
-    'set.notif.toggle':              'Enabled',
     'set.notif.seg_aria':            'Turn push notifications on or off',
     'set.notif.toggle_off_title':    'Notifications off',
     'set.notif.toggle_on_title':     'Notifications on',
@@ -1454,7 +1389,6 @@ const STRINGS = {
     'set.toast.enabled':             '{email} resumed.',
     'set.toast.disabled':            '{email} paused.',
     'set.toast.ai_on':               'AI enabled.',
-    'set.toast.ai_off':              'AI disabled.',
     'set.toast.restarted':           'Services restarted.',
     'set.toast.exported':            'Configuration exported.',
     'set.toast.imported':            'Configuration imported — services restarted.',
@@ -1677,7 +1611,6 @@ const STRINGS = {
     'rt.fetching':                   'Fetching mail…',
     'rt.fetching_one':               'Fetching {name}…',
     'rt.hydrating':                  'Downloading messages…',
-    'mb.toast.moved_trash':          'Moved to trash',
     'mb.toast.restored':             'Restored to inbox',
     'mb.toast.sent':                 'Message sent',
     'mb.toast.send_fail':            'Failed to send',
@@ -1833,7 +1766,6 @@ const STRINGS = {
     'mb.sidebar.accounts':           'Accounts',
     'mb.thread.convo_head':          'Conversation · {n} messages',
     'mb.toast.bulk_error':           '{n} action(s) failed.',
-    'mb.list.select_aria':           'Select this message',
     'mb.list.select_title':          'Click to select, click body to open',
     'mb.card.unread':                'Unread',
     'mb.list.error':                 'Error: {msg}',

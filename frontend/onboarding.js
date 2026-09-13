@@ -125,6 +125,22 @@ function goToStep(n) {
   if (n === 1) refreshAccountsList();
   if (n === 2) startFetchTicker();
   else stopFetchTicker();
+  if (n === 3) renderFinalizeStatus();
+}
+
+// Services are started when the user leaves the account screen, not here, so
+// the last screen reports what happened rather than doing it.
+function renderFinalizeStatus() {
+  const target = document.getElementById('finalize-status');
+  if (!target) return;
+  if (state.finalizeError) {
+    target.innerHTML = `<span class="test-err">${window.t('ob.test.err_prefix')} ${escapeHtml(state.finalizeError)}</span>
+      <div class="text-xs mt-2" style="color: var(--muted);">
+        ${escapeHtml(window.t('ob.step4.fail_hint'))}
+      </div>`;
+  } else {
+    target.innerHTML = `<span class="test-ok">${escapeHtml(window.t('ob.step4.ok'))}</span>`;
+  }
 }
 
 // ── "your mail is already arriving" ──────────────────────────────────────
@@ -160,10 +176,12 @@ function stopFetchTicker() {
 // the download overlaps the AI choice instead of following it. finalize is
 // restart-safe, and the Settings account modal already does this same pair.
 async function finishAccountsAndNext() {
-  setBusy('btn-next-accounts', true, window.t('ob.busy.working'));
+  setBusy('btn-next-accounts', true, window.t('ob.step4.starting'));
+  state.finalizeError = null;
   try {
     await api('POST', '/api/setup/finalize');
   } catch (e) {
+    state.finalizeError = e.message;
     toast(window.t('ob.toast.error', { error: e.message }), 'err');
   } finally {
     setBusy('btn-next-accounts', false);

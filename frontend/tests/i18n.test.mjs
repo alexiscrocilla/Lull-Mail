@@ -136,3 +136,58 @@ test('t() leaves keys without a _one variant alone and still interpolates', asyn
   // Unknown key falls back to the key itself, not to `<key>_one`.
   assert.equal(tr('cleanup.does.not.exist', { n: 1 }), 'cleanup.does.not.exist');
 });
+
+test('no key is defined that nothing renders', () => {
+  // The suite caught a key referenced but missing. The opposite — a string
+  // kept alive long after its control was deleted — failed nothing, and the
+  // dictionary had accumulated dozens: a whole retired settings panel, a
+  // wizard step, an abbreviated-time scale nothing ever called.
+  //
+  // Keys assembled at runtime are the one thing a text scan cannot see, so
+  // their literal prefixes are listed here. Each is a real concatenation
+  // site; grep for it before adding another.
+  const BUILT_AT_RUNTIME = [
+    'cleanup.card.',                // cleanup.js — `cleanup.card.${id}.…`
+    'cleanup.job.',                 // cleanup.js — `cleanup.job.${state}`
+    'cmdk.tool.',                   // command-palette.js — `cmdk.tool.${name}`
+    'provider.',                    // settings.js / onboarding.js — `provider.${type}.…`
+    'set.llm.tier_',                // settings.js — `set.llm.tier_${tier}`
+    'set.llm.role_',                // settings.js — 'set.llm.role_' + role
+    'set.llm.activate_warning_',    // settings.js — 'set.llm.activate_warning_' + code
+  ];
+  // Pinned by the singular-variant test below rather than by a screen.
+  const ASSERTED_HERE = new Set(['mb.score.title']);
+
+  const PREFIXES = [
+    'mb', 'set', 'cleanup', 'confirm', 'ob', 'cmdk', 'rail', 'report', 'diag',
+    'shortcuts', 'update', 'cat', 'time', 'unsub', 'rt', 'aiw', 'provider',
+  ];
+  const KEYISH = new RegExp(`'((?:${PREFIXES.join('|')})\.[a-z0-9_.]+)'`, 'gi');
+  const ATTR = /data-i18n(?:-html|-placeholder|-aria-label|-title)?="([^"]+)"/g;
+
+  const referenced = new Set();
+  const files = [
+    ...readdirSync(FRONTEND).filter((f) => f.endsWith('.js') && f !== 'i18n.js'),
+    'index.html', 'onboarding.html',
+  ];
+  for (const file of files) {
+    let text;
+    try { text = readFileSync(join(FRONTEND, file), 'utf8'); } catch { continue; }
+    for (const m of text.matchAll(KEYISH)) referenced.add(m[1]);
+    for (const m of text.matchAll(ATTR)) referenced.add(m[1]);
+  }
+  // The backend translates some of the same namespaces.
+  const SRC_DIR = join(FRONTEND, '..', 'src');
+  for (const f of readdirSync(SRC_DIR).filter((x) => x.endsWith('.py'))) {
+    const text = readFileSync(join(SRC_DIR, f), 'utf8');
+    for (const m of text.matchAll(KEYISH)) referenced.add(m[1]);
+  }
+
+  const orphans = [...FR_KEYS].filter((k) => {
+    if (referenced.has(k) || ASSERTED_HERE.has(k)) return false;
+    // `<key>_one` lives or dies with the key it varies.
+    if (k.endsWith('_one') && referenced.has(k.slice(0, -4))) return false;
+    return !BUILT_AT_RUNTIME.some((p) => k.startsWith(p));
+  });
+  assert.deepEqual(orphans, [], `defined but never rendered:\n${orphans.join('\n')}`);
+});
