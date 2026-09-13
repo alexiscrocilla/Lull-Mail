@@ -2555,18 +2555,33 @@ export async function mountCleanup(host, opts = {}) {
       return;
     }
 
-    // Server says "open this URL/mailto in a tab".
-    if (res.action_required === 'open_url') {
-      window.open(res.target, '_blank', 'noopener,noreferrer');
-      window.toast(t('cleanup.unsub.toast.page_opened'));
-      // We can't know if the user really clicked unsubscribe — flag visually
-      // but don't stamp `unsubscribed_at` server-side (the user may abort).
-      finishUnsub(email, false);
-      return;
-    }
-    if (res.action_required === 'open_mailto') {
-      window.open(`mailto:${res.target}`, '_blank');
-      window.toast(t('cleanup.unsub.toast.mail_opened'));
+    // Server says "open this URL/mailto in a tab". We cannot see what happens
+    // there, so we do not stamp anything — but we ask. Without this, senders
+    // without a one-click link stayed listed as subscribed forever and the
+    // list never got shorter.
+    if (res.action_required === 'open_url' || res.action_required === 'open_mailto') {
+      const isPage = res.action_required === 'open_url';
+      window.open(isPage ? res.target : `mailto:${res.target}`, '_blank', 'noopener,noreferrer');
+      window.toast({
+        variant: 'info',
+        message: t(isPage ? 'cleanup.unsub.toast.page_opened' : 'cleanup.unsub.toast.mail_opened'),
+        duration: 12000,
+        action: {
+          label: t('cleanup.unsub.mark_done'),
+          onClick: async () => {
+            try {
+              await api.markUnsubscribed({ sender: email, account: state.accountFilter || undefined });
+              const s = state.unsubSenders.find((x) => x.email === email);
+              if (s) s.unsubscribed_at = new Date().toISOString();
+              window.toast(t('cleanup.unsub.toast.marked'));
+            } catch (err) {
+              window.toast({ variant: 'error', message: t('cleanup.toast.fail', { msg: err.message }) });
+            }
+            renderUnsubRail();
+            if (state.selectedUnsub === email) renderUnsubDetail(email);
+          },
+        },
+      });
       finishUnsub(email, false);
       return;
     }

@@ -293,6 +293,24 @@ def test_backfill_connection_failure_does_not_mark_rows_checked(fresh_app, monke
         ).fetchone()[0] is None, "a failed fetch must leave the row inspectable"
 
 
+def test_manual_unsubscribe_can_be_marked_done(client, fresh_app):
+    """Senders with no one-click link send the user to their own page, which
+    the app cannot observe. Without this they stayed listed as subscribed for
+    good and the list never got shorter."""
+    from src import database as db
+
+    db.insert_email({
+        "message_id": "<n1@x>", "account": "u@x.fr", "uid": "1", "subject": "s",
+        "sender": "News <n@shop.fr>", "date_str": "Mon, 05 May 2025 10:00:00 +0000",
+        "list_unsubscribe": "<https://shop.fr/u>", "unsubscribe_url": "https://shop.fr/u",
+    })
+    assert db.unsubscribe_senders()[0]["unsubscribed_at"] is None
+
+    r = client.post("/api/cleanup/unsubscribe/mark", json={"sender": "n@shop.fr"})
+    assert r.status_code == 200 and r.json()["marked"] == 1
+    assert db.unsubscribe_senders()[0]["unsubscribed_at"] is not None
+
+
 def test_backfill_skips_accounts_in_backoff(fresh_app, monkeypatch):
     from src import scheduler, database as db, email_fetcher as ef
 

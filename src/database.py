@@ -2246,12 +2246,15 @@ def mark_sender_unsubscribed(sender_email: str, account: Optional[str] = None) -
                 ids.append(r["message_id"])
         if not ids:
             return 0
-        placeholders = ",".join("?" for _ in ids)
-        cur = con.execute(
-            f"UPDATE emails SET unsubscribed_at = datetime('now') WHERE message_id IN ({placeholders})",
-            ids,
-        )
-        return cur.rowcount
+        total = 0
+        for batch in _chunks(ids):
+            placeholders = ",".join("?" for _ in batch)
+            cur = con.execute(
+                f"UPDATE emails SET unsubscribed_at = datetime('now') WHERE message_id IN ({placeholders})",
+                batch,
+            )
+            total += cur.rowcount
+        return total
 
 
 # ── Tiny KV (app-level flags) ─────────────────────────────────────────────────

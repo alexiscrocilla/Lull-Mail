@@ -1969,6 +1969,26 @@ def cleanup_unsubscribe(request: Request, req: UnsubscribeReq, bg: BackgroundTas
     }
 
 
+class UnsubscribeMarkReq(BaseModel):
+    sender: str
+    account: Optional[str] = None
+    done: bool = True
+
+
+@app.post("/api/cleanup/unsubscribe/mark")
+@limiter.limit("60/minute")
+def cleanup_unsubscribe_mark(request: Request, req: UnsubscribeMarkReq):
+    """Record that the user unsubscribed from a sender by hand.
+
+    Senders without a one-click link send the user to a web page or a mail
+    client, and the app cannot see what happens there. Without this, those
+    senders stayed listed as still-subscribed forever and the list never got
+    shorter — so the one job this page does never looked finished.
+    """
+    n = db.mark_sender_unsubscribed(req.sender, account=req.account)
+    return {"ok": True, "marked": n}
+
+
 @app.post("/api/cleanup/unsubscribe/bulk")
 @limiter.limit("30/minute")
 def cleanup_unsubscribe_bulk(request: Request, req: UnsubscribeBulkReq, bg: BackgroundTasks):

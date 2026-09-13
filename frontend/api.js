@@ -465,6 +465,16 @@ export const api = {
     });
   },
 
+  // Record a manual unsubscribe (the sender had no one-click link, so the
+  // user finished the job on the sender's own page).
+  markUnsubscribed({ sender, account }) {
+    return j('/api/cleanup/unsubscribe/mark', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sender, account, done: true }),
+    });
+  },
+
   unsubscribeBulk({ senders, account, purge = false }) {
     return j('/api/cleanup/unsubscribe/bulk', {
       method: 'POST',

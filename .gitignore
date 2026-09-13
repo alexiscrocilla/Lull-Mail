@@ -43,3 +43,6 @@ Thumbs.db
 
 # pnpm content-addressable store (frontend deps cache)
 .pnpm-store/
+
+# Local run configurations for the preview harness (machine-specific paths)
+.claude/
