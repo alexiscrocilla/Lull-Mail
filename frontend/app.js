@@ -388,6 +388,17 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
+  // Print the open message. app_gui.py suppresses the webview's own print
+  // dialog from a capture-phase listener that only calls preventDefault, so
+  // this bubble-phase listener still sees the event — and that suppression
+  // is what stops the shell printing the un-expanded body iframe.
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'p' || e.key === 'P')) {
+    if (window.printOpenEmail?.()) {
+      e.preventDefault();
+      return;
+    }
+  }
+
   if (isTypingTarget(e.target)) return;
 
   // Global shortcuts (toutes pages)

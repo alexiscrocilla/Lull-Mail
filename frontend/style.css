@@ -1755,6 +1755,10 @@ button { font: inherit; }
   display: flex;
   gap: 4px;
   align-items: center;
+  /* The row is space-between, so with the tag chip added between the labels
+     and this group the chip ended up centred in the empty middle. Collapse
+     the slack here instead, and the chips pack to the left. */
+  margin-left: auto;
 }
 /* Wide layout shows the "X"; the narrow media query swaps in the back arrow. */
 .mb-read .icn-back-read { display: none; }
@@ -1802,20 +1806,16 @@ button { font: inherit; }
   color: var(--accent-ink);
   filter: none;
 }
-.read-action-btn-ai {
-  background: color-mix(in oklab, #a78bfa 16%, var(--surface-2));
-  color: #a78bfa;
+/* Utility variants for the read pane action strip. Same shape and tinted
+   background so the four buttons read as one coherent row. Only Répondre
+   is filled with the accent — it is the action the pane exists for. */
+.read-action-btn-reply {
+  width: auto;
+  gap: 7px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 600;
 }
-.read-action-btn-ai:hover { filter: none; background: color-mix(in oklab, #a78bfa 28%, var(--surface-2)); }
-.read-action-btn-ai.active { background: #a78bfa; color: #fff; }
-.read-action-btn-ai.loading { opacity: .5; cursor: wait; pointer-events: none; }
-.read-action-btn-ai:not(.has-draft) { opacity: .55; }
-.read-action-btn-ai:not(.has-draft):hover { opacity: 1; }
-
-/* Utility variants for the read pane action strip. Same shape and
-   tinted-background pattern as .read-action-btn-ai so the four
-   buttons (read-toggle, trash, analyze, reply) read as a single
-   coherent control row. */
 .read-action-btn-muted {
   background: color-mix(in oklab, var(--text) 8%, var(--surface-2));
   color: var(--muted);
@@ -1947,6 +1947,26 @@ button { font: inherit; }
   display: grid; place-items: center;
 }
 .mb-ai-box .ai-title .score-pill { margin-left: auto; }
+.ai-reanalyse {
+  margin-left: auto;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  opacity: .7;
+  cursor: pointer;
+  transition: opacity 160ms ease, background 160ms ease;
+}
+/* When a score pill already claimed the free space, sit next to it. */
+.mb-ai-box .ai-title .score-pill + .ai-reanalyse { margin-left: 4px; }
+.ai-reanalyse:hover { opacity: 1; background: color-mix(in oklab, currentColor 14%, transparent); }
+.ai-reanalyse.loading { opacity: .4; cursor: wait; pointer-events: none; }
+/* No verdict yet: the box states that instead of pretending to have one. */
+.mb-ai-box-idle .ai-title { margin-bottom: 0; }
 .mb-ai-box .ai-summary {
   font-size: 13px;
   line-height: 1.5;
@@ -2472,6 +2492,18 @@ a.lnk-warn {
   flex-shrink: 0;
 }
 /* Create/edit/delete label modal — backdrop + centred card. */
+.mb-label-chip-add {
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 9px;
+  transition: color 160ms ease, border-color 160ms ease;
+}
+.mb-label-chip-add:hover { color: var(--accent); border-color: var(--accent); }
+
 .mb-label-modal-backdrop {
   position: fixed;
   inset: 0;
@@ -3910,6 +3942,9 @@ kbd {
   .read-action-btn,
   #btn-reply-toggle,
   #btn-draft-toggle,
+  /* Both sit outside .mb-read-actions and would otherwise print. */
+  .mb-label-chip-add,
+  .ai-reanalyse,
   .sel-popover {
     display: none !important;
   }

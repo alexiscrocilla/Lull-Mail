@@ -45,16 +45,25 @@ export function initCommandPalette({ navigate }) {
           try { await api.triggerSync(); window.toast?.(t('cmdk.sync_started')); }
           catch (e) { window.toast?.(e.message); }
         } },
-      { id: 'needs-reply', icon: 'reply', label: t('cmdk.needs_reply'),
-        run: () => navigate('#/inbox?reply=1') },
       { id: 'theme', icon: 'moon', label: t('cmdk.theme'), run: () => document.getElementById('theme-toggle')?.click() },
       { id: 'search', icon: 'search', label: t('cmdk.search'), run: () => {
           navigate('#/inbox');
           setTimeout(() => document.querySelector('[data-role="search"]')?.focus(), 60);
         } },
     ];
+    // Only offered while a message is open — printing the list is not a
+    // thing this app does. The `when` property the comment above advertises
+    // does not exist, so the gate is the push itself.
+    if (document.querySelector('#read-pane .mb-read-subject')) {
+      cmds.push({
+        id: 'print-email', icon: 'printer', label: t('cmdk.print_email'),
+        run: () => window.printOpenEmail?.(),
+      });
+    }
     if (window.aiEnabled) {
       cmds.push(
+        { id: 'needs-reply', icon: 'reply', label: t('cmdk.needs_reply'),
+          run: () => navigate('#/inbox?reply=1') },
         { id: 'ai-today', icon: 'sparkles', ai: true, label: t('cmdk.ai_today'),
           run: () => runAssistant(t('cmdk.ai_today_prompt')) },
         { id: 'ai-pending', icon: 'sparkles', ai: true, label: t('cmdk.ai_pending'),

@@ -160,6 +160,38 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
 // eats the little room there was). Needs the frame to be same-origin
 // (buildHtmlBodyBlock adds `allow-same-origin`, no scripts); if that ever
 // fails we fall back to the flexible viewport so the body stays usable.
+/**
+ * Print the message currently open in the read pane.
+ *
+ * `@media print` hides the rest of the chrome; the only thing this has to do
+ * is give the sandboxed body iframe its full content height, so the whole
+ * message reaches paper instead of the scroll viewport.
+ *
+ * Module scope, not a closure inside renderEmail: the command palette and the
+ * Ctrl/Cmd+P binding both reach it from outside the mailbox mount.
+ */
+export function printOpenEmail() {
+  const iframe = document.querySelector('#read-pane .mb-body-iframe');
+  if (!document.querySelector('#read-pane .mb-read-subject')) return false;
+  let savedH = null;
+  if (iframe) {
+    try {
+      savedH = iframe.style.height;
+      const doc = iframe.contentDocument;
+      const innerH = doc?.documentElement?.scrollHeight || doc?.body?.scrollHeight || 0;
+      if (innerH > 0) iframe.style.height = innerH + 'px';
+    } catch (_) { /* sandbox may block introspection */ }
+  }
+  // Let layout settle before invoking the print dialog.
+  setTimeout(() => {
+    try { window.print(); } finally {
+      if (iframe && savedH != null) iframe.style.height = savedH;
+    }
+  }, 80);
+  return true;
+}
+window.printOpenEmail = printOpenEmail;
+
 function autoSizeBodyIframe(iframe) {
   if (!iframe) return;
   let raf = 0;
@@ -3625,6 +3657,8 @@ export async function mountMailbox(host, _opts) {
   function renderEmail(em) {
     const readPaneVersion = ++_readPaneVersion;
     const cat = em.category || 'pending';
+    const inTrash = (state.folder || 'inbox') === 'deleted';
+    const trashLabel = inTrash ? t('mb.move.restore') : t('mb.action.delete');
     const sName = senderName(em.sender);
     const sEmail = senderEmail(em.sender);
     const ini = initials(sName || sEmail);
@@ -3632,19 +3666,38 @@ export async function mountMailbox(host, _opts) {
     const logoImg = avatarImgHtml(sEmail, 36);
 
     const aiOn = !!window.aiEnabled;
-    const aiBox = aiOn && em.summary ? `
+    // Re-analysing belongs next to the analysis, not in the toolbar. It also
+    // means the control inherits this box's `aiOn` gate instead of carrying
+    // a second one of its own — a duplicate that had already drifted, which
+    // is how the overflow menu ended up offering a guaranteed 409.
+    const reanalyseBtn = `
+      <button class="ai-reanalyse" id="btn-analyze" title="${em.summary ? t('mb.action.reanalyze') : t('mb.action.analyze')}" aria-label="${em.summary ? t('mb.action.reanalyze') : t('mb.action.analyze')}">
+        <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+      </button>`;
+    const aiBox = !aiOn ? '' : (em.summary ? `
       <div class="mb-ai-box">
         <div class="ai-body">
           <div class="ai-title">
             <div class="ai-icon"><i data-lucide="sparkles" class="w-4 h-4"></i></div>
             <span>${t('mb.ai.analysis_title')}</span>
             <span class="score-pill ${scoreClass(em.importance_score || 0)}">${em.importance_score || 0}</span>
+            ${reanalyseBtn}
           </div>
           <div class="ai-summary">${escapeHtml(em.summary)}</div>
           ${em.importance_reason ? `<div class="ai-reason">${escapeHtml(em.importance_reason)}</div>` : ''}
         </div>
       </div>
-    ` : '';
+    ` : `
+      <div class="mb-ai-box mb-ai-box-idle">
+        <div class="ai-body">
+          <div class="ai-title">
+            <div class="ai-icon"><i data-lucide="sparkles" class="w-4 h-4"></i></div>
+            <span>${t('mb.ai.not_analyzed')}</span>
+            ${reanalyseBtn}
+          </div>
+        </div>
+      </div>
+    `);
 
     // The draft panel shows whatever is the most recent in-flight
     // reply for this email. Two possible sources, picked in order:
@@ -3724,21 +3777,21 @@ export async function mountMailbox(host, _opts) {
     $('#read-pane').innerHTML = `
       <div class="mb-read-inner">
       <div class="mb-read-head">
-        <span class="cat-chip" data-cat="${escapeHtml(cat)}">
+        ${aiOn && cat !== 'pending' ? `<span class="cat-chip" data-cat="${escapeHtml(cat)}">
           <i data-lucide="tag" class="w-3 h-3"></i>${escapeHtml(CATEGORY_LABEL[cat] || cat)}
-        </span>
+        </span>` : ''}
         ${Array.isArray(em.labels) && em.labels.length ? em.labels.map((l) => `
           <span class="mb-label-chip" style="--label-c:${escapeHtml(l.color)}" title="${escapeHtml(l.name)}">
             <span class="mb-label-chip-dot" style="background:${escapeHtml(l.color)}"></span>${escapeHtml(l.name)}
           </span>
         `).join('') : ''}
+        <!-- Tagging lives with the tags, as one more chip. It replaces an
+             icon button that sat in the action group looking like an action. -->
+        <button type="button" class="mb-label-chip mb-label-chip-add" id="btn-label-add" title="${t('mb.action.tag')}" aria-label="${t('mb.action.tag')}">+</button>
         <div class="mb-read-actions">
-          <button class="icon-btn ${em.is_favourite ? 'is-fav' : ''}" id="btn-fav-toggle" title="${em.is_favourite ? t('mb.action.unstar') : t('mb.action.star')}" aria-pressed="${em.is_favourite ? 'true' : 'false'}">
+          <button class="icon-btn ${em.is_favourite ? 'is-fav' : ''}" id="btn-fav-toggle" title="${em.is_favourite ? t('mb.action.unstar') : t('mb.action.star')}" aria-label="${em.is_favourite ? t('mb.action.unstar') : t('mb.action.star')}" aria-pressed="${em.is_favourite ? 'true' : 'false'}">
             <i data-lucide="star" class="w-4 h-4"></i>
           </button>
-          <button class="icon-btn" id="btn-tag" title="${t('mb.action.tag')}"><i data-lucide="tag" class="w-4 h-4"></i></button>
-          <button class="icon-btn" id="btn-print" title="${t('mb.action.print')}"><i data-lucide="printer" class="w-4 h-4"></i></button>
-          <button class="icon-btn" id="btn-more" title="${t('mb.action.more')}"><i data-lucide="more-vertical" class="w-4 h-4"></i></button>
           <div class="mb-read-sep"></div>
           <!-- Two icons, one button: below 1024px the pane covers the list,
                so the same action reads as "back" rather than "close". CSS
@@ -3769,27 +3822,24 @@ export async function mountMailbox(host, _opts) {
               </div>
             </div>
             <div class="mb-thread-actions">
-              <div class="meta">${escapeHtml(shortDate(em.date_received))}</div>
-              <!-- Group 1 — gestion : marquer lu / supprimer -->
-              <button class="read-action-btn read-action-btn-muted" id="btn-read-toggle" title="${em.is_read ? t('mb.action.mark_unread') : t('mb.action.mark_read')}">
+              <!-- Group 1 — filing: unread, and out of here.
+                   In the trash the same button restores: it used to render
+                   nothing there, leaving a mouse-only menu item as the only
+                   way back out. -->
+              <button class="read-action-btn read-action-btn-muted" id="btn-read-toggle" title="${em.is_read ? t('mb.action.mark_unread') : t('mb.action.mark_read')}" aria-label="${em.is_read ? t('mb.action.mark_unread') : t('mb.action.mark_read')}">
                 <i data-lucide="${em.is_read ? 'mail' : 'mail-open'}" class="w-4 h-4"></i>
               </button>
-              ${state.folder === 'deleted' ? '' : `
-              <button class="read-action-btn read-action-btn-danger" id="btn-trash" title="${t('mb.action.delete')}">
-                <i data-lucide="trash-2" class="w-4 h-4"></i>
-              </button>`}
-              <span class="mb-thread-actions-sep" aria-hidden="true"></span>
-              <!-- Group 2 — engagement : analyser IA / répondre.
-                   The analyse-IA button is hidden in no-AI mode — clicking
-                   it would just hit the 409 from /reanalyze. -->
-              ${aiOn ? `<button class="read-action-btn read-action-btn-ai ${em.summary ? 'has-analysis' : ''}" id="btn-analyze" title="${em.summary ? t('mb.action.reanalyze') : t('mb.action.analyze')}">
-                <i data-lucide="sparkles" class="w-4 h-4"></i>
-              </button>` : ''}
-              <button class="read-action-btn" id="btn-reply-toggle" title="${t('mb.action.reply')}">
-                <i data-lucide="reply" class="w-4 h-4"></i>
+              <button class="read-action-btn ${inTrash ? 'read-action-btn-muted' : 'read-action-btn-danger'}" id="btn-trash" title="${trashLabel}" aria-label="${trashLabel}">
+                <i data-lucide="${inTrash ? 'inbox' : 'trash-2'}" class="w-4 h-4"></i>
               </button>
-              <button class="read-action-btn" id="btn-forward" title="${t('mb.action.forward')}">
+              <span class="mb-thread-actions-sep" aria-hidden="true"></span>
+              <!-- Group 2 — answering. Répondre is the only accent-filled
+                   control on the screen, and the only one worth a word. -->
+              <button class="read-action-btn read-action-btn-muted" id="btn-forward" title="${t('mb.action.forward')}" aria-label="${t('mb.action.forward')}">
                 <i data-lucide="forward" class="w-4 h-4"></i>
+              </button>
+              <button class="read-action-btn read-action-btn-reply" id="btn-reply-toggle" title="${t('mb.action.reply')}">
+                <i data-lucide="reply" class="w-4 h-4"></i><span>${t('mb.action.reply')}</span>
               </button>
             </div>
           </div>
@@ -3875,8 +3925,8 @@ export async function mountMailbox(host, _opts) {
     // Top-level "Étiqueter" — opens the multi-select label popover
     // anchored on the button. Pre-fills with whatever labels the email
     // currently carries; onUpdated repaints chips in the read pane.
-    $('#btn-tag')?.addEventListener('click', () => {
-      const anchor = $('#btn-tag');
+    $('#btn-label-add')?.addEventListener('click', () => {
+      const anchor = $('#btn-label-add');
       openTagPopover(anchor, {
         ids: [em.int_id],
         labels: em.labels || [],
@@ -3885,30 +3935,6 @@ export async function mountMailbox(host, _opts) {
           try { renderEmail(em); } catch (_) {}
         },
       });
-    });
-
-    $('#btn-print').addEventListener('click', () => {
-      // CSS `@media print` hides the rest of the chrome; we only need to
-      // resize the email-body iframe (if any) to its full content height
-      // so the entire HTML body lands on paper, not just the scroll viewport.
-      const iframe = host.querySelector('#read-pane .mb-body-iframe');
-      let savedH = null;
-      if (iframe) {
-        try {
-          savedH = iframe.style.height;
-          const doc = iframe.contentDocument;
-          const innerH = doc?.documentElement?.scrollHeight || doc?.body?.scrollHeight || 0;
-          if (innerH > 0) iframe.style.height = innerH + 'px';
-        } catch (_) { /* sandbox may block introspection */ }
-      }
-      document.body.classList.add('printing');
-      // Let layout settle before invoking the print dialog.
-      setTimeout(() => {
-        try { window.print(); } finally {
-          if (iframe && savedH != null) iframe.style.height = savedH;
-          document.body.classList.remove('printing');
-        }
-      }, 80);
     });
 
     $('#btn-fav-toggle').addEventListener('click', _once(async () => {
@@ -3973,10 +3999,11 @@ export async function mountMailbox(host, _opts) {
 
     // Absent while viewing the trash — see the render above.
     $('#btn-trash')?.addEventListener('click', _once(async () => {
+      const target = inTrash ? 'inbox' : 'deleted';
       await animateCardLeave(em.int_id);
       try {
-        await api.patchEmail(em.int_id, { folder: 'deleted' });
-        window.toast(t('mb.toast.deleted'));
+        await api.patchEmail(em.int_id, { folder: target });
+        window.toast(inTrash ? t('mb.toast.restored') : t('mb.toast.deleted'));
         renderEmpty();
       } catch (err) {
         // Server refused — the card animated out but wasn't moved. Surface
@@ -3985,47 +4012,6 @@ export async function mountMailbox(host, _opts) {
       }
       await loadEmails({ background: true });
     }));
-
-    $('#btn-more').addEventListener('click', () => {
-      const anchor = $('#btn-more');
-      const cur = state.folder || 'inbox';
-      const moveLabel = cur === 'deleted' ? t('mb.move.restore') : t('mb.move.to_trash');
-      const items = [
-        { value: 'ai',     label: t('mb.action.reanalyze'), icon: 'sparkles' },
-        { value: 'move',   label: moveLabel,                icon: cur === 'deleted' ? 'inbox' : 'folder-input' },
-      ];
-      openPopover(anchor, items, async (action) => {
-        if (action === 'ai') {
-          const toastCtrl = window.toast({ variant: 'loading', message: t('mb.ai.analyzing'), duration: 0 });
-          try {
-            const fresh = await api.reanalyzeEmail(em.int_id);
-            renderEmail(fresh);
-            await loadEmails({ background: true });
-            toastCtrl?.success(t('mb.ai.done'));
-          } catch (_) {
-            toastCtrl?.error(t('mb.ai.fail'));
-          }
-        } else if (action === 'move') {
-          const target = cur === 'deleted' ? 'inbox' : 'deleted';
-          await animateCardLeave(em.int_id);
-          // The success toast used to fire unconditionally next to an empty
-          // catch: on a failing backend the card animated out, the toast said
-          // "moved to trash", then the loadEmails() below brought the mail
-          // straight back. Reads as a ghost bug — report what actually
-          // happened instead. (The card still round-trips through
-          // loadEmails() on failure; restoring it without a reload is
-          // handled separately.)
-          try {
-            await api.patchEmail(em.int_id, { folder: target });
-            window.toast(target === 'deleted' ? t('mb.toast.moved_trash') : t('mb.toast.restored'));
-          } catch (err) {
-            window.toast({ variant: 'error', message: t('mb.toast.error', { msg: err.message }) });
-          }
-          renderEmpty();
-          await loadEmails({ background: true });
-        }
-      });
-    });
 
     function openComposer(prefill = null) {
       const composer = $('#mb-composer');
