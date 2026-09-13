@@ -259,3 +259,50 @@ def test_a_failing_account_is_skipped_for_the_rest_of_the_pass(fresh_app, monkey
                              time.monotonic() + 30, unreachable)
 
     assert calls == ["u@x.fr"], f"a dead host was retried {len(calls)} times in one pass"
+
+
+def test_queued_work_for_an_account_the_drain_cannot_serve_is_left_alone(fresh_app, monkeypatch):
+    """Pausing one account must not swallow its queue and block the others.
+
+    The drain claimed a batch across every account, flipped all of them to
+    in-flight, then skipped the ones whose account it could not resolve --
+    without putting them back. Nothing but a restart ever resets an
+    in-flight op, so those deletions were lost: the app showed the mail
+    deleted and the server still had it. Worse, they filled the batch, so
+    the first pass afterwards did no work at all for the healthy account.
+    """
+    from src import database as db, scheduler as sched
+    import src.email_fetcher as ef
+
+    for uid in range(12):
+        db.insert_email({**_envelope(uid=uid), "account": "paused@x.fr",
+                         "message_id": f"<p-{uid}@x>", "body_state": "full"})
+    for uid in range(2):
+        db.insert_email({**_envelope(uid=100 + uid), "account": "live@x.fr",
+                         "message_id": f"<l-{uid}@x>", "body_state": "full"})
+
+    all_ids = [r["int_id"] for r in db.get_emails(limit=100)]
+    db.bulk_set_folder_tx(all_ids, "deleted", trash_delay_seconds=0)
+
+    moved = []
+
+    def fake_move(acc, uids, on_each=None):
+        moved.append(acc["email"])
+        if on_each:
+            for u in uids:
+                on_each(u, True)
+        return [True] * len(uids)
+
+    monkeypatch.setattr(ef, "batch_move_to_trash", fake_move)
+    # Only the live account is configured — the other is paused in Settings.
+    live = {"email": "live@x.fr", "imap_host": "h", "username": "live@x.fr", "password": "p"}
+    sched._drain_trash_ops({"live@x.fr": live})
+
+    assert moved == ["live@x.fr"], f"the drain did {moved!r} on its first pass"
+    with db._conn() as con:
+        stuck = con.execute(
+            "SELECT COUNT(*) FROM pending_ops WHERE status = 'in_flight'").fetchone()[0]
+        waiting = con.execute(
+            "SELECT COUNT(*) FROM pending_ops WHERE status = 'pending'").fetchone()[0]
+    assert stuck == 0, f"{stuck} operations were claimed and thrown away"
+    assert waiting == 12, f"the paused account's 12 deletions should still be queued, found {waiting}"

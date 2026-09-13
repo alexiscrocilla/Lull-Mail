@@ -1303,6 +1303,7 @@ def claim_pending_ops(
     account: Optional[str] = None,
     operation: Optional[str] = None,
     exclude_operations: Optional[List[str]] = None,
+    accounts: Optional[List[str]] = None,
 ) -> List[Dict]:
     """Take the next due offline mutations and mark them in flight.
 
@@ -1310,6 +1311,12 @@ def claim_pending_ops(
     Trash ops are replayed in one IMAP connection per account and can be
     claimed hundreds at a time; flag changes still open a connection each and
     stay on a small batch.
+
+    `accounts` restricts the claim to mailboxes the caller can actually
+    reach. Claiming work for a paused or removed account marked it in
+    flight and the drain then skipped it, and nothing but a restart resets
+    an in-flight op — so those mutations were lost while still filling the
+    batch that the reachable accounts needed.
     """
     now_iso = datetime.now(timezone.utc).isoformat()
     with _conn() as con:
@@ -1321,6 +1328,11 @@ def claim_pending_ops(
               AND (p.next_attempt_at IS NULL OR p.next_attempt_at <= ?)
         """
         params: list = [now_iso]
+        if accounts is not None:
+            if not accounts:
+                return []
+            q += f" AND p.account_email IN ({','.join('?' for _ in accounts)})"
+            params.extend(accounts)
         if account:
             q += " AND p.account_email = ?"
             params.append(account)

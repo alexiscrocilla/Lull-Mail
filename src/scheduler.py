@@ -298,7 +298,8 @@ def _drain_trash_ops(acc_by_email: Dict[str, Dict]) -> int:
     """
     from src.email_fetcher import batch_move_to_trash
 
-    claimed = db.claim_pending_ops(limit=TRASH_DRAIN_BATCH, operation="trash")
+    claimed = db.claim_pending_ops(limit=TRASH_DRAIN_BATCH, operation="trash",
+                                   accounts=list(acc_by_email))
     if not claimed:
         return 0
 
@@ -307,8 +308,6 @@ def _drain_trash_ops(acc_by_email: Dict[str, Dict]) -> int:
         if not op.get("uid"):
             db.fail_pending_op(op["id"], op["revision"], "UID non disponible",
                                retry_delay_seconds=30)
-            continue
-        if op["account_email"] not in acc_by_email:
             continue
         by_acc.setdefault(op["account_email"], []).append(op)
 
@@ -351,11 +350,10 @@ def _drain_pending_ops(accounts: List[Dict]):
     # Flag changes still open one connection each, so they stay on a small
     # batch: they arrive one at a time as the user reads mail, never in
     # thousands the way a cleanup action does.
-    claimed = db.claim_pending_ops(limit=50, exclude_operations=["trash"])
+    claimed = db.claim_pending_ops(limit=50, exclude_operations=["trash"],
+                                   accounts=list(acc_by_email))
     for op in claimed:
-        acc = acc_by_email.get(op["account_email"])
-        if not acc:
-            continue
+        acc = acc_by_email[op["account_email"]]
         uid = op.get("uid")
         if not uid:
             db.fail_pending_op(op["id"], op["revision"], "UID non disponible", retry_delay_seconds=30)
