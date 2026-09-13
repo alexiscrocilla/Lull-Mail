@@ -67,6 +67,9 @@ ANALYSIS_WATCHDOG_SECONDS = 60 * 60
 ANALYSIS_TIME_BUDGET_SECONDS = 10 * 60
 # Bodies claimed per account per hydration round.
 HYDRATION_BATCH = 30
+# Unsubscribe headers re-fetched per account per analysis pass. One IMAP
+# round-trip each, so keep the slice small enough to stay invisible.
+UNSUB_BACKFILL_PER_PASS = 300
 # IDLE notifications are coalesced for this long before a targeted fetch.
 IDLE_DEBOUNCE_SECONDS = 2.0
 
@@ -651,6 +654,80 @@ def _hydrate_round(accounts: List[Dict], att_policy, deadline: float) -> int:
     return hydrated
 
 
+def _backfill_unsubscribe_headers(accounts: List[Dict], deadline: float) -> int:
+    """Fill in the List-Unsubscribe header for rows that never had it captured.
+
+    Mail fetched by any current version carries the header (or the empty-string
+    sentinel) from the moment it is inserted, so this only ever touches rows
+    synced by an older build — a one-shot migration. It used to be a button on
+    the Nettoyage page labelled "Analyser les en-têtes", which meant the
+    unsubscribe list was simply empty until the user found and pressed it.
+    """
+    if db.get_kv("unsubscribe_backfill_done_at"):
+        return 0
+    from src.email_fetcher import batch_fetch_headers
+
+    rows = db.find_uids_missing_headers()
+    if not rows:
+        db.set_kv("unsubscribe_backfill_done_at", datetime.now(timezone.utc).isoformat())
+        return 0
+
+    logger.info("Recherche des liens de désabonnement : %d message(s) à inspecter", len(rows))
+    now_iso = datetime.now(timezone.utc).isoformat()
+    by_acc: Dict[str, List[Dict]] = {}
+    for r in rows:
+        by_acc.setdefault(r["account_email"], []).append(r)
+
+    done = 0
+    for acc in accounts:
+        if time.monotonic() > deadline:
+            break
+        pending = by_acc.get(acc["email"]) or []
+        if not pending:
+            continue
+        state = db.get_sync_state(acc["email"])
+        if state and state.get("backoff_until") and state["backoff_until"] > now_iso:
+            continue
+
+        batch = pending[:UNSUB_BACKFILL_PER_PASS]
+        index = {r["uid"]: r["message_id"] for r in batch}
+
+        def _on_each(uid, _ok, parsed, _index=index):
+            msg_id = _index.get(uid)
+            # `parsed` carries the header keys only when the message was really
+            # inspected. On a connection-level failure batch_fetch_headers
+            # calls back with a bare {"uid": …}; writing that would stamp the
+            # "checked, no header" sentinel and hide the sender from the
+            # unsubscribe list forever.
+            if not msg_id or "list_unsubscribe" not in parsed:
+                return
+            try:
+                db.update_unsubscribe_headers(msg_id, parsed)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[{acc['email']}] écriture en-tête {uid} : {e}")
+
+        try:
+            batch_fetch_headers(acc, [r["uid"] for r in batch], on_each=_on_each)
+            done += len(batch)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[{acc['email']}] recherche des liens de désabonnement : {e}")
+
+    remaining = db.count_emails_missing_headers()
+    if remaining == 0:
+        db.set_kv("unsubscribe_backfill_done_at", datetime.now(timezone.utc).isoformat())
+        logger.info("Liens de désabonnement : analyse initiale terminée")
+    elif done == 0:
+        # Nothing moved this pass and rows are still missing: every reachable
+        # account either failed or is in backoff. Stop retrying every minute;
+        # the Nettoyage page keeps a manual re-run.
+        db.set_kv("unsubscribe_backfill_done_at", datetime.now(timezone.utc).isoformat())
+        logger.info(
+            "Liens de désabonnement : %d message(s) non inspectés, reprise manuelle depuis Nettoyage",
+            remaining,
+        )
+    return done
+
+
 def _analyse_round(conf: Dict, accounts: List[Dict], ai_on: bool, deadline: float) -> int:
     """Classify / summarise pending emails (bodies already hydrated).
     Returns the number of emails settled (analysed, skipped or failed)."""
@@ -879,6 +956,13 @@ def analysis_pass(*, time_budget_seconds: float = ANALYSIS_TIME_BUDGET_SECONDS) 
                 logger.info(f"{stale} corps de message bloqués en hydratation remis en file")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"reclaim_stale_hydrating a échoué : {e}")
+
+        # One-shot migration for mailboxes synced before unsubscribe headers
+        # were captured at ingest. No-op on every pass once it has run.
+        try:
+            _backfill_unsubscribe_headers(accounts, deadline)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Recherche des liens de désabonnement : {e}")
 
         # ── Rounds: hydrate → analyse, until idle or out of time ───────────
         while time.monotonic() < deadline:

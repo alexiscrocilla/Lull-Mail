@@ -1503,42 +1503,12 @@ def _bump_job(job_id: str, ok: bool):
             j["finished_at"] = _now_iso()
 
 
-def _run_imap_batch(job_id: str, targets: List[Dict], action: str):
-    """Stream IMAP ops for a cleanup job, grouping by account so each
-    Bridge/IMAP server only sees one connection per account.
-    """
-    from src.email_fetcher import batch_mark_seen, batch_move_to_trash
-
-    by_acc: Dict[str, List[str]] = {}
-    for m in targets:
-        uid = m.get("uid")
-        if not uid:
-            continue
-        by_acc.setdefault(m["account_email"], []).append(uid)
-
-    for account_email, uids in by_acc.items():
-        acc = _account_for(account_email)
-        if not acc:
-            for _ in uids:
-                _bump_job(job_id, False)
-            continue
-        cb = lambda _uid, ok: _bump_job(job_id, ok)
-        try:
-            if action == "delete":
-                batch_move_to_trash(acc, uids, on_each=cb)
-            else:
-                batch_mark_seen(acc, uids, on_each=cb)
-        except Exception as e:
-            logger.error(f"[{account_email}] cleanup job {job_id} crashed: {e}")
-            # Make sure the counters still complete so the UI stops polling.
-            with _jobs_lock:
-                j = _jobs.get(job_id)
-                if j:
-                    remaining = j["total"] - j["done"] - j["failed"]
-                    if remaining > 0:
-                        j["failed"] += remaining
-                        j["finished"] = True
-                        j["finished_at"] = _now_iso()
+# _run_imap_batch used to push cleanup deletions to IMAP as one tracked job so
+# the UI could draw a progress bar over it. Both callers now go through the
+# transactional pending_ops queue instead (see _apply_bulk_action): that is
+# what makes the action undoable, and the progress bar was reporting IMAP
+# propagation nobody had asked to watch. The registry itself stays — the
+# header backfill and the unsubscribe flows still use it.
 
 
 @app.get("/api/cleanup/senders")
@@ -1547,33 +1517,49 @@ def cleanup_senders(limit: int = 50, account: Optional[str] = None):
 
 
 @app.post("/api/cleanup/sender")
-@limiter.limit("10/minute")
+@limiter.limit("60/minute")
 def cleanup_sender(request: Request, req: CleanupSenderReq, bg: BackgroundTasks):
     """Apply a bulk action ('delete' or 'mark_read') to every live message
-    coming from `req.sender`. DB writes happen synchronously so the UI can
-    refresh the counts immediately; IMAP propagation runs as one tracked
-    job whose progress the UI polls via /api/cleanup/jobs/{id}.
+    from `req.sender`. Undoable — see _apply_bulk_action.
+
+    The limit is 60/minute rather than 10: this is a loopback-only app with a
+    single user, the origin middleware already refuses cross-origin calls, and
+    cleaning a dozen senders in a row is ordinary use, not abuse. At 10 the
+    eleventh click of a cleaning session answered "Échec".
     """
     matches = db.find_by_sender(req.sender, account=req.account)
     if not matches:
-        return {"ok": True, "affected": 0, "job_id": None, "total": 0}
+        return {"ok": True, "affected": 0, "undo": None, "job_id": None, "total": 0}
+    return _apply_bulk_action(req.action, matches, bg)
 
-    if req.action == "delete":
-        ids = [m["message_id"] for m in matches if m["folder"] != "deleted"]
-        db.bulk_set_folder(ids, "deleted")
-        targets = [m for m in matches if m["folder"] != "deleted" and m.get("uid")]
-    else:  # mark_read
-        ids = [m["message_id"] for m in matches if not m["is_read"]]
-        db.bulk_mark_read(ids, True)
-        targets = [m for m in matches if not m["is_read"] and m.get("uid")]
 
-    affected = len(ids)
-    if not targets:
-        return {"ok": True, "affected": affected, "job_id": None, "total": 0}
+class CleanupUndoReq(BaseModel):
+    # folder name -> int_ids that were in it before the action
+    folders: Dict[str, List[int]] = {}
+    unread_ids: List[int] = []
 
-    job_id = _make_job(req.action, req.sender, len(targets))
-    bg.add_task(_run_imap_batch, job_id, targets, req.action)
-    return {"ok": True, "affected": affected, "job_id": job_id, "total": len(targets)}
+
+@app.post("/api/cleanup/undo")
+@limiter.limit("60/minute")
+def cleanup_undo(request: Request, req: CleanupUndoReq, bg: BackgroundTasks,
+                 locale: str = Depends(get_locale)):
+    """Put back what a cleanup action just did.
+
+    Each message returns to the folder it actually came from, and the queued
+    IMAP trash op is cancelled when it has not fired yet — which, inside the
+    undo window, is always.
+    """
+    valid = _valid_folders()
+    restored = 0
+    for folder, ids in (req.folders or {}).items():
+        if folder not in valid:
+            raise HTTPException(400, tr("email.folder_invalid", locale, folder=folder))
+        restored += len(db.bulk_set_folder_tx([int(i) for i in ids], folder))
+    if req.unread_ids:
+        restored += len(db.bulk_set_read_tx([int(i) for i in req.unread_ids], False))
+    if restored:
+        bg.add_task(_drain_pending_ops_bg)
+    return {"ok": True, "restored": restored}
 
 
 @app.get("/api/cleanup/jobs/{job_id}")
@@ -1583,6 +1569,64 @@ def get_cleanup_job(job_id: str, locale: str = Depends(get_locale)):
     if not j:
         raise HTTPException(404, tr("cleanup.job_not_found", locale))
     return j
+
+
+# How long a queued trash op waits before the IMAP side runs. Long enough for
+# the undo toast to still be on screen: an undo inside the window cancels the
+# op outright, so the server never sees the deletion at all.
+_CLEANUP_UNDO_DELAY_SECONDS = 12
+
+
+def _filter_constrains_anything(f: RuleFilter) -> bool:
+    """True when the filter actually narrows the mailbox.
+
+    A spec with no clause matches every live message, and "delete" on it used
+    to trash the whole mailbox behind a single confirm. `account` on its own
+    does not count: picking a mailbox is not narrowing what inside it matches.
+    """
+    return any([
+        f.categories,
+        f.max_score is not None,
+        f.is_read is not None,
+        (f.older_than_days or 0) > 0,
+        f.subject_keywords,
+        f.sender_keywords,
+    ])
+
+
+def _reject_empty_filter(f: RuleFilter, locale: str) -> None:
+    if not _filter_constrains_anything(f):
+        raise HTTPException(400, tr("cleanup.rule.no_filter", locale))
+
+
+def _apply_bulk_action(action: str, matches: List[Dict], bg: BackgroundTasks) -> Dict:
+    """Apply 'delete' or 'mark_read' to matched rows and describe the undo.
+
+    Goes through the same transactional queue the inbox uses instead of firing
+    an immediate IMAP batch: the DB flips at once (the count on screen drops),
+    the server-side move is queued with a delay, and the returned `undo`
+    payload is everything the caller needs to put things back — including the
+    folder each message actually came from, which may not be the inbox.
+    """
+    if action == "delete":
+        ids = [m["int_id"] for m in matches if m.get("folder") != "deleted"]
+        before = db.bulk_set_folder_tx(
+            ids, "deleted", trash_delay_seconds=_CLEANUP_UNDO_DELAY_SECONDS)
+        folders: Dict[str, List[int]] = {}
+        for r in before:
+            folders.setdefault(r.get("folder") or "inbox", []).append(r["int_id"])
+        undo = {"folders": folders} if before else None
+    else:
+        ids = [m["int_id"] for m in matches if not m.get("is_read")]
+        before = db.bulk_set_read_tx(ids, True)
+        undo = {"unread_ids": [r["int_id"] for r in before]} if before else None
+
+    if before:
+        bg.add_task(_drain_pending_ops_bg)
+    # `job_id`/`total` are kept at their empty values for older clients that
+    # still branch on them before falling through to the "nothing to poll" path.
+    return {"ok": True, "affected": len(before), "undo": undo,
+            "job_id": None, "total": 0}
 
 
 def _filter_kwargs(f: RuleFilter) -> dict:
@@ -1598,13 +1642,15 @@ def _filter_kwargs(f: RuleFilter) -> dict:
 
 
 @app.post("/api/cleanup/rules/preview")
-def cleanup_rule_preview(filter: RuleFilter, limit: int = 100):
+def cleanup_rule_preview(filter: RuleFilter, limit: int = 100,
+                         locale: str = Depends(get_locale)):
     """Return rich aggregates + a sample of messages that match a filter
     spec. The Rules tab uses this to surface every signal a user might want
     before committing to a destructive action: the total, the most recent
     matches (highest false-positive risk), the top senders inside the
     selection, the date span, and a per-account breakdown.
     """
+    _reject_empty_filter(filter, locale)
     matches = db.find_by_filter(**_filter_kwargs(filter))
 
     # Sort by date descending so the preview shows the most recent matches
@@ -1670,41 +1716,18 @@ def cleanup_rule_preview(filter: RuleFilter, limit: int = 100):
 
 
 @app.post("/api/cleanup/rules/run")
-@limiter.limit("10/minute")
-def cleanup_rule_run(request: Request, req: RuleRunReq, bg: BackgroundTasks):
-    """Apply a rule's action (delete | mark_read) to every match. DB writes
-    happen synchronously (counts shrink immediately on the UI) and IMAP
-    propagation runs as one tracked job, exactly like the senders flow.
+@limiter.limit("60/minute")
+def cleanup_rule_run(request: Request, req: RuleRunReq, bg: BackgroundTasks,
+                     locale: str = Depends(get_locale)):
+    """Apply a rule's action (delete | mark_read) to every match. Undoable —
+    see _apply_bulk_action. A filter that narrows nothing is refused before
+    anything is touched: it used to match the entire mailbox.
     """
+    _reject_empty_filter(req.filter, locale)
     matches = db.find_by_filter(**_filter_kwargs(req.filter))
     if not matches:
-        return {"ok": True, "affected": 0, "job_id": None, "total": 0}
-
-    if req.action == "delete":
-        ids = [m["message_id"] for m in matches if m["folder"] != "deleted"]
-        db.bulk_set_folder(ids, "deleted")
-        targets = [m for m in matches if m["folder"] != "deleted" and m.get("uid")]
-    else:  # mark_read
-        ids = [m["message_id"] for m in matches if not m["is_read"]]
-        db.bulk_mark_read(ids, True)
-        targets = [m for m in matches if not m["is_read"] and m.get("uid")]
-
-    affected = len(ids)
-    if not targets:
-        return {"ok": True, "affected": affected, "job_id": None, "total": 0}
-
-    # Synthesise a label so the job registry can identify rule jobs (they
-    # share the storage with sender jobs but have no canonical "sender").
-    label_bits = []
-    if req.filter.categories: label_bits.append("/".join(req.filter.categories))
-    if req.filter.max_score is not None: label_bits.append(f"≤{req.filter.max_score}")
-    if req.filter.older_than_days: label_bits.append(f">{req.filter.older_than_days}j")
-    if req.filter.is_read is False: label_bits.append("non lus")
-    label = "rule:" + " ".join(label_bits) if label_bits else "rule"
-
-    job_id = _make_job(req.action, label, len(targets))
-    bg.add_task(_run_imap_batch, job_id, targets, req.action)
-    return {"ok": True, "affected": affected, "job_id": job_id, "total": len(targets)}
+        return {"ok": True, "affected": 0, "undo": None, "job_id": None, "total": 0}
+    return _apply_bulk_action(req.action, matches, bg)
 
 
 # ── Unsubscribe (RFC 2369 + RFC 8058) ─────────────────────────────────────────
@@ -1746,7 +1769,12 @@ def _run_header_backfill(job_id: str, account: Optional[str]):
         def make_cb(ae: str):
             def _cb(uid, ok, parsed):
                 msg_id = index.get((ae, uid))
-                if msg_id:
+                # Only write when the message was really inspected. On a
+                # connection-level failure batch_fetch_headers calls back with
+                # a bare {"uid": …}; storing that stamps the "checked, no
+                # header" sentinel and hides the sender from the unsubscribe
+                # list for good.
+                if msg_id and "list_unsubscribe" in parsed:
                     try:
                         db.update_unsubscribe_headers(msg_id, parsed)
                     except Exception as e:
@@ -1854,7 +1882,9 @@ def cleanup_unsubscribe_backfill(account: Optional[str] = None, bg: BackgroundTa
 
 
 @app.post("/api/cleanup/unsubscribe")
-@limiter.limit("10/minute")
+# 30/minute, not 60 like the local-only actions: each call can fire an HTTP
+# POST at somebody else's unsubscribe endpoint, so the ceiling stays lower.
+@limiter.limit("30/minute")
 def cleanup_unsubscribe(request: Request, req: UnsubscribeReq, bg: BackgroundTasks, locale: str = Depends(get_locale)):
     """Single-sender unsubscribe with optional purge of existing messages."""
     target = db.unsubscribe_sender_target(req.sender, account=req.account)
@@ -1940,7 +1970,7 @@ def cleanup_unsubscribe(request: Request, req: UnsubscribeReq, bg: BackgroundTas
 
 
 @app.post("/api/cleanup/unsubscribe/bulk")
-@limiter.limit("10/minute")
+@limiter.limit("30/minute")
 def cleanup_unsubscribe_bulk(request: Request, req: UnsubscribeBulkReq, bg: BackgroundTasks):
     """Run one-click POSTs for every sender in the list. Senders without a
     one-click target are skipped (the UI restricts the bulk button to
@@ -2658,8 +2688,21 @@ def list_custom_rules():
     return db.get_custom_rules()
 
 
+def _reject_empty_rule_dict(raw: dict, locale: str) -> None:
+    """Same guard as _reject_empty_filter, for the loosely-typed `filter` dict
+    a custom rule carries. Applied at write time so a rule that would select
+    the whole mailbox can never be stored in the first place."""
+    try:
+        parsed = RuleFilter(**(raw or {}))
+    except Exception:
+        raise HTTPException(400, tr("cleanup.rule.invalid", locale))
+    if not _filter_constrains_anything(parsed):
+        raise HTTPException(400, tr("cleanup.rule.no_filter", locale))
+
+
 @app.post("/api/cleanup/custom-rules", status_code=201)
-def create_custom_rule(body: CustomRuleBody):
+def create_custom_rule(body: CustomRuleBody, locale: str = Depends(get_locale)):
+    _reject_empty_rule_dict(body.filter, locale)
     rule_id = db.create_custom_rule(
         name=body.name.strip() or "Sans titre",
         description=body.description,
@@ -2685,6 +2728,7 @@ def patch_custom_rule(rule_id: int, body: CustomRulePatch, locale: str = Depends
     if body.accent is not None:
         fields["accent"] = body.accent
     if body.filter is not None:
+        _reject_empty_rule_dict(body.filter, locale)
         fields["filter_json"] = json.dumps(body.filter)
     if body.actions is not None:
         fields["actions_json"] = json.dumps(body.actions)

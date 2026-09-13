@@ -30,6 +30,19 @@ def _conn() -> sqlite3.Connection:
     return con
 
 
+# SQLite caps the number of bound variables per statement. Recent builds allow
+# 32766, but plenty of shipped ones still stop at 999 — and a cleanup action on
+# a large mailbox easily selects a few thousand rows. Every `IN (?,?,…)` built
+# from a caller-supplied list goes through _chunks so the statement stays under
+# the smallest limit we might meet in the wild.
+_SQL_VARS_PER_CHUNK = 900
+
+
+def _chunks(seq: List[Any], size: int = _SQL_VARS_PER_CHUNK):
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
 def init_db():
     with _conn() as con:
         con.executescript("""
@@ -1295,12 +1308,25 @@ def set_email_folder_tx(email_int_id: int, folder: str, trash_delay_seconds: int
 
 
 def bulk_set_folder_tx(email_int_ids: List[int], folder: str, trash_delay_seconds: int = 5) -> List[Dict]:
+    """Move rows to *folder* and queue the matching IMAP op.
+
+    Returns the rows as they were BEFORE the move, so the caller can offer an
+    undo that restores each one to the folder it actually came from. The queued
+    trash op is delayed by *trash_delay_seconds*: an undo inside that window
+    cancels it outright and the server never sees the deletion.
+    """
     if not email_int_ids:
         return []
+    ids = list(email_int_ids)
+    rows: List[Dict] = []
     with _conn() as con:
-        placeholders = ",".join("?" for _ in email_int_ids)
-        rows = [dict(r) for r in con.execute(f"SELECT * FROM emails WHERE int_id IN ({placeholders})", email_int_ids).fetchall()]
-        con.execute(f"UPDATE emails SET folder = ? WHERE int_id IN ({placeholders})", [folder] + list(email_int_ids))
+        for batch in _chunks(ids):
+            placeholders = ",".join("?" for _ in batch)
+            rows.extend(
+                dict(r) for r in
+                con.execute(f"SELECT * FROM emails WHERE int_id IN ({placeholders})", batch).fetchall()
+            )
+            con.execute(f"UPDATE emails SET folder = ? WHERE int_id IN ({placeholders})", [folder] + batch)
         for r in rows:
             if folder == "deleted":
                 if r.get("uid"):
@@ -1320,10 +1346,19 @@ def bulk_set_folder_tx(email_int_ids: List[int], folder: str, trash_delay_second
 def bulk_set_read_tx(email_int_ids: List[int], is_read: bool) -> List[Dict]:
     if not email_int_ids:
         return []
+    ids = list(email_int_ids)
+    rows: List[Dict] = []
     with _conn() as con:
-        placeholders = ",".join("?" for _ in email_int_ids)
-        rows = [dict(r) for r in con.execute(f"SELECT * FROM emails WHERE int_id IN ({placeholders})", email_int_ids).fetchall()]
-        con.execute(f"UPDATE emails SET is_read = ? WHERE int_id IN ({placeholders})", [1 if is_read else 0] + list(email_int_ids))
+        for batch in _chunks(ids):
+            placeholders = ",".join("?" for _ in batch)
+            rows.extend(
+                dict(r) for r in
+                con.execute(f"SELECT * FROM emails WHERE int_id IN ({placeholders})", batch).fetchall()
+            )
+            con.execute(
+                f"UPDATE emails SET is_read = ? WHERE int_id IN ({placeholders})",
+                [1 if is_read else 0] + batch,
+            )
         for r in rows:
             if r.get("uid"):
                 queue_pending_op(
@@ -1472,14 +1507,17 @@ def release_hydration_claims(message_ids: List[str]) -> int:
     ids = [m for m in (message_ids or []) if m]
     if not ids:
         return 0
+    total = 0
     with _conn() as con:
-        placeholders = ",".join("?" for _ in ids)
-        cur = con.execute(
-            f"UPDATE emails SET body_state = 'envelope', body_updated_at = datetime('now') "
-            f"WHERE body_state = 'hydrating' AND message_id IN ({placeholders})",
-            ids,
-        )
-        return cur.rowcount
+        for batch in _chunks(ids):
+            placeholders = ",".join("?" for _ in batch)
+            cur = con.execute(
+                f"UPDATE emails SET body_state = 'envelope', body_updated_at = datetime('now') "
+                f"WHERE body_state = 'hydrating' AND message_id IN ({placeholders})",
+                batch,
+            )
+            total += cur.rowcount
+    return total
 
 
 def reclaim_stale_hydrating(max_age_minutes: int = 10) -> int:
@@ -1847,7 +1885,7 @@ def find_by_sender(sender_email: str, account: Optional[str] = None) -> List[Dic
     if not target:
         return []
     q = """
-        SELECT message_id, account_email, uid, sender, is_read, folder
+        SELECT int_id, message_id, account_email, uid, sender, is_read, folder
         FROM emails
         WHERE folder != 'deleted'
     """
@@ -1943,25 +1981,31 @@ def find_by_filter(
 def bulk_set_folder(message_ids: List[str], folder: str):
     if not message_ids:
         return 0
+    total = 0
     with _conn() as con:
-        placeholders = ",".join("?" for _ in message_ids)
-        cur = con.execute(
-            f"UPDATE emails SET folder = ? WHERE message_id IN ({placeholders})",
-            (folder, *message_ids),
-        )
-        return cur.rowcount
+        for batch in _chunks(list(message_ids)):
+            placeholders = ",".join("?" for _ in batch)
+            cur = con.execute(
+                f"UPDATE emails SET folder = ? WHERE message_id IN ({placeholders})",
+                (folder, *batch),
+            )
+            total += cur.rowcount
+    return total
 
 
 def bulk_mark_read(message_ids: List[str], is_read: bool):
     if not message_ids:
         return 0
+    total = 0
     with _conn() as con:
-        placeholders = ",".join("?" for _ in message_ids)
-        cur = con.execute(
-            f"UPDATE emails SET is_read = ? WHERE message_id IN ({placeholders})",
-            (1 if is_read else 0, *message_ids),
-        )
-        return cur.rowcount
+        for batch in _chunks(list(message_ids)):
+            placeholders = ",".join("?" for _ in batch)
+            cur = con.execute(
+                f"UPDATE emails SET is_read = ? WHERE message_id IN ({placeholders})",
+                (1 if is_read else 0, *batch),
+            )
+            total += cur.rowcount
+    return total
 
 
 # ── Unsubscribe (RFC 2369 + RFC 8058) ─────────────────────────────────────────

@@ -104,6 +104,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         # ── Cleanup / unsubscribe ────────────────────────────────────────────
         "cleanup.job_not_found":        "Tâche introuvable",
         "cleanup.rule.invalid":         "Règle invalide.",
+        "cleanup.rule.no_filter":       "Cette règle ne filtre rien : elle sélectionnerait tous vos messages. Ajoutez au moins un mot-clé, une catégorie, un score ou une ancienneté.",
         "cleanup.no_field_to_update":   "Aucun champ à mettre à jour",
         "unsub.no_link":                "Aucun lien de désabonnement connu pour cet expéditeur",
 
@@ -256,6 +257,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         # ── Cleanup / unsubscribe ────────────────────────────────────────────
         "cleanup.job_not_found":        "Job not found",
         "cleanup.rule.invalid":         "Invalid rule.",
+        "cleanup.rule.no_filter":       "This rule filters nothing: it would select every message you have. Add at least a keyword, a category, a score or an age.",
         "cleanup.no_field_to_update":   "No field to update",
         "unsub.no_link":                "No unsubscribe link known for this sender",
 
