@@ -410,11 +410,11 @@ export const api = {
     });
   },
 
-  hideCleanupCard(card) {
+  hideCleanupCard(card, account) {
     return j('/api/cleanup/hide', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ card }),
+      body: JSON.stringify({ card, account }),
     });
   },
 

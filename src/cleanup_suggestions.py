@@ -70,8 +70,19 @@ def _cutoff(days: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
 
-def _hidden_cards() -> Dict[str, str]:
-    """{card_id: iso} for cards dismissed within the last HIDE_DAYS."""
+# A dismissal is stored under "<account>|<card_id>", with "*" standing for
+# "dismissed while looking at every mailbox at once". Without the account
+# half, saying no to a card about the personal newsletters also silenced the
+# work ones -- a different pile, a different decision.
+_ALL = "*"
+
+
+def _hide_key(card_id: str, account: Optional[str]) -> str:
+    return f"{account or _ALL}|{card_id}"
+
+
+def _stored_hidden() -> Dict[str, str]:
+    """Every live dismissal, keyed as written. Expired entries dropped."""
     import json
     raw = db.get_kv(HIDDEN_KV_KEY)
     if not raw:
@@ -81,19 +92,40 @@ def _hidden_cards() -> Dict[str, str]:
     except (ValueError, TypeError):
         return {}
     floor = _cutoff(HIDE_DAYS)
-    return {k: v for k, v in stored.items()
-            if isinstance(v, str) and v > floor}
+    out = {}
+    for k, v in stored.items():
+        if not isinstance(v, str) or v <= floor:
+            continue
+        # Entries written before dismissals carried an account. They were
+        # global by construction, so that is what they stay.
+        out[k if "|" in k else f"{_ALL}|{k}"] = v
+    return out
 
 
-def hide_card(card_id: str) -> None:
+def _hidden_cards(account: Optional[str] = None) -> Dict[str, str]:
+    """{card_id: iso} for the cards dismissed in *this* scope.
+
+    A card dismissed with no account selected is dismissed everywhere: the
+    user was looking at the whole mailbox when they said no. One dismissed
+    while scoped to an account is dismissed for that account only.
+    """
+    out: Dict[str, str] = {}
+    for key, iso in _stored_hidden().items():
+        scope, _, card_id = key.partition("|")
+        if scope == _ALL or (account and scope == account):
+            out[card_id] = iso
+    return out
+
+
+def hide_card(card_id: str, account: Optional[str] = None) -> None:
     import json
-    current = _hidden_cards()
-    current[card_id] = datetime.now(timezone.utc).isoformat()
+    current = _stored_hidden()
+    current[_hide_key(card_id, account)] = datetime.now(timezone.utc).isoformat()
     db.set_kv(HIDDEN_KV_KEY, json.dumps(current))
 
 
 def unhide_all() -> int:
-    n = len(_hidden_cards())
+    n = len(_stored_hidden())
     db.set_kv(HIDDEN_KV_KEY, "{}")
     return n
 
@@ -134,11 +166,17 @@ def _card_where(card_id: str, account: Optional[str]) -> Tuple[str, list]:
         # nothing, ever. Compared by calendar day because unsubscribed_at is
         # datetime('now') with no offset while date_received_iso carries the
         # sender's — neither string-comparing nor normalising them is right.
+        # Scoped to the row's own mailbox. Unsubscribing a newsletter from
+        # the personal account said nothing about the work account, which
+        # is still subscribed and still receiving -- and every one of those
+        # perfectly expected messages was offered up for deletion as mail
+        # that "kept coming after you unsubscribed".
         where = _live(
             "date_received_iso IS NOT NULL AND sender_addr <> ''"
             " AND substr(date_received_iso, 1, 10) > ("
             "   SELECT substr(MAX(u.unsubscribed_at), 1, 10) FROM emails u"
             "    WHERE u.sender_addr = emails.sender_addr"
+            "      AND u.account_email = emails.account_email"
             "      AND u.unsubscribed_at IS NOT NULL)")
     else:
         raise ValueError(f"unknown card {card_id!r}")
@@ -343,7 +381,7 @@ def compute(account: Optional[str] = None) -> Dict[str, Any]:
     # ── rank ─────────────────────────────────────────────────────────────
     order = {cid: i for i, cid in enumerate(
         ("unsub_bulk", "unsub_one", "after_unsub", "spam", "old_news", "old_unread"))}
-    dismissed = _hidden_cards()
+    dismissed = _hidden_cards(account)
     kept = [c for c in cards
             if c["score"] >= SCORE_FLOOR and c["id"] not in dismissed]
     kept.sort(key=lambda c: (-c["score"], -c["gain"]["value"], order[c["id"]]))

@@ -1565,6 +1565,7 @@ def cleanup_suggestions(account: Optional[str] = None):
 
 class CleanupHideReq(BaseModel):
     card: str
+    account: Optional[str] = None
 
 
 @app.post("/api/cleanup/hide")
@@ -1574,8 +1575,8 @@ def cleanup_hide(request: Request, req: CleanupHideReq):
     to reject a card is to ignore it, which teaches the user to ignore the
     page."""
     from src import cleanup_suggestions as sug
-    sug.hide_card(req.card)
-    return {"ok": True, "suggestions": sug.compute()}
+    sug.hide_card(req.card, req.account)
+    return {"ok": True, "suggestions": sug.compute(req.account)}
 
 
 @app.post("/api/cleanup/unhide")
