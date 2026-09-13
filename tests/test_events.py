@@ -270,3 +270,75 @@ def test_the_stream_refuses_to_open_past_the_cap(client, monkeypatch):
     monkeypatch.setattr(events.hub, "subscribe", lambda loop: None)
     r = client.get("/api/events")
     assert r.status_code == 503
+
+
+def test_a_body_fetched_because_you_opened_it_is_announced(client, monkeypatch):
+    """The read pane's whole promise rests on this one publish.
+
+    Lot 4 deleted the client's 1200 ms retry on the stated premise that the
+    server now says when a body lands. The background round says it; the
+    path that exists *because the user opened a message* did not, so the
+    pane showed the download skeleton for ever while the body sat complete
+    in the database. Once a row is 'full' no round will ever claim it
+    again, so no later frame could rescue it either.
+    """
+    from src import api, database as db, events
+    import src.email_fetcher as ef
+
+    db.insert_email({
+        "message_id": "<lazy-1@x>", "account": "u@x.fr", "uid": "1",
+        "subject": "hi", "sender": "a@b.c", "recipient": "u@x.fr",
+        "date_str": "Mon, 05 May 2025 10:00:00 +0000",
+        "body_state": "envelope", "body_text": "", "body_html": "",
+    })
+
+    published = []
+    monkeypatch.setattr(events.hub, "publish",
+                        lambda event, data: published.append((event, data)) or 1)
+    monkeypatch.setattr(api, "_account_for", lambda e: {"email": e, "imap_host": "h",
+                                                        "username": e, "password": "p"})
+    monkeypatch.setattr(api.cfg, "get", lambda: {})
+
+    def land_the_body(acc, row, policy):
+        db.update_email_body_hydrated(row["message_id"], body_text="corps", body_html="")
+        return True
+
+    monkeypatch.setattr(ef, "hydrate_single_email", land_the_body)
+    api._lazy_hydrate_one(1, "u@x.fr", "1", "<lazy-1@x>")
+
+    bodies = [d for e, d in published if e == "body"]
+    assert bodies, "the body landed and nothing told the window"
+    assert bodies[0]["int_id"] == 1
+    assert bodies[0]["body_state"] == "full"
+
+
+def test_a_body_that_could_not_be_fetched_on_demand_is_announced_too(client, monkeypatch):
+    """Otherwise the pane waits on a message that is never coming."""
+    from src import api, database as db, events
+    import src.email_fetcher as ef
+
+    db.insert_email({
+        "message_id": "<lazy-2@x>", "account": "u@x.fr", "uid": "2",
+        "subject": "hi", "sender": "a@b.c", "recipient": "u@x.fr",
+        "date_str": "Mon, 05 May 2025 10:00:00 +0000",
+        "body_state": "envelope", "body_text": "", "body_html": "",
+    })
+
+    published = []
+    monkeypatch.setattr(events.hub, "publish",
+                        lambda event, data: published.append((event, data)) or 1)
+    monkeypatch.setattr(api, "_account_for", lambda e: {"email": e, "imap_host": "h",
+                                                        "username": e, "password": "p"})
+    monkeypatch.setattr(api.cfg, "get", lambda: {})
+
+    def give_up(acc, row, policy):
+        for _ in range(5):
+            db.mark_email_body_failed(row["message_id"], "IMAP fetch empty response")
+        return False
+
+    monkeypatch.setattr(ef, "hydrate_single_email", give_up)
+    api._lazy_hydrate_one(1, "u@x.fr", "2", "<lazy-2@x>")
+
+    bodies = [d for e, d in published if e == "body"]
+    assert bodies, "a permanent failure told the window nothing"
+    assert bodies[0]["body_state"] == "failed"

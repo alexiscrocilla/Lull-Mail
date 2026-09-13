@@ -98,6 +98,7 @@ FRONTEND = _frontend_dir()
 # Wire the event hub to the two things it must not import: how to build the
 # status payload, and when the sync machinery changed. Both are late-bound
 # so `src/events.py` stays free of a scheduler or API import.
+from src import events  # noqa: E402
 from src.events import hub as _event_hub  # noqa: E402
 from src.sync_progress import progress as _sync_board  # noqa: E402
 
@@ -429,8 +430,20 @@ def _lazy_hydrate_one(int_id: int, account_email: str, uid: str, message_id: str
         logger.warning(f"lazy hydration failed for {message_id}: {e}")
     finally:
         row = db.get_email_by_id(int_id)
-        if row and row.get("body_state") == "hydrating":
+        state = (row or {}).get("body_state")
+        if state == "hydrating":
             db.release_hydration_claims([message_id])
+            state = "envelope"
+        # Say what happened. This is the one hydration path that exists
+        # *because* the user is looking at the message, and it was the only
+        # one that announced nothing — so the read pane kept its download
+        # skeleton while the body sat complete in the database. Nothing
+        # would have rescued it later either: once a row is 'full' no
+        # background round claims it again.
+        if row is not None:
+            events.hub.publish("body", {
+                "int_id": int_id, "message_id": message_id, "body_state": state,
+            })
 
 
 def _lazy_scan_one(int_id: int, account_email: str, uid: str, message_id: str):
