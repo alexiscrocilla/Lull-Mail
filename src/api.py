@@ -1533,10 +1533,57 @@ def cleanup_sender(request: Request, req: CleanupSenderReq, bg: BackgroundTasks)
     return _apply_bulk_action(req.action, matches, bg)
 
 
+@app.get("/api/cleanup/suggestions")
+def cleanup_suggestions(account: Optional[str] = None):
+    """Everything the Nettoyage page shows, in one request.
+
+    The page used to fire eight on mount, six of them full-table Python
+    aggregations re-parsing every date. This is five covered aggregates and a
+    handful of point lookups.
+    """
+    from src import cleanup_suggestions as sug
+    return sug.compute(account)
+
+
+class CleanupApplyReq(BaseModel):
+    card: str
+    account: Optional[str] = None
+
+
+@app.post("/api/cleanup/apply")
+@limiter.limit("60/minute")
+def cleanup_apply(request: Request, req: CleanupApplyReq, bg: BackgroundTasks,
+                  locale: str = Depends(get_locale)):
+    """Run one suggestion.
+
+    The body is a card id, never a filter. The server re-runs that card's own
+    query, so the set acted on is produced by the same SQL as the number the
+    user read — even if mail arrived in between — and there is no
+    user-supplied filter left that could match the whole mailbox.
+
+    The recomputed suggestions ride back on the response: cheaper than a
+    second round-trip, and it means a card can never still claim a pile the
+    user just emptied.
+    """
+    from src import cleanup_suggestions as sug
+    if req.card not in sug.APPLIABLE:
+        raise HTTPException(400, tr("cleanup.card_unknown", locale, card=req.card))
+
+    rows = sug.select_rows(req.card, account=req.account, limit=sug.APPLY_CAP)
+    if not rows:
+        return {"ok": True, "affected": 0, "undo": None,
+                "suggestions": sug.compute(req.account)}
+    action = "mark_read" if req.card == "old_unread" else "delete"
+    out = _apply_bulk_action(action, rows, bg)
+    out["suggestions"] = sug.compute(req.account)
+    return out
+
+
 class CleanupUndoReq(BaseModel):
     # folder name -> int_ids that were in it before the action
     folders: Dict[str, List[int]] = {}
     unread_ids: List[int] = []
+    account: Optional[str] = None
 
 
 @app.post("/api/cleanup/undo")
@@ -1559,7 +1606,8 @@ def cleanup_undo(request: Request, req: CleanupUndoReq, bg: BackgroundTasks,
         restored += len(db.bulk_set_read_tx([int(i) for i in req.unread_ids], False))
     if restored:
         bg.add_task(_drain_pending_ops_bg)
-    return {"ok": True, "restored": restored}
+    from src import cleanup_suggestions as sug
+    return {"ok": True, "restored": restored, "suggestions": sug.compute(req.account)}
 
 
 @app.get("/api/cleanup/jobs/{job_id}")
@@ -1572,9 +1620,9 @@ def get_cleanup_job(job_id: str, locale: str = Depends(get_locale)):
 
 
 # How long a queued trash op waits before the IMAP side runs. Long enough for
-# the undo toast to still be on screen: an undo inside the window cancels the
-# op outright, so the server never sees the deletion at all.
-_CLEANUP_UNDO_DELAY_SECONDS = 12
+# the undo to still be on screen: an undo inside the window cancels the op
+# outright, so the server never sees the deletion at all.
+_CLEANUP_UNDO_DELAY_SECONDS = 20
 
 
 def _filter_constrains_anything(f: RuleFilter) -> bool:
