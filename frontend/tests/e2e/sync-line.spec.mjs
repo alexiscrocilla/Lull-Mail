@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { expect, test } from '@playwright/test';
 
+test.beforeEach(async ({ page }) => {
+  // One server serves every spec file and the mailbox is mutable state, so
+  // start from the seeded mailbox rather than from whatever the previous
+  // file left behind.
+  await page.request.post('/__test__/reset');
+});
+
 /*
  * The sidebar sync line is the only keyboard-reachable place an account
  * failure is spoken: the per-account list writes the server's message into a

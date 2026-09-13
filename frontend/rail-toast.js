@@ -400,7 +400,10 @@ function _busyMessage() {
   if (s && s.analysing && (s.analysis || {}).phase !== 'analysing') {
     return _tr('rt.hydrating', {}, 'Téléchargement des messages…');
   }
-  return _tr('rt.ai_busy', {}, 'Analyse IA en cours…');
+  // Deliberately not gated on window.aiEnabled: rail-toast.js is also
+  // loaded by onboarding.html, where that flag is never set. One neutral
+  // wording is true in both modes and needs no flag.
+  return _tr('rt.ai_busy', {}, 'Tri des messages…');
 }
 
 function _refreshBusyToast() {

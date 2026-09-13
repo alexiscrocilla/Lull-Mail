@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { expect, test } from '@playwright/test';
 
+test.beforeEach(async ({ page }) => {
+  // One server serves every spec file and the mailbox is mutable state, so
+  // start from the seeded mailbox rather than from whatever the previous
+  // file left behind.
+  await page.request.post('/__test__/reset');
+});
+
 /*
  * pywebview opens the page with no fragment, so the boot line that defaults
  * the route used to *assign* location.hash — which fires `hashchange`, which

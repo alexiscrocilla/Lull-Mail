@@ -138,6 +138,22 @@ def main() -> None:
     import uvicorn
     from src.api import app
 
+    @app.post("/__test__/reset")
+    def _reset():
+        """Put the mailbox back to its seeded state.
+
+        One server serves every spec file, and the mailbox is mutable: a test
+        that opens a message marks it read, and one that trashes a message
+        changes the counts the screenshot tests assert. Each spec resets
+        first, so its starting point does not depend on which files ran
+        before it. Test-harness only -- this route does not exist in the app.
+        """
+        with db._conn() as con:
+            con.execute("DELETE FROM emails")
+            con.execute("DELETE FROM drafts")
+        _seed_mailbox()
+        return {"ok": True}
+
     app.state.bound_port = port
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 

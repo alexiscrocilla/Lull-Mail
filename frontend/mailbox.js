@@ -781,9 +781,9 @@ export async function mountMailbox(host, _opts) {
             <button class="sel-btn" data-act="move" title="${t('mb.action.move')}" aria-label="${t('mb.action.move')}">
               <i data-lucide="folder-input" class="w-4 h-4"></i>
             </button>
-            <button class="sel-btn" data-act="ai" title="${t('mb.action.ai_analyze')}" aria-label="${t('mb.action.ai_analyze')}">
+            ${window.aiEnabled ? `<button class="sel-btn" data-act="ai" title="${t('mb.action.ai_analyze')}" aria-label="${t('mb.action.ai_analyze')}">
               <i data-lucide="sparkles" class="w-4 h-4"></i>
-            </button>
+            </button>` : ''}
             <div class="sel-sep"></div>
             <button class="sel-btn danger" data-act="delete" title="${t('mb.action.delete')}" aria-label="${t('mb.action.delete')}">
               <i data-lucide="trash-2" class="w-4 h-4"></i>
@@ -1009,7 +1009,15 @@ export async function mountMailbox(host, _opts) {
       if (!em.is_read) catCounts[c] = (catCounts[c] || 0) + 1;
     }
     const totalUnread = state.emails?.filter((e) => !e.is_read).length || 0;
-    const fp = state.category + '|' + totalUnread + '|' + LABELS.map((l) => l.id + ':' + (catCounts[l.id] || 0)).join(',');
+    // With no model nothing can be classified `important` any more -- but
+    // rows classified while the AI was on keep the category, so hide the row
+    // only when it would also be empty. `pending` stays either way: it is
+    // the default category of every freshly ingested message, and with the
+    // row's category glyph gone this list is the only route to spam and
+    // newsletters.
+    const hideImportant = !window.aiEnabled && !(catCounts.important || 0);
+    const LABELS_V = LABELS.filter((l) => !(hideImportant && l.id === 'important'));
+    const fp = state.category + '|' + totalUnread + '|' + LABELS_V.map((l) => l.id + ':' + (catCounts[l.id] || 0)).join(',');
     if (fp === _labelsFingerprint && cont.firstElementChild) {
       // Only active class sync when counts unchanged
       cont.querySelectorAll('.mb-label').forEach((b) => {
@@ -1024,7 +1032,7 @@ export async function mountMailbox(host, _opts) {
         <span class="lab">${t('mb.category.all')}</span>
         ${totalUnread > 0 ? `<span class="mb-label-count">${totalUnread}</span>` : ''}
       </button>
-    ` + LABELS.map((l) => {
+    ` + LABELS_V.map((l) => {
       const cnt = catCounts[l.id] || 0;
       return `
       <button class="mb-label ${state.category === l.id ? 'active' : ''}" data-cat="${l.id}">
@@ -1500,6 +1508,10 @@ export async function mountMailbox(host, _opts) {
     } else if (s.analysing) {
       cls = 'is-busy';
       const a = s.analysis || {};
+      // Not "AI analysis": the analysis pass runs regex rules and a
+      // sender memo before it ever reaches a model, and those two levels
+      // are not gated on the AI flag at all. With the AI off this phase
+      // still runs, and still had to be called something honest.
       text = (a.phase === 'analysing' && a.total)
         ? t('mb.sync.line_analysing', { done: a.done, total: a.total })
         : t('mb.sync.line_hydrating');
@@ -1847,12 +1859,19 @@ export async function mountMailbox(host, _opts) {
     // router has already wiped #view. renderSkeleton and renderSelectionBar
     // guard; these two did not, and the late call threw on null.
     if (!el) return;
+    // Turning the AI off in Settings and coming back leaves these two in
+    // place -- the view state outlives the trip -- so the user would land on
+    // an empty inbox filtered by a chip that is no longer on screen.
+    if (!window.aiEnabled) {
+      state.onlyReply = false;
+      if (state.category === 'important') state.category = '';
+    }
     const existing = el.querySelectorAll('[data-quick]');
     const anyActive = _anyFilterActive();
 
     // Refresh the reset button visibility
     const resetBtn = el.querySelector('[data-reset]');
-    if (existing.length === 3) {
+    if (existing.length === (window.aiEnabled ? 3 : 2)) {
       const noQuick = !state.onlyUnread && !state.onlyReply;
       existing.forEach((b) => {
         const k = b.dataset.quick;
@@ -1871,7 +1890,7 @@ export async function mountMailbox(host, _opts) {
     el.innerHTML = `
       <button class="mb-chip ${noQuick ? 'active' : ''}" data-quick="all">${t('mb.chip.all')}</button>
       <button class="mb-chip ${state.onlyUnread ? 'active' : ''}" data-quick="unread">${t('mb.chip.unread')}</button>
-      <button class="mb-chip ${state.onlyReply ? 'active' : ''}" data-quick="reply">${t('mb.chip.reply')}</button>
+      ${window.aiEnabled ? `<button class="mb-chip ${state.onlyReply ? 'active' : ''}" data-quick="reply">${t('mb.chip.reply')}</button>` : ''}
       <button class="mb-chip mb-chip-reset ${anyActive ? 'visible' : ''}" data-reset title="${t('mb.chip.reset_tip')}">
         <i data-lucide="x" class="w-3 h-3"></i> ${t('mb.chip.reset')}
       </button>

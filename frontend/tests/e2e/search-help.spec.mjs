@@ -10,6 +10,10 @@ import { expect, test } from '@playwright/test';
  */
 
 test.beforeEach(async ({ page }) => {
+  // One server serves every spec file and the mailbox is mutable state, so
+  // start from the seeded mailbox rather than from whatever the previous
+  // file left behind.
+  await page.request.post('/__test__/reset');
   await page.route('**/api/brand-logo/**', (route) => route.abort());
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto('/#/inbox');
