@@ -1078,10 +1078,21 @@ def get_email_by_id(int_id: int) -> Optional[Dict]:
 
 
 def get_pending_emails(limit: int = 30) -> List[Dict]:
+    """Rows waiting for a verdict.
+
+    'failed' is included on purpose. A body that has exhausted its attempts
+    matches neither the hydration claim nor — until now — this query, while
+    `count_pending` still counted it: the queue badge sat at N forever and
+    the only thing it could offer was a sync that could not help. Subject
+    and sender settle a newsletter perfectly well, and the AI path already
+    models giving up this way. Opening such a message still re-downloads
+    it, so nothing here is final.
+    """
     with _conn() as con:
         rows = con.execute("""
             SELECT * FROM emails
-            WHERE category = 'pending' AND (body_state IS NULL OR body_state = 'full')
+            WHERE category = 'pending'
+              AND (body_state IS NULL OR body_state IN ('full', 'failed'))
             ORDER BY fetched_at DESC
             LIMIT ?
         """, (limit,)).fetchall()
@@ -1633,9 +1644,21 @@ def mark_email_body_failed(
     retry_delay_seconds: int = 60,
     max_attempts: int = 5,
 ) -> None:
+    """Record a failed body download and schedule the next attempt.
+
+    The delay doubles per attempt, capped at an hour — the same shape the
+    fetch path and the offline-op drain already use. It used to be flat at
+    60 s, which spent all five attempts inside five minutes: an outage
+    lasting six exhausted the message permanently.
+    """
     from datetime import timedelta
-    next_att = (datetime.now(timezone.utc) + timedelta(seconds=retry_delay_seconds)).isoformat()
     with _conn() as con:
+        attempts = con.execute(
+            "SELECT body_attempts FROM emails WHERE message_id = ?", (message_id,)
+        ).fetchone()
+        prior = int((attempts["body_attempts"] if attempts else 0) or 0)
+        delay = min(3600, retry_delay_seconds * 2 ** min(prior, 6))
+        next_att = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
         con.execute("""
             UPDATE emails SET
                 body_state = CASE WHEN body_attempts + 1 >= ? THEN 'failed' ELSE 'body_failed' END,
