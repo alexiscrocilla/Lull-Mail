@@ -259,6 +259,10 @@
   <script src="/static/vendor/lucide.min.js"></script>
   <script src="/static/i18n.js"></script>
   <script type="module" src="/static/rail-toast.js"></script>
+  <!-- Owns the single /api/events connection and re-broadcasts every
+       frame; loaded after rail-toast so its listener is attached
+       before the first frame arrives. -->
+  <script type="module" src="/static/events.js"></script>
   <script type="module" src="/static/app.js"></script>
 </body>
 </html>

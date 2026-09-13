@@ -49,6 +49,10 @@ function statusPayload({ error }) {
 }
 
 async function stubStatus(page, { error }) {
+  // Close the stream so the client falls back to the poll these tests stub.
+  // That makes the three assertions below the fallback's regression suite
+  // for free: if the fallback ever stops working, they go red.
+  await page.route('**/api/events', (route) => route.fulfill({ status: 404 }));
   await page.route('**/api/sync/status', (route) =>
     route.fulfill({
       status: 200,
@@ -75,6 +79,7 @@ test('a single failing account states its reason in the sync line', async ({ pag
 test('several failing accounts still fall back to a count', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.route('**/api/brand-logo/**', (route) => route.abort());
+  await page.route('**/api/events', (route) => route.fulfill({ status: 404 }));
   await page.route('**/api/sync/status', (route) => {
     const payload = statusPayload({ error: ERROR_MESSAGE });
     payload.accounts.push({

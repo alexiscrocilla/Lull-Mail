@@ -431,42 +431,36 @@ function setAiBusy(busy) {
   _refreshBusyToast();
 }
 
-async function checkAiBusy() {
-  try {
-    const r = await fetch('/api/sync/status');
-    if (!r.ok) return;
-    const s = await r.json();
-    _lastStatus = s;
-    const next = !!s.running;
-    if (next !== _syncBusy) {
-      _syncBusy = next;
-      _refreshBusyToast();
-    } else if (next && _busyToast && !_busyToast.destroyed) {
-      // Phase changed while busy (fetch → download → analysis): reword in place.
-      const msg = _busyMessage();
-      if (msg !== _busyToastMsg) {
-        _busyToastMsg = msg;
-        _busyToast.update({ message: msg });
-      }
+// Fed by the event stream (events.js), which owns the one connection and
+// broadcasts every frame as `sync-status`. This used to fetch the status
+// itself every three seconds, forever, which was twenty of the twenty-three
+// requests a minute an idle app made.
+function applySyncStatus(s) {
+  if (!s) return;
+  _lastStatus = s;
+  const next = !!s.running;
+  if (next !== _syncBusy) {
+    _syncBusy = next;
+    _refreshBusyToast();
+  } else if (next && _busyToast && !_busyToast.destroyed) {
+    // Phase changed while busy (fetch → download → analysis): reword in place.
+    const msg = _busyMessage();
+    if (msg !== _busyToastMsg) {
+      _busyToastMsg = msg;
+      _busyToast.update({ message: msg });
     }
-    // Re-broadcast for the rail's AI-queue indicator (app.js) — it rides
-    // this existing 3 s poll instead of running one of its own.
-    window.dispatchEvent(new CustomEvent('sync-status', { detail: s }));
-  } catch (_) {
-    // Network hiccup or backend down — leave the previous state alone.
   }
 }
 
 if (typeof window !== 'undefined') {
   window.railToast = railToast;
   window.railToast.setAiBusy = setAiBusy;
-  // Permet à un appelant (ex. dashboard.js après un POST /api/sync) de
-  // forcer un poll immédiat sans attendre les 3 s de l'intervalle —
-  // évite le gap visuel entre le clic et l'apparition du toast.
-  window.railToast.checkAiBusy = checkAiBusy;
+  // A view mounting after the stream opened has missed every frame so far,
+  // and on an idle mailbox there is no second one. Callers used this to
+  // force an immediate poll; it now replays what the stream already said.
+  window.railToast.checkAiBusy = () => window.lullEvents?.refresh?.();
   try { ensureHost(); } catch (_) {}
-  setInterval(checkAiBusy, 3000);
-  checkAiBusy();
+  window.addEventListener('sync-status', (e) => applySyncStatus(e.detail));
 }
 
 export { railToast, createRailToast };
