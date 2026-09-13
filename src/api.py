@@ -1951,6 +1951,8 @@ def get_accounts():
             "pending": int(stat.get("pending") or 0),
             "favourite": int(stat.get("favourite") or 0),
             "draft": int(stat.get("draft") or 0),
+            # Drives whether the sidebar renders the Sent row at all.
+            "sent": int(stat.get("sent") or 0),
             "total": int(stat.get("total") or 0),
             # Auto-test status (separate from sync lifecycle). Drives the
             # green/red/grey badge in the Settings account list.

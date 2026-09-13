@@ -470,32 +470,15 @@ button { font: inherit; }
   display: flex;
   align-items: center;
   gap: 6px;
-  /* These five were stranded below the .mb-side-drag-handle rules by an
-     earlier edit that closed this block early — they sat at stylesheet top
-     level and the parser dropped them. The sidebar headers therefore had no
-     space-between (so the "+" and chevron hugged the label instead of
-     sitting at the right edge) and no pointer cursor, despite the whole row
-     being the collapse toggle. */
+  /* These five were once stranded outside this block by an edit that
+     closed it early, which left every sidebar header without
+     space-between and without a pointer cursor. */
   justify-content: space-between;
   cursor: pointer;
   user-select: none;
   border-radius: 6px;
   transition: color 140ms ease;
 }
-.mb-side-drag-handle {
-  cursor: grab;
-  position: relative;
-}
-.mb-side-drag-handle:active { cursor: grabbing; }
-/* The drag-handle grip used to render as a leading pseudo-element. As a
-   third flex item under justify-content:space-between it stranded the
-   section label in the CENTRE of the row (grip left, chevron/+ right,
-   label floating between) — every header read as centred instead of
-   left-aligned, and inconsistent with the COMPTES header (which never
-   gets wired for drag and so kept its flush-left label). The whole title
-   row is still the drag handle (title.draggable = true); we just drop the
-   grip glyph so the label sits flush-left like the others. */
-.mb-side-drag-handle::before { content: none; }
 .mb-section-title:hover { color: var(--text); }
 
 /* Collapse chevron */
@@ -507,32 +490,9 @@ button { font: inherit; }
 .mb-section-title:hover .mb-collapse-icon { opacity: 0.8; }
 .mb-section-title.is-collapsed .mb-collapse-icon { transform: rotate(-90deg); }
 
-/* Drag-to-reorder of sidebar sections. The title is the handle; the
-   wrapper around (title + content) is what actually moves. The
-   pseudo-elements paint a 2px accent line above/below the hovered
-   target so the drop position is unambiguous. */
 .mb-side-section {
   position: relative;
 }
-.mb-side-section.is-dragging {
-  opacity: 0.45;
-}
-.mb-side-section.drop-above::before,
-.mb-side-section.drop-below::after {
-  content: '';
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  height: 2px;
-  background: var(--accent);
-  border-radius: 999px;
-  pointer-events: none;
-  z-index: var(--z-raised);  /* drag drop-indicator */
-}
-.mb-side-section.drop-above::before { top: -1px; }
-.mb-side-section.drop-below::after  { bottom: -1px; }
-.mb-side-drag-handle { cursor: grab; }
-.mb-side-drag-handle:active { cursor: grabbing; }
 
 /* Collapsible content */
 .mb-collapsible {
@@ -619,65 +579,6 @@ button { font: inherit; }
   background: var(--bg);
   overflow: hidden; /* clips chips & cards during width transition */
 }
-/* ── Mail tabs (middle-click pins) — full-width strip on top ── */
-.mb-tabs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 10px 0;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  overflow-x: auto;
-  scrollbar-width: none;
-  flex-shrink: 0;
-}
-.mb-tabs::-webkit-scrollbar { display: none; }
-.mb-tabs[hidden] { display: none; }
-.mb-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 180px;
-  min-width: 0;
-  padding: 5px 6px 5px 11px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--muted);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-bottom: none;
-  border-radius: 9px 9px 0 0;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: color 130ms ease, background 130ms ease;
-  animation: fade-up 180ms cubic-bezier(.25,.46,.45,.94) both;
-}
-.mb-tab:hover { color: var(--text); background: var(--surface-2); }
-.mb-tab.active {
-  color: var(--text);
-  font-weight: 600;
-  background: var(--surface-2);
-  border-color: color-mix(in oklab, var(--accent) 45%, var(--border));
-  box-shadow: inset 0 2px 0 var(--accent);
-}
-.mb-tab-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.mb-tab-close {
-  width: 18px; height: 18px;
-  flex-shrink: 0;
-  display: grid; place-items: center;
-  background: transparent;
-  color: var(--muted);
-  border: none; border-radius: 5px;
-  cursor: pointer;
-  transition: color 120ms ease, background 120ms ease;
-}
-.mb-tab-close:hover { color: var(--danger); background: var(--surface); }
-
 .mb-search {
   padding: 14px 16px 10px;
   background: var(--surface);
@@ -863,14 +764,21 @@ button { font: inherit; }
   white-space: nowrap;
 }
 .mb-chip:hover { color: var(--text); }
+/* `visibility`, not opacity alone: at opacity 0 this stayed in the tab
+   order and in the accessibility tree, so a keyboard user tabbed onto an
+   invisible button and a screen reader announced a filter reset that was
+   not on offer. The delayed visibility transition keeps the fade out. */
 .mb-chip-reset {
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
-  transition: opacity 160ms ease;
+  transition: opacity 160ms ease, visibility 0s linear 160ms;
 }
 .mb-chip-reset.visible {
   opacity: 1;
+  visibility: visible;
   pointer-events: auto;
+  transition: opacity 160ms ease, visibility 0s;
 }
 .mb-chip-reset:hover {
   background: var(--danger-soft);

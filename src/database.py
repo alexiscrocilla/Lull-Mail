@@ -1760,6 +1760,11 @@ def per_account_stats() -> List[Dict]:
                 SUM(CASE WHEN needs_reply = 1 AND is_read = 0 AND folder = 'inbox' THEN 1 ELSE 0 END) AS needs_reply,
                 SUM(CASE WHEN category = 'pending' AND folder = 'inbox' THEN 1 ELSE 0 END) AS pending,
                 SUM(CASE WHEN is_favourite = 1 AND folder != 'deleted' THEN 1 ELSE 0 END) AS favourite,
+                -- The Sent row is hidden until this is non-zero: nothing but
+                -- this app's own sender ever writes folder = 'sent', and the
+                -- fetcher only ever selects INBOX, so on a fresh install the
+                -- folder is guaranteed empty and the row is a dead end.
+                SUM(CASE WHEN folder = 'sent' THEN 1 ELSE 0 END) AS sent,
                 COUNT(*) AS total
             FROM emails
             GROUP BY account_email

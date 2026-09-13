@@ -204,7 +204,11 @@ function openCheat() { cheat.classList.remove('hidden'); refreshIcons(); trapFoc
 function closeCheat() { cheat.classList.add('hidden'); releaseFocus(cheat); }
 cheat.addEventListener('click', (e) => { if (e.target === cheat) closeCheat(); });
 cheat.querySelector('.cheat-close').addEventListener('click', closeCheat);
-document.getElementById('cheat-toggle').addEventListener('click', openCheat);
+// The rail button is gone; "?" and the command palette are the doors.
+// This used to be an unguarded getElementById, so removing the button threw
+// during module evaluation and took the bug reporter, every global keyboard
+// shortcut and the AI rail entry down with it.
+window.openCheat = openCheat;
 
 // ── Bug / feedback report ──────────────────────────────────
 // "Signaler un bug" lives below the keyboard shortcuts list. It opens a

@@ -641,7 +641,6 @@ export async function mountMailbox(host, _opts) {
            Persisted in localStorage, restored on app restart. Full-width
            first row of the mailbox: living inside the list column clipped
            it whenever the read pane opened. Hidden while empty. -->
-      <div class="mb-tabs" id="mb-tabs" hidden role="tablist" aria-label="${t('mb.tabs.aria')}"></div>
       <div class="mb-cols">
       <aside class="mb-side mb-stagger" aria-label="${t('mb.aria.sidebar')}">
         <div class="mb-side-head">
@@ -661,13 +660,9 @@ export async function mountMailbox(host, _opts) {
         <div class="mb-side-scroll">
 
         <!--
-          Each .mb-side-section wrapper is baked into the markup. The
-          drag-to-reorder code (setupSidebarReorder) used to wrap them
-          via appendChild at mount time, but that re-parenting restarts
-          CSS animations on the children — only on the "middle" sections,
-          since #title-folders was first in DOM order and #title-accounts
-          didn't exist yet at wrap time. Pre-wrapping eliminates that
-          asymmetry; the drag code now just attaches event listeners.
+          The .mb-side-section wrappers outlived the drag-to-reorder code
+          that needed them. They stay because the sections are styled and
+          collapsed through them.
         -->
         <div class="mb-side-section" data-section="folders">
           <div class="mb-section-title" id="title-folders">
@@ -763,10 +758,6 @@ export async function mountMailbox(host, _opts) {
               <i data-lucide="check-square" class="w-4 h-4"></i>
               <span>${t('mb.sel.all_short')}</span>
             </button>
-            <button class="sort-select-btn" id="thread-toggle" type="button"
-                    title="${t('mb.thread.toggle')}" aria-pressed="false">
-              <i data-lucide="messages-square" class="w-4 h-4"></i>
-            </button>
             <div class="sort-select" id="sort-select-wrap"></div>
           </div>
         </div>
@@ -809,24 +800,19 @@ export async function mountMailbox(host, _opts) {
     </section>
   `;
 
+  // "Plus ancien" and "Expéditeur A–Z" are gone: a mail app opens
+  // newest-first, and ordering by sender is a search (from:) wearing a
+  // sort's clothes.
   const SORT_OPTIONS = [
     { value: 'date-desc', label: t('mb.sort.date_desc'),  short: t('mb.sort.date_desc_short') },
-    { value: 'date-asc',  label: t('mb.sort.date_asc'),   short: t('mb.sort.date_asc_short') },
     { value: 'score',     label: t('mb.sort.score'),      short: t('mb.sort.score_short') },
-    { value: 'sender',    label: t('mb.sort.sender'),     short: t('mb.sort.sender_short') },
   ];
-
-  // Mail-tab persistence constants — must precede `state` (see the note at
-  // the tab helpers: loadTabs runs during state init).
-  const _TABS_KEY = 'mb-tabs';
-  const _TABS_MAX = 12;
 
   const state = {
     folder: 'inbox',
     category: '',     // '' = all
     query: '',
     searchResults: null,  // server-side search hits while a query is active
-    threadView: (() => { try { return localStorage.getItem('mb-thread-view') === '1'; } catch (_) { return false; } })(),
     onlyUnread: false,
     onlyReply: false,
     accountFilters: new Set(),  // empty = all accounts
@@ -834,9 +820,6 @@ export async function mountMailbox(host, _opts) {
     accounts: [],
     accountStats: {},           // email → { unread, needs_reply, total }
     emails: [],
-    // Pinned mail tabs (middle-click on a card) — persisted, restored at
-    // mount. loadTabs is hoisted, so calling it here is safe.
-    tabs: loadTabs(),
     selectedId: null,
     selectedIds: new Set(),  // ids currently checked (avatar-click)
     filteredIds: [],  // current visible ids in order
@@ -932,120 +915,15 @@ export async function mountMailbox(host, _opts) {
     });
   }
 
-  // ── Sidebar drag-and-drop reordering ──────────────────────
-  // Wrap the four logical sections (Dossiers / Catégories / Étiquettes
-  // / Comptes) in `.mb-side-section` containers, then wire HTML5 drag
-  // events on each title so users can rearrange them. Order persists
-  // in localStorage. Dragging the title itself (not the content) is
-  // the affordance — the cursor changes to grab on hover.
-  const _SIDEBAR_SECTIONS = [
-    { id: 'folders',    members: ['#title-folders',    '#wrap-folders']    },
-    { id: 'labels',     members: ['#title-labels',     '#wrap-labels']     },
-    { id: 'userlabels', members: ['#title-userlabels', '#wrap-userlabels'] },
-    { id: 'accounts',   members: ['#mb-accounts-wrap']                     },
-  ];
-  const _SIDEBAR_ORDER_KEY = 'sb-section-order-v1';
-
-  function setupSidebarReorder() {
-    const scroll = host.querySelector('.mb-side-scroll');
-    if (!scroll || scroll.dataset.reorderReady === '1') return;
-
-    // Wrappers are baked into the static markup now. We just attach the
-    // drag handlers; no DOM moves, no animation restarts on the children.
-    host.querySelectorAll('.mb-side-section').forEach((wrap) => {
-      wireSectionDrag(wrap);
-    });
-
-    // Restore saved order — append in order, last entries first wins
-    // because appendChild moves to the end. NOTE: this DOES re-parent
-    // the sections (and so may restart child animations the first frame
-    // after mount). It only runs when the user has previously reordered
-    // sections; default order matches the markup and triggers no moves.
-    let saved = [];
-    try { saved = JSON.parse(localStorage.getItem(_SIDEBAR_ORDER_KEY) || '[]'); } catch (_) {}
-    if (Array.isArray(saved) && saved.length) {
-      const declared = _SIDEBAR_SECTIONS.map((s) => s.id);
-      // No-op when the saved order is identical to the declared order —
-      // avoids a useless reparent (and its animation-restart side effect).
-      const same = saved.length === declared.length
-        && saved.every((id, i) => id === declared[i]);
-      if (!same) for (const id of saved) {
-        const w = host.querySelector(`.mb-side-section[data-section="${id}"]`);
-        if (w) scroll.appendChild(w);
-      }
-      // Any unsaved (newer) section stays at its declared position
-      // relative to the others — already correct.
-    }
-
-    scroll.dataset.reorderReady = '1';
-  }
-
-  function wireSectionDrag(section) {
-    const title = section.querySelector('.mb-section-title');
-    if (!title) return;
-    // Only the title is the drag handle. Content stays interactive.
-    title.draggable = true;
-    title.classList.add('mb-side-drag-handle');
-
-    title.addEventListener('dragstart', (e) => {
-      e.dataTransfer.setData('text/section-id', section.dataset.section);
-      e.dataTransfer.effectAllowed = 'move';
-      // Slight delay so the browser captures the drag image before
-      // the source class kicks in (some browsers snapshot late).
-      setTimeout(() => section.classList.add('is-dragging'), 0);
-    });
-    title.addEventListener('dragend', () => {
-      section.classList.remove('is-dragging');
-      host.querySelectorAll('.mb-side-section').forEach((s) => {
-        s.classList.remove('drop-above', 'drop-below');
-      });
-    });
-
-    section.addEventListener('dragover', (e) => {
-      // Filter out non-section drags — copy/paste, file drops, etc.
-      if (!Array.from(e.dataTransfer.types).includes('text/section-id')) return;
-      // Don't decorate the source section itself — dropping on self
-      // is a no-op and the line would just look stuck.
-      if (section.classList.contains('is-dragging')) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      const rect = section.getBoundingClientRect();
-      const above = e.clientY < rect.top + rect.height / 2;
-      section.classList.toggle('drop-above', above);
-      section.classList.toggle('drop-below', !above);
-    });
-    section.addEventListener('dragleave', (e) => {
-      // Only clear when the cursor leaves the section box; nested
-      // children fire dragleave too which would flicker the indicator.
-      if (e.currentTarget.contains(e.relatedTarget)) return;
-      section.classList.remove('drop-above', 'drop-below');
-    });
-    section.addEventListener('drop', (e) => {
-      const draggedId = e.dataTransfer.getData('text/section-id');
-      section.classList.remove('drop-above', 'drop-below');
-      if (!draggedId || draggedId === section.dataset.section) return;
-      const dragged = host.querySelector(`.mb-side-section[data-section="${draggedId}"]`);
-      if (!dragged) return;
-      e.preventDefault();
-      const rect = section.getBoundingClientRect();
-      const above = e.clientY < rect.top + rect.height / 2;
-      if (above) section.parentNode.insertBefore(dragged, section);
-      else section.parentNode.insertBefore(dragged, section.nextSibling);
-      saveSidebarOrder();
-    });
-  }
-
-  function saveSidebarOrder() {
-    const order = [...host.querySelectorAll('.mb-side-section')]
-      .map((s) => s.dataset.section)
-      .filter(Boolean);
-    try { localStorage.setItem(_SIDEBAR_ORDER_KEY, JSON.stringify(order)); } catch (_) {}
-  }
-
   // ── Render: folders + labels ──────────────────────────────
   function renderFolders() {
     const cont = $('#mb-folders');
-    const builtins = FOLDERS_L.map((f) => {
+    // Hidden while empty, and it appears the moment the user sends
+    // something. The stat is a live count, so this needs no migration and
+    // reverses itself if the mail is later deleted.
+    const sentCount = Object.values(state.accountStats || {})
+      .reduce((n, s2) => n + (s2.sent || 0), 0);
+    const builtins = FOLDERS_L.filter((f) => f.id !== 'sent' || sentCount > 0).map((f) => {
       const badgeId = f.id === 'inbox' ? 'badge-inbox'
                     : f.id === 'favourite' ? 'badge-favourite'
                     : f.id === 'draft' ? 'badge-draft'
@@ -1691,7 +1569,13 @@ export async function mountMailbox(host, _opts) {
   function renderAccounts() {
     const outerWrap = $('#mb-accounts-wrap');
     if (!outerWrap) return;
-    if (!state.accounts.length) {
+    // With a single account the section renders four controls to choose
+    // between one thing. It comes back the moment a second account exists;
+    // the stored collapse state is left alone, so it returns as the user
+    // left it. The per-account error message this section used to carry in
+    // a `title` now lives in the sidebar sync line, which is where it can
+    // actually be read.
+    if (state.accounts.length < 2) {
       outerWrap.innerHTML = '';
       _accountsFingerprint = '';
       return;
@@ -1880,9 +1764,18 @@ export async function mountMailbox(host, _opts) {
       ? SORT_OPTIONS
       : SORT_OPTIONS.filter((o) => o.value !== 'score');
     if (!window.aiEnabled && state.sortMode === 'score') state.sortMode = 'date-desc';
+    // A sort no longer offered would otherwise keep ordering the list while
+    // the button showed the label of a different one: the old fallback was
+    // display-only.
+    if (!SORT_OPTIONS.some((o) => o.value === state.sortMode)) state.sortMode = 'date-desc';
     const curSort  = visibleOptions.find((o) => o.value === state.sortMode) || visibleOptions[0];
 
     const wrap = $('#sort-select-wrap');
+    // One choice is furniture, not a control. `display`, not `hidden`: the
+    // id rule below sets display:inline-flex and would win, and emptying the
+    // element leaves the row's gap behind.
+    wrap.style.display = visibleOptions.length > 1 ? '' : 'none';
+    if (visibleOptions.length < 2) { wrap.innerHTML = ''; return; }
     wrap.innerHTML = `
       <button class="sort-select-btn" id="sort-select-btn" type="button" aria-haspopup="listbox" aria-expanded="false" title="${t('mb.sort.title')}">
         ${sortIcon}<span>${escapeHtml(curSort.short)}</span>${chevron}
@@ -2001,15 +1894,9 @@ export async function mountMailbox(host, _opts) {
   function sortEmails(arr) {
     const copy = [...arr];
     switch (state.sortMode) {
-      case 'date-asc':
-        return copy.sort((a, b) => new Date(a.date_received) - new Date(b.date_received));
       case 'score':
         return copy.sort((a, b) => (b.importance_score || 0) - (a.importance_score || 0));
-      case 'sender':
-        return copy.sort((a, b) =>
-          (senderName(a.sender) || '').localeCompare(senderName(b.sender) || '', 'fr', { sensitivity: 'base' })
-        );
-      default: // date-desc
+      default: // date-desc, and anything no longer offered
         return copy.sort((a, b) => new Date(b.date_received) - new Date(a.date_received));
     }
   }
@@ -2656,67 +2543,6 @@ export async function mountMailbox(host, _opts) {
     if (prev) prev.classList.remove('selected');
     const next = host.querySelector(`.mb-card[data-id="${intId}"]`);
     if (next) next.classList.add('selected');
-    // Keep the tab strip's active highlight in sync with the open mail.
-    renderTabs();
-  }
-
-  // ── Mail tabs ─────────────────────────────────────────────
-  // Browser-style: middle-click a card pins the mail as a tab; tabs persist
-  // in localStorage and come back on the next app launch. Clicking a tab
-  // opens its mail in the read pane; middle-click or × closes it.
-  // NOTE: the key/cap constants live ABOVE the state declaration — loadTabs
-  // is hoisted and called during state init, and a `const` down here would
-  // still be in its temporal dead zone at that point (the ReferenceError
-  // was swallowed by the try/catch, silently dropping the restore).
-
-  function loadTabs() {
-    try {
-      const a = JSON.parse(localStorage.getItem(_TABS_KEY) || '[]');
-      return Array.isArray(a) ? a.filter((x) => Number.isFinite(x.id)) : [];
-    } catch (_) { return []; }
-  }
-
-  function saveTabs() {
-    try { localStorage.setItem(_TABS_KEY, JSON.stringify(state.tabs.slice(0, _TABS_MAX))); } catch (_) {}
-  }
-
-  function renderTabs() {
-    const strip = $('#mb-tabs');
-    if (!strip) return;
-    const tabs = state.tabs || [];
-    strip.hidden = tabs.length === 0;
-    if (!tabs.length) { strip.innerHTML = ''; return; }
-    strip.innerHTML = tabs.map((tab) => `
-      <div class="mb-tab ${state.selectedId === tab.id ? 'active' : ''}" role="tab"
-           tabindex="0" aria-selected="${state.selectedId === tab.id}"
-           data-tab-id="${tab.id}" title="${escapeHtml(tab.sender || '')}">
-        <span class="mb-tab-label">${escapeHtml(tab.subject || t('mb.no_subject'))}</span>
-        <button type="button" class="mb-tab-close" data-close="${tab.id}"
-                title="${t('mb.tabs.close')}" aria-label="${t('mb.tabs.close')}">
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-      </div>`).join('');
-  }
-
-  function addTab(em, { activate = false } = {}) {
-    if (!em || !Number.isFinite(em.int_id)) return;
-    if (!state.tabs.some((x) => x.id === em.int_id)) {
-      state.tabs.push({
-        id: em.int_id,
-        subject: em.subject || '',
-        sender: senderName(em.sender) || senderEmail(em.sender) || '',
-      });
-      if (state.tabs.length > _TABS_MAX) state.tabs.shift();
-      saveTabs();
-    }
-    if (activate) openEmail(em.int_id);
-    else renderTabs();
-  }
-
-  function closeTab(id) {
-    state.tabs = state.tabs.filter((x) => x.id !== id);
-    saveTabs();
-    renderTabs();
   }
 
   function selectAll() {
@@ -5333,6 +5159,7 @@ export async function mountMailbox(host, _opts) {
             needs_reply: a.needs_reply || 0,
             favourite: a.favourite || 0,
             draft: a.draft || 0,
+            sent: a.sent || 0,
             total: a.total || 0,
             sync_error: errMap[a.email] || a.sync_error || null,
           };
@@ -5365,6 +5192,9 @@ export async function mountMailbox(host, _opts) {
     }
     renderChips();
     renderAccounts();
+    // The Sent row and the COMPTES section both depend on counts that only
+    // arrive here, so the sidebar folder list is rebuilt once they have.
+    renderFolders();
     // Only re-filter the list once the initial render has completed.
     // On the very first load, loadEmails() owns the first renderList() call
     // (with _firstRender=true) — calling applyFilter() here before that would
@@ -5444,7 +5274,6 @@ export async function mountMailbox(host, _opts) {
         folder: state.folder || 'inbox',
         label: state.labelFilter ?? undefined,
         // Conversation view collapses the list to one row per thread.
-        view: state.threadView ? 'threads' : undefined,
       };
       const fresh = await api.getEmails(params, { signal: _emailLoads.next() });
       if (myToken !== _loadEmailsToken) return;  // stale → drop
@@ -5684,25 +5513,6 @@ export async function mountMailbox(host, _opts) {
     _searchTimer = setTimeout(runServerSearch, 250);
   });
 
-  // Conversation-view toggle: collapse the list by thread (server-side).
-  (function wireThreadToggle() {
-    const btn = $('#thread-toggle');
-    if (!btn) return;
-    const sync = () => {
-      btn.classList.toggle('is-active', state.threadView);
-      btn.setAttribute('aria-pressed', state.threadView ? 'true' : 'false');
-    };
-    sync();
-    btn.addEventListener('click', () => {
-      state.threadView = !state.threadView;
-      try { localStorage.setItem('mb-thread-view', state.threadView ? '1' : '0'); } catch (_) {}
-      sync();
-      loadEmails();
-    });
-  })();
-
-  // Honour `#/inbox?q=...` so other pages (notably the cleanup workspace)
-  // can deep-link to a sender-filtered view of the inbox.
   (function applyHashQuery() {
     const m = location.hash.match(/[?&]q=([^&]+)/);
     if (!m) return;
@@ -6258,6 +6068,17 @@ export async function mountMailbox(host, _opts) {
     localStorage.removeItem('sb-accounts');
     localStorage.setItem('sb-open-default-v1', '1');
   }
+  // One-shot cleanup for three features that no longer exist. The thread
+  // view is the one that matters: its toggle is gone, and a user who had
+  // ever switched it on would have been locked in conversation view for
+  // good -- with their multi-account filter silently widened by the
+  // server-side grouping, and the view silently reverting on every search.
+  if (!localStorage.getItem('mb-retired-v1')) {
+    localStorage.removeItem('mb-tabs');
+    localStorage.removeItem('sb-section-order-v1');
+    localStorage.removeItem('mb-thread-view');
+    localStorage.setItem('mb-retired-v1', '1');
+  }
   initCollapsible($('#title-folders'),     $('#wrap-folders'),     'sb-folders');
   initCollapsible($('#title-labels'),      $('#wrap-labels'),      'sb-labels');
   // ÉTIQUETTES (personal labels) is rarely populated on first run and
@@ -6266,8 +6087,6 @@ export async function mountMailbox(host, _opts) {
   initCollapsible($('#title-userlabels'),  $('#wrap-userlabels'),  'sb-userlabels',
                   { defaultCollapsed: true });
 
-  setupSidebarReorder();
-  renderTabs();   // restore persisted mail tabs
 
   $('#btn-sync').addEventListener('click', triggerSync);
   $('#sel-bar').addEventListener('click', onSelBarClick);
@@ -6297,48 +6116,6 @@ export async function mountMailbox(host, _opts) {
   // Event delegation for card clicks (avoids per-card listeners).
   // Keyboard activation, delegated alongside the click handler below.
   $('#email-list').addEventListener('keydown', _onListKeydown);
-
-  // Middle-click a card → pin it as a tab (browser convention). The
-  // mousedown guard suppresses the middle-click autoscroll cursor, which
-  // would otherwise fire before auxclick and eat the gesture.
-  $('#email-list').addEventListener('mousedown', (e) => {
-    if (e.button === 1 && e.target.closest('.mb-card')) e.preventDefault();
-  });
-  $('#email-list').addEventListener('auxclick', (e) => {
-    if (e.button !== 1) return;
-    const card = e.target.closest('.mb-card');
-    if (!card) return;
-    e.preventDefault();
-    const id = parseInt(card.dataset.id, 10);
-    const em = state.emails.find((x) => x.int_id === id);
-    if (em) addTab(em);
-  });
-
-  // Tab strip: click opens, × or middle-click closes.
-  $('#mb-tabs').addEventListener('mousedown', (e) => {
-    if (e.button === 1 && e.target.closest('.mb-tab')) e.preventDefault();
-  });
-  $('#mb-tabs').addEventListener('auxclick', (e) => {
-    if (e.button !== 1) return;
-    const tab = e.target.closest('.mb-tab');
-    if (tab) { e.preventDefault(); closeTab(parseInt(tab.dataset.tabId, 10)); }
-  });
-  $('#mb-tabs').addEventListener('click', (e) => {
-    const close = e.target.closest('.mb-tab-close');
-    if (close) {
-      e.stopPropagation();
-      closeTab(parseInt(close.dataset.close, 10));
-      return;
-    }
-    const tab = e.target.closest('.mb-tab');
-    if (tab) openEmail(parseInt(tab.dataset.tabId, 10));
-  });
-  $('#mb-tabs').addEventListener('keydown', (e) => {
-    if ((e.key === 'Enter' || e.key === ' ') && e.target.classList?.contains('mb-tab')) {
-      e.preventDefault();
-      openEmail(parseInt(e.target.dataset.tabId, 10));
-    }
-  });
 
   $('#email-list').addEventListener('click', (e) => {
     const card = e.target.closest('.mb-card');

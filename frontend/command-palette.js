@@ -46,6 +46,8 @@ export function initCommandPalette({ navigate }) {
           catch (e) { window.toast?.(e.message); }
         } },
       { id: 'theme', icon: 'moon', label: t('cmdk.theme'), run: () => document.getElementById('theme-toggle')?.click() },
+      { id: 'shortcuts', icon: 'keyboard', label: t('cmdk.shortcuts'),
+        run: () => window.openCheat?.() },
       { id: 'search', icon: 'search', label: t('cmdk.search'), run: () => {
           navigate('#/inbox');
           setTimeout(() => document.querySelector('[data-role="search"]')?.focus(), 60);

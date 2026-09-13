@@ -82,9 +82,6 @@
                 aria-label="Palette de commandes" title="Palette de commandes (Ctrl/⌘ + K)">
           <i data-lucide="command" class="w-5 h-5"></i>
         </button>
-        <button id="cheat-toggle" class="rail-btn" aria-label="Raccourcis clavier" title="Raccourcis clavier (?)">
-          <i data-lucide="keyboard" class="w-5 h-5"></i>
-        </button>
         <button id="report-toggle" class="rail-btn"
                 data-i18n-aria-label="report.open_title" data-i18n-title="report.open_title"
                 aria-label="Signaler un bug ou suggérer une amélioration"
@@ -153,6 +150,11 @@
         <li><kbd>j</kbd> / <kbd>k</kbd><span data-i18n="shortcuts.next_prev">Mail suivant / précédent</span></li>
         <li><kbd>Enter</kbd><span data-i18n="shortcuts.open">Ouvrir le mail sélectionné</span></li>
         <li><kbd>e</kbd><span data-i18n="shortcuts.mark_read">Marquer comme lu</span></li>
+        <!-- The two that were missing, and they are the two a keyboard user
+             cannot work without: Space is the only equivalent of clicking an
+             avatar, and Escape the only way out of a large selection. -->
+        <li><kbd>Espace</kbd><span data-i18n="shortcuts.select">Cocher / décocher le mail</span></li>
+        <li><kbd>Échap</kbd><span data-i18n="shortcuts.escape">Fermer un menu, puis vider la sélection</span></li>
         <li><kbd>/</kbd><span data-i18n="shortcuts.search">Rechercher</span></li>
         <li><kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>K</kbd><span data-i18n="shortcuts.command_palette">Palette de commandes</span></li>
         <li><kbd>?</kbd><span data-i18n="shortcuts.help">Afficher cette aide</span></li>
