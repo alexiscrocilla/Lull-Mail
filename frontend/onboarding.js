@@ -101,22 +101,74 @@ function toast(message, type = 'ok') {
   return null;
 }
 
+// Screen order is account, then AI, then done. The section ids are the
+// historical ones; this maps a screen number onto the section it shows.
+const SCREENS = ['step-2', 'step-1', 'step-4'];
+
 function goToStep(n) {
-  for (let i = 1; i <= 4; i++) {
-    document.getElementById(`step-${i}`).classList.toggle('hidden', i !== n);
+  SCREENS.forEach((id, i) => {
+    document.getElementById(id).classList.toggle('hidden', i + 1 !== n);
+  });
+  for (let i = 1; i <= SCREENS.length; i++) {
     const dot = document.getElementById(`dot-${i}`);
+    if (!dot) continue;
     dot.classList.remove('active', 'done');
     if (i < n) dot.classList.add('done');
     else if (i === n) dot.classList.add('active');
   }
-  for (let i = 1; i <= 3; i++) {
-    document.getElementById(`line-${i}`).classList.toggle('done', i < n);
+  for (let i = 1; i < SCREENS.length; i++) {
+    document.getElementById(`line-${i}`)?.classList.toggle('done', i < n);
   }
   state.step = n;
   window.scrollTo(0, 0);
 
-  if (n === 2) refreshAccountsList();
-  if (n === 4) finalizeSetup();
+  if (n === 1) refreshAccountsList();
+  if (n === 2) startFetchTicker();
+  else stopFetchTicker();
+}
+
+// ── "your mail is already arriving" ──────────────────────────────────────
+// The account is configured and finalize has run, so the first fetch is
+// under way while the user picks an AI backend. Saying so is what makes
+// that choice feel like a choice rather than a delay.
+let _fetchTicker = null;
+
+async function _tickFetched() {
+  const el = document.getElementById('ob-fetch-live');
+  if (!el) return;
+  try {
+    const s = await api('GET', '/api/sync/status');
+    const n = (s.accounts || []).reduce((acc, a) => acc + (a.fetched || 0), 0);
+    if (n > 0) {
+      el.textContent = window.t('ob.fetching_live', { n });
+      el.hidden = false;
+    }
+  } catch (_) { /* the wizard must not depend on this */ }
+}
+
+function startFetchTicker() {
+  stopFetchTicker();
+  _tickFetched();
+  _fetchTicker = setInterval(_tickFetched, 3000);
+}
+
+function stopFetchTicker() {
+  if (_fetchTicker) { clearInterval(_fetchTicker); _fetchTicker = null; }
+}
+
+// Leaving the account screen: persist and start fetching immediately, so
+// the download overlaps the AI choice instead of following it. finalize is
+// restart-safe, and the Settings account modal already does this same pair.
+async function finishAccountsAndNext() {
+  setBusy('btn-next-accounts', true, window.t('ob.busy.working'));
+  try {
+    await api('POST', '/api/setup/finalize');
+  } catch (e) {
+    toast(window.t('ob.toast.error', { error: e.message }), 'err');
+  } finally {
+    setBusy('btn-next-accounts', false);
+  }
+  goToStep(2);
 }
 
 function setBusy(btnId, busy, label) {
@@ -142,7 +194,7 @@ async function saveOpenAIAndNext() {
   }
   try {
     await api('POST', '/api/setup/openai', { api_key: key, model });
-    goToStep(2);
+    goToStep(3);
   } catch (e) {
     toast(window.t('ob.toast.error', { error: e.message }), 'err');
   }
@@ -155,29 +207,30 @@ async function skipOpenAIAndNext() {
   const model = document.getElementById('openai-model').value || 'gpt-4o-mini';
   try {
     await api('POST', '/api/setup/openai', { api_key: '', model });
-    goToStep(2);
+    goToStep(3);
   } catch (e) {
     toast(window.t('ob.toast.error', { error: e.message }), 'err');
   }
 }
 
-// ── Step 1 — Local LLM ───────────────────────────────────────────────────────
-// Hero panel in Step 1. Fetches hardware + model catalog at boot, picks the
-// recommended analyzer + drafter for the detected tier, and exposes a single
-// "Download and activate" button that:
+// ── The local AI option ──────────────────────────────────────────────────────
+// Fetches the hardware profile and model catalog, picks the analyzer for the
+// detected tier, and exposes a single "Download and activate" button that:
 //   1. streams the analyzer GGUF over SSE → progress bar
-//   2. streams the drafter GGUF over SSE → progress bar
-//   3. POSTs /api/llm/activate → flips config to provider=local + restarts services
-//   4. navigates to Step 2.
+//   2. POSTs /api/llm/activate → flips config to provider=local + restarts
+//   3. moves to the last screen.
 //
-// When both GGUFs are already on disk (rerun of onboarding, dev machine), we
-// skip directly to the activate step. The button label adapts to reflect that.
+// The drafter is deliberately not downloaded here: it doubles or triples the
+// wait and serves only auto-drafting, which is off by default. Settings → IA
+// offers it per model whenever the user wants it.
+//
+// When the GGUF is already on disk (rerun of onboarding, dev machine), we skip
+// directly to the activate step. The button label adapts to reflect that.
 
 const local = {
   hw: null,
   models: [],     // catalog with `downloaded` state
   analyzer: null, // chosen analyzer model id
-  drafter: null,  // chosen drafter model id
   inFlight: false,
 };
 
@@ -227,7 +280,6 @@ function _renderModelPills() {
   const wrap = document.getElementById('ob-models-pills');
   if (!wrap) return;
   const a = local.models.find(m => m.id === local.analyzer);
-  const d = local.models.find(m => m.id === local.drafter);
   // Onboarding pill: role label + size + downloaded check. We deliberately
   // hide the technical model name (e.g. "Phi-3.5-mini-instruct-Q4_K_M") —
   // it means nothing to a typical user. The choice of which model is being
@@ -244,18 +296,18 @@ function _renderModelPills() {
         <span class="pill-size">${model.downloaded ? '✓ ' : ''}${sizeGb} GB</span>
       </div>`;
   };
-  wrap.innerHTML = renderOne(a, 'ob.step1.local.analyzer_role', 'search')
-                 + renderOne(d, 'ob.step1.local.drafter_role', 'pen-line');
+  wrap.innerHTML = renderOne(a, 'ob.step1.local.analyzer_role', 'search');
   refreshIcons();
 }
 
 function _renderTotalSize() {
+  // Analyzer only. The drafter is another 1.9 to 4.7 GB and it serves the
+  // auto-draft feature, which is off by default, plus the command palette's
+  // agent -- neither of them on the path to seeing your inbox. It is one
+  // click away in Settings for anyone who wants it.
   const a = local.models.find(m => m.id === local.analyzer);
-  const d = local.models.find(m => m.id === local.drafter);
-  const allDownloaded = a && d && a.downloaded && d.downloaded;
-  const totalBytes = (a?.size_bytes || 0) + (d?.size_bytes || 0);
-  const remaining = (a && !a.downloaded ? a.size_bytes : 0)
-                  + (d && !d.downloaded ? d.size_bytes : 0);
+  const allDownloaded = !!(a && a.downloaded);
+  const remaining = (a && !a.downloaded ? a.size_bytes : 0);
   const totalEl = document.getElementById('ob-total-size');
   const etaEl = document.getElementById('ob-eta-hint');
   if (totalEl) {
@@ -297,7 +349,6 @@ async function loadLocalLLM() {
     local.hw = hw;
     local.models = models;
     local.analyzer = _pickModelForTier(models, 'analyzer', hw.recommended_tier);
-    local.drafter = _pickModelForTier(models, 'drafter', hw.recommended_tier);
     _renderHwBanner();
     _renderModelPills();
     _renderTotalSize();
@@ -369,7 +420,7 @@ async function _streamDownload(modelId, { onProgress, onDone, onError }) {
 
 async function downloadAndActivateLocal() {
   if (local.inFlight) return;
-  if (!local.analyzer || !local.drafter) {
+  if (!local.analyzer) {
     toast(window.t('set.llm.load_error', { msg: 'no model selected' }), 'err');
     return;
   }
@@ -387,7 +438,7 @@ async function downloadAndActivateLocal() {
 
   // Build the queue: only models not yet on disk.
   const queue = [];
-  for (const id of [local.analyzer, local.drafter]) {
+  for (const id of [local.analyzer]) {
     const meta = local.models.find(m => m.id === id);
     if (meta && !meta.downloaded) queue.push(meta);
   }
@@ -400,9 +451,7 @@ async function downloadAndActivateLocal() {
     if (btn) btn.disabled = busy;
   };
 
-  // Download each missing model sequentially. Two simultaneous SSE streams
-  // would saturate the host's CPU during SHA verification and the analyzer
-  // would block the drafter anyway (single-threaded chunked reader).
+  // Sequential by construction: the queue holds at most the analyzer.
   for (let i = 0; i < queue.length; i++) {
     const meta = queue[i];
     if (progress) progress.classList.remove('hidden');
@@ -456,14 +505,16 @@ async function downloadAndActivateLocal() {
   if (progress) progress.classList.add('hidden');
   setBtn('ob.step1.local.activating', true);
   try {
+    // /api/llm/activate only validates the analyzer on disk, so an
+    // analyzer-only activation is a supported state.
     await api('POST', '/api/llm/activate', {
       analyzer_model_id: local.analyzer,
-      drafter_model_id: local.drafter,
+      drafter_model_id: local.analyzer,
     });
     if (btn) btn.disabled = true;
     setBtn('ob.step1.local.activated', false);
     // Tiny pause so the user sees the "activated" state before transition.
-    setTimeout(() => goToStep(2), 450);
+    setTimeout(() => goToStep(3), 450);
   } catch (e) {
     local.inFlight = false;
     if (errEl) {
@@ -684,52 +735,6 @@ async function removeAccount(email) {
   }
 }
 
-// ── Step 3 — ntfy ────────────────────────────────────────────────────────────
-function generateTopic() {
-  const rand = Math.random().toString(36).slice(2, 8);
-  document.getElementById('ntfy-topic').value = `lullmail-${rand}`;
-}
-
-async function skipNtfyAndFinish() {
-  try {
-    await api('POST', '/api/setup/ntfy', {
-      enabled: false, server: 'https://ntfy.sh', topic: '', min_importance: 7,
-    });
-    goToStep(4);
-  } catch (e) { toast(window.t('ob.toast.error', { error: e.message }), 'err'); }
-}
-
-async function saveNtfyAndFinish() {
-  const enabled = document.getElementById('ntfy-enabled').checked;
-  const topic = document.getElementById('ntfy-topic').value.trim();
-  const min = parseInt(document.getElementById('ntfy-min').value, 10);
-  if (enabled && !topic) {
-    toast(window.t('ob.toast.topic_required'), 'err');
-    return;
-  }
-  try {
-    await api('POST', '/api/setup/ntfy', {
-      enabled, server: 'https://ntfy.sh', topic, min_importance: min,
-    });
-    goToStep(4);
-  } catch (e) { toast(window.t('ob.toast.error', { error: e.message }), 'err'); }
-}
-
-// ── Step 4 — Finalize ────────────────────────────────────────────────────────
-async function finalizeSetup() {
-  const target = document.getElementById('finalize-status');
-  target.innerHTML = `<span class="spinner" style="color: var(--accent);"></span> ${escapeHtml(window.t('ob.step4.starting'))}`;
-  try {
-    await api('POST', '/api/setup/finalize');
-    target.innerHTML = `<span class="test-ok">${escapeHtml(window.t('ob.step4.ok'))}</span>`;
-  } catch (e) {
-    target.innerHTML = `<span class="test-err">${window.t('ob.test.err_prefix')} ${escapeHtml(e.message)}</span>
-      <div class="text-xs mt-2" style="color: var(--muted);">
-        ${escapeHtml(window.t('ob.step4.fail_hint'))}
-      </div>`;
-  }
-}
-
 // ── Misc ─────────────────────────────────────────────────────────────────────
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({
@@ -739,11 +744,6 @@ function escapeHtml(s) {
 function escapeAttr(s) {
   return String(s ?? '').replace(/['"\\]/g, '\\$&');
 }
-
-document.getElementById('ntfy-enabled').addEventListener('change', e => {
-  document.getElementById('ntfy-fields').classList.toggle('hidden', !e.target.checked);
-  document.getElementById('ntfy-toggle-row')?.classList.toggle('is-on', e.target.checked);
-});
 
 // Step 1 accordion — Local hero and OpenAI section are mutually exclusive,
 // with a height + opacity slide animation on open and close. We intercept
@@ -834,61 +834,6 @@ document.getElementById('ntfy-enabled').addEventListener('change', e => {
   bindSummary(openaiDet, openaiBody, localDet,  localBody);
 })();
 
-// ── Model custom dropdown ─────────────────────────────────────────────────────
-(function initModelDrop() {
-  const wrap  = document.getElementById('openai-model-wrap');
-  const btn   = document.getElementById('openai-model-btn');
-  const menu  = document.getElementById('openai-model-drop');
-  const input = document.getElementById('openai-model');
-  const label = document.getElementById('openai-model-label');
-  if (!wrap || !menu) return;
-
-  document.body.appendChild(menu);
-
-  function positionMenu() {
-    const r = btn.getBoundingClientRect();
-    menu.style.top   = (r.bottom + 4) + 'px';
-    menu.style.left  = r.left + 'px';
-    menu.style.width = r.width + 'px';
-  }
-
-  function openMenu() {
-    positionMenu();
-    menu.style.display = 'flex';
-    wrap.classList.add('open');
-    btn.setAttribute('aria-expanded', 'true');
-  }
-  function closeMenu() {
-    menu.style.display = 'none';
-    wrap.classList.remove('open');
-    btn.setAttribute('aria-expanded', 'false');
-  }
-
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    menu.style.display === 'flex' ? closeMenu() : openMenu();
-  });
-
-  menu.querySelectorAll('.ob-drop-opt').forEach(opt => {
-    opt.addEventListener('click', (e) => {
-      e.stopPropagation();
-      input.value = opt.dataset.val;
-      // The button's collapsed label is the localised long form. data-label-key
-      // points at the i18n key — fall back to the option's own text content.
-      const key = opt.dataset.labelKey;
-      label.textContent = key ? window.t(key) : (opt.textContent || opt.dataset.val).trim();
-      menu.querySelectorAll('.ob-drop-opt').forEach(o => {
-        o.classList.toggle('active', o === opt);
-        o.setAttribute('aria-selected', o === opt);
-      });
-      closeMenu();
-    });
-  });
-
-  document.addEventListener('click', (e) => {
-    if (!wrap.contains(e.target) && !menu.contains(e.target)) closeMenu();
-  });
-})();
 
 // On load
 refreshIcons();

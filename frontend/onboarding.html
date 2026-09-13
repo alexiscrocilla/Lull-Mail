@@ -145,58 +145,6 @@
   }
 
   /* ── Custom model dropdown (onboarding) ── */
-  .ob-drop-wrap { position: relative; width: 100%; }
-  .ob-drop-btn {
-    width: 100%;
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 8px;
-    background: var(--glass-bg-2);
-    -webkit-backdrop-filter: blur(8px);
-    backdrop-filter: blur(8px);
-    color: var(--text);
-    border: 1px solid var(--glass-stroke);
-    border-radius: 12px;
-    padding: 11px 13px;
-    font: inherit; font-size: 14px;
-    cursor: pointer;
-    text-align: left;
-    transition: border-color .15s, box-shadow .15s, background .15s;
-  }
-  .ob-drop-btn:hover { border-color: var(--accent); }
-  .ob-drop-wrap.open .ob-drop-btn {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-soft);
-    background: var(--surface);
-  }
-  .ob-drop-btn svg { opacity: 0.5; flex-shrink: 0; transition: transform 160ms ease; }
-  .ob-drop-wrap.open .ob-drop-btn svg { transform: rotate(180deg); }
-  .ob-drop-menu {
-    position: fixed;
-    background: var(--surface);
-    border: 1px solid var(--glass-stroke);
-    border-radius: 12px;
-    box-shadow: 0 8px 28px var(--shadow-lg);
-    z-index: 9999;
-    padding: 4px;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 160px;
-  }
-  .ob-drop-opt {
-    padding: 10px 13px;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 13px;
-    color: var(--text);
-    transition: background 120ms ease;
-  }
-  .ob-drop-opt:hover { background: var(--surface-2); }
-  .ob-drop-opt.active {
-    background: var(--accent-soft);
-    color: var(--accent-ink);
-    font-weight: 600;
-  }
-  [data-theme="dark"] .ob-drop-opt.active { color: var(--accent); }
 
   /* ── Custom select ── */
   select.select {
@@ -778,19 +726,21 @@
       <div style="color: var(--muted);" class="text-sm" data-i18n="ob.subtitle">Configurons votre boîte intelligente — quelques minutes suffisent.</div>
     </div>
 
-    <!-- Stepper -->
+    <!-- Stepper. Three screens: the account, then the AI, then done.
+         The section ids still read step-2 / step-1 / step-4 in that order,
+         and so do their i18n keys. Renaming them would churn thirty keys
+         across two dictionaries and two files to change something no user
+         ever sees. -->
     <div class="flex items-center gap-2 mb-6 px-2">
       <div id="dot-1" class="step-dot active">1</div>
       <div id="line-1" class="step-line"></div>
       <div id="dot-2" class="step-dot">2</div>
       <div id="line-2" class="step-line"></div>
       <div id="dot-3" class="step-dot">3</div>
-      <div id="line-3" class="step-line"></div>
-      <div id="dot-4" class="step-dot">4</div>
     </div>
 
     <!-- Step 1 — Choose AI provider (Local hero + OpenAI fallback) -->
-    <section id="step-1" class="panel p-8">
+    <section id="step-1" class="panel p-8 hidden">
       <h2 class="text-2xl font-bold mb-2" data-i18n="ob.step1.title">Configurez votre IA</h2>
       <p style="color: var(--muted);" class="mb-6 text-sm" data-i18n="ob.step1.desc">
         Lull Mail trie, résume et priorise vos emails. Choisissez l'IA locale (privée, gratuite) ou OpenAI (cloud, plus rapide).
@@ -876,18 +826,14 @@
           </div>
 
           <label class="label mt-4" data-i18n="ob.step1.model_label">Modèle (optionnel)</label>
-          <input type="hidden" id="openai-model" value="gpt-4o-mini" />
-          <div class="ob-drop-wrap" id="openai-model-wrap">
-            <button class="ob-drop-btn" id="openai-model-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
-              <span id="openai-model-label" data-i18n="ob.step1.model_mini">gpt-4o-mini — recommandé (rapide &amp; abordable)</span>
-              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-            </button>
-            <div class="ob-drop-menu" id="openai-model-drop" role="listbox" style="display:none">
-              <div class="ob-drop-opt active" data-val="gpt-4o-mini" data-label-key="ob.step1.model_mini" role="option" aria-selected="true">gpt-4o-mini <span style="opacity:.6;font-size:11px">— <span data-i18n="ob.step1.model_mini_short">recommandé</span></span></div>
-              <div class="ob-drop-opt" data-val="gpt-4o" data-label-key="ob.step1.model_4o" role="option" aria-selected="false">gpt-4o <span style="opacity:.6;font-size:11px">— <span data-i18n="ob.step1.model_4o_short">plus précis, plus cher</span></span></div>
-              <div class="ob-drop-opt" data-val="gpt-4.1-mini" data-label-key="ob.step1.model_4o" role="option" aria-selected="false">gpt-4.1-mini</div>
-            </div>
-          </div>
+          <!-- A plain select. The sixty lines of portalled listbox it
+               replaces had no keyboard support of any kind, for three
+               model names. -->
+          <select class="input" id="openai-model">
+            <option value="gpt-4o-mini" data-i18n="ob.step1.model_mini">gpt-4o-mini — recommandé (rapide &amp; abordable)</option>
+            <option value="gpt-4o" data-i18n="ob.step1.model_4o">gpt-4o</option>
+            <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+          </select>
 
           <button class="btn mt-4 w-full" onclick="saveOpenAIAndNext()">
             <span data-i18n="ob.step1.openai.continue_btn">Enregistrer et continuer</span>
@@ -895,6 +841,10 @@
           </button>
         </div>
       </details>
+
+      <!-- Mail is already downloading while this choice is made. That is
+           the whole point of putting the account first. -->
+      <div id="ob-fetch-live" class="text-xs mt-4 text-center" style="color: var(--muted);" hidden></div>
 
       <!-- ── Skip (no AI) ───────────────────────────────────────── -->
       <div class="mt-4 text-center">
@@ -906,10 +856,16 @@
           Sans IA, le tri restera basique mais fonctionnel.
         </div>
       </div>
+
+      <div class="mt-6">
+        <button class="btn btn-ghost" onclick="goToStep(1)">
+          <i data-lucide="arrow-left"></i> <span data-i18n="ob.step2.back">Retour</span>
+        </button>
+      </div>
     </section>
 
     <!-- Step 2 — Email accounts -->
-    <section id="step-2" class="panel p-8 hidden">
+    <section id="step-2" class="panel p-8">
       <h2 class="text-2xl font-bold mb-2" data-i18n="ob.step2.title">Vos comptes email</h2>
       <p style="color: var(--muted);" class="mb-6 text-sm" data-i18n="ob.step2.desc">
         Ajoutez au moins un compte. Vous pouvez en ajouter d'autres plus tard depuis les réglages.
@@ -992,68 +948,10 @@
         </div>
       </div>
 
-      <div class="flex justify-between mt-8 gap-3">
-        <button class="btn btn-ghost" onclick="goToStep(1)">
-          <i data-lucide="arrow-left"></i> <span data-i18n="ob.step2.back">Retour</span>
-        </button>
-        <button class="btn" onclick="goToStep(3)" id="btn-next-accounts" disabled>
+      <div class="flex justify-end mt-8 gap-3">
+        <button class="btn" onclick="finishAccountsAndNext()" id="btn-next-accounts" disabled>
           <span data-i18n="ob.step2.cta">Continuer</span> <i data-lucide="arrow-right"></i>
         </button>
-      </div>
-    </section>
-
-    <!-- Step 3 — Notifications (optional) -->
-    <section id="step-3" class="panel p-8 hidden">
-      <h2 class="text-2xl font-bold mb-2" data-i18n="ob.step3.title">Notifications mobiles (optionnel)</h2>
-      <p style="color: var(--muted);" class="mb-6 text-sm" data-i18n-html="ob.step3.desc_html">
-        Recevez une notification push quand un email vraiment important arrive.
-        Utilise <a href="https://ntfy.sh" target="_blank" style="color: var(--accent);" class="underline">ntfy.sh</a> — gratuit, pas de compte requis.
-      </p>
-
-      <label class="toggle-row mb-4" id="ntfy-toggle-row">
-        <span class="toggle-text">
-          <span class="toggle-title" data-i18n="ob.step3.toggle_title">Activer les notifications push</span>
-          <span class="toggle-sub" data-i18n="ob.step3.toggle_sub">Une alerte sur votre téléphone quand un email vraiment urgent arrive.</span>
-        </span>
-        <span class="toggle">
-          <input id="ntfy-enabled" type="checkbox" />
-          <span class="toggle-track"><span class="toggle-thumb"></span></span>
-        </span>
-      </label>
-
-      <div id="ntfy-fields" class="space-y-3 hidden">
-        <div>
-          <label class="label" data-i18n="ob.step3.topic_label">Topic ntfy (choisissez un nom unique difficile à deviner)</label>
-          <div class="flex gap-2">
-            <input id="ntfy-topic" class="input font-mono" data-i18n-placeholder="ob.step3.topic_ph" placeholder="lullmail-vous-x7k2p" />
-            <button class="btn btn-ghost" onclick="generateTopic()" data-i18n="ob.step3.random">Aléatoire</button>
-          </div>
-          <div class="text-xs mt-2" style="color: var(--muted);" data-i18n-html="ob.step3.topic_hint_html">
-            Installez l'app ntfy (<a href="https://ntfy.sh/app" target="_blank" style="color: var(--accent);" class="underline">App Store / Play Store</a>) puis abonnez-vous à ce topic.
-          </div>
-        </div>
-
-        <div>
-          <label class="label" data-i18n="ob.step3.min_label">Score d'importance minimum (1-10)</label>
-          <input id="ntfy-min" type="range" min="1" max="10" value="7" class="w-full" oninput="document.getElementById('ntfy-min-val').textContent = this.value" />
-          <div class="text-xs flex justify-between" style="color: var(--muted);">
-            <span data-i18n="ob.step3.scale_low">1 (tout)</span>
-            <span><span id="ntfy-min-val">7</span> <span data-i18n="ob.step3.scale_mid">et plus</span></span>
-            <span data-i18n="ob.step3.scale_high">10 (urgent)</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="flex justify-between mt-8 gap-3">
-        <button class="btn btn-ghost" onclick="goToStep(2)">
-          <i data-lucide="arrow-left"></i> <span data-i18n="ob.step3.back">Retour</span>
-        </button>
-        <div class="flex gap-2">
-          <button class="btn btn-ghost" onclick="skipNtfyAndFinish()" data-i18n="ob.step3.skip">Passer</button>
-          <button class="btn" onclick="saveNtfyAndFinish()">
-            <span data-i18n="ob.step3.finish">Terminer</span> <i data-lucide="check"></i>
-          </button>
-        </div>
       </div>
     </section>
 
@@ -1067,6 +965,10 @@
       </p>
 
       <div id="finalize-status" class="my-4 text-sm"></div>
+
+      <p class="text-xs mb-4" style="color: var(--muted);" data-i18n="ob.step4.notif_hint">
+        Les notifications sur votre téléphone se configurent dans Réglages → Notifications push.
+      </p>
 
       <button class="btn" onclick="window.location.href = '/'" data-i18n="ob.step4.open_dashboard">
         Ouvrir Lull Mail
