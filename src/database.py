@@ -790,7 +790,8 @@ def wipe_ai_analyses() -> int:
         return cur.rowcount
 
 
-def requeue_emails_by_reason(reason: str) -> int:
+def requeue_emails_by_reason(reason: str,
+                             accounts: Optional[List[str]] = None) -> int:
     """Reset emails matching `reason` back to the pending queue so the next
     sync re-processes them. Used when AI gets re-enabled and we want to
     re-analyze emails that previously got the no-AI fallback.
@@ -798,21 +799,29 @@ def requeue_emails_by_reason(reason: str) -> int:
     `processed_at` is cleared so the throughput counters don't double-count
     once the real AI pass runs. The filter is intentionally narrow (exact
     string match) so unrelated classifications — age-skip, AI-failed,
-    manual drain, local-rule hits — are left untouched."""
+    manual drain, local-rule hits — are left untouched.
+
+    `accounts` narrows it further. The per-account AI switch stamps a reason
+    of its own, and turning it back on for one mailbox must not re-queue the
+    mail of a mailbox that is still opted out."""
     with _conn() as con:
-        cur = con.execute(
-            "UPDATE emails SET "
-            "  category = 'pending', "
-            "  processed_at = NULL, "
-            "  local_classified = 0, "
-            "  importance_score = 1, "
-            "  importance_reason = '', "
-            "  summary = '', "
-            "  draft_response = NULL, "
-            "  ai_attempts = 0 "
-            "WHERE importance_reason = ?",
-            (reason,),
-        )
+        q = ("UPDATE emails SET "
+             "  category = 'pending', "
+             "  processed_at = NULL, "
+             "  local_classified = 0, "
+             "  importance_score = 1, "
+             "  importance_reason = '', "
+             "  summary = '', "
+             "  draft_response = NULL, "
+             "  ai_attempts = 0 "
+             "WHERE importance_reason = ?")
+        params: list = [reason]
+        if accounts is not None:
+            if not accounts:
+                return 0
+            q += f" AND account_email IN ({','.join('?' for _ in accounts)})"
+            params.extend(accounts)
+        cur = con.execute(q, params)
         return cur.rowcount
 
 

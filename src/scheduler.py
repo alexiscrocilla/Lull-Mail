@@ -53,6 +53,10 @@ logger = logging.getLogger(__name__)
 # re-queue these emails for real analysis. Keep in sync with the literal
 # in the fabricated result dict.
 NO_AI_FALLBACK_REASON = "Non classé (mode sans IA)"
+# Stamped when the *account* has the AI switched off while the app as a
+# whole has it on. Kept distinct from NO_AI_FALLBACK_REASON so turning one
+# mailbox back on re-queues that mailbox and nothing else.
+ACCOUNT_AI_OFF_REASON = "IA désactivée pour ce compte"
 
 # A fetch pass that has been holding its lock this long is considered hung
 # (typically a socket that never came back): the next caller breaks the lock
@@ -932,7 +936,7 @@ def _analyse_round(conf: Dict, accounts: List[Dict], ai_on: bool, deadline: floa
             # ── Niveau 2.6 : IA désactivée pour CE compte (P1.2) ──────────────
             # Garde les règles locales gratuites mais n'appelle jamais le LLM.
             if result is None and acc_profile.get("ai_account_enabled") is False:
-                result = _neutral_result("other", 5, "IA désactivée pour ce compte")
+                result = _neutral_result("other", 5, ACCOUNT_AI_OFF_REASON)
 
             # ── Niveau 2.5 : scan anti-injection avant tout appel LLM ─────────
             # Un corps hostile ne doit jamais atteindre le modèle. Fail-OPEN :
@@ -1063,6 +1067,7 @@ def analysis_pass(*, time_budget_seconds: float = ANALYSIS_TIME_BUDGET_SECONDS) 
         # vide), local (GGUF analyzer présent sur disque), Ollama, Claude,
         # OpenRouter. Avant ce fix on testait uniquement `bool(api_key)`.
         ai_on = cfg.ai_enabled()
+        enabled_accounts = [a for a in conf.get("accounts", []) if a.get("enabled", True)]
         if ai_on:
             # init_client n'est nécessaire que pour OpenAI ; en mode local
             # l'AnalyzerServer a déjà été démarré par lifecycle au boot
@@ -1080,8 +1085,21 @@ def analysis_pass(*, time_budget_seconds: float = ANALYSIS_TIME_BUDGET_SECONDS) 
                     f"{requeued} email(s) classés en mode sans IA "
                     "remis en file pour analyse IA"
                 )
+            # Same idea one level down: a mailbox whose own AI switch was off
+            # got a neutral verdict stamped with its own reason. Turning that
+            # switch back on left the mail permanently unanalysed -- marked
+            # done, and nothing ever looked at it again.
+            back_on = [a["email"] for a in enabled_accounts
+                       if a.get("ai_account_enabled", True) is not False]
+            per_acc = db.requeue_emails_by_reason(ACCOUNT_AI_OFF_REASON,
+                                                  accounts=back_on)
+            if per_acc:
+                logger.info(
+                    f"{per_acc} email(s) d'un compte dont l'IA vient d'être "
+                    "réactivée remis en file pour analyse"
+                )
 
-        accounts = [a for a in conf.get("accounts", []) if a.get("enabled", True)]
+        accounts = enabled_accounts
         att_policy = policy_from_config(conf)
 
         # ── Offline mutations queue (seen, flagged, trash) ─────────────────

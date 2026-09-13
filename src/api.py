@@ -505,6 +505,22 @@ def patch_email(int_id: int, patch: EmailPatch, bg: BackgroundTasks, locale: str
     return {"ok": True}
 
 
+def _account_ai_enabled(email: str) -> bool:
+    """Is the AI allowed to touch mail from this mailbox?
+
+    The global switch is not the whole answer: each account carries its own
+    `ai_account_enabled`, honoured by the analysis pass since it was added
+    and by nothing else. A user who turned the AI off for their work mailbox
+    could still hand a work email to the model by pressing a button in the
+    read pane.
+    """
+    target = (email or "").strip().lower()
+    for acc in (cfg.get().get("accounts") or []):
+        if (acc.get("email") or "").strip().lower() == target:
+            return acc.get("ai_account_enabled", True) is not False
+    return True
+
+
 @app.post("/api/emails/{int_id}/draft")
 def generate_draft(int_id: int, locale: str = Depends(get_locale)):
     """Generate an AI draft reply on demand for a specific email.
@@ -531,6 +547,9 @@ def generate_draft(int_id: int, locale: str = Depends(get_locale)):
         }
     if not cfg.ai_enabled():
         raise HTTPException(409, tr("email.ai_disabled.draft", locale))
+    if not _account_ai_enabled(em.get("account_email")):
+        raise HTTPException(409, tr("email.ai_disabled.account", locale,
+                                    email=em.get("account_email") or ""))
     conf = cfg.get()
     # Lazy init: covers the path where the user just toggled AI on via
     # Settings. The startup-time init in lifecycle.py was skipped (key
@@ -694,6 +713,9 @@ def reanalyze_email(int_id: int, locale: str = Depends(get_locale)):
         raise HTTPException(404, tr("email.not_found", locale))
     if not cfg.ai_enabled():
         raise HTTPException(409, tr("email.ai_disabled.reanalyze", locale))
+    if not _account_ai_enabled(em.get("account_email")):
+        raise HTTPException(409, tr("email.ai_disabled.account", locale,
+                                    email=em.get("account_email") or ""))
     conf = cfg.get()
     init_client(conf["openai"]["api_key"])
     model = conf.get("openai", {}).get("model", "gpt-4o-mini")
@@ -1986,6 +2008,11 @@ def get_accounts():
             "email": acc["email"],
             "name": acc.get("name", acc["email"]),
             "type": acc.get("type", "other"),
+            # Per-account AI switch. The frontend had no way to read it, so
+            # it offered "Analyser" and "Rédiger une réponse" on mail from an
+            # account whose AI is off -- controls whose only possible answer
+            # was an error.
+            "ai_account_enabled": acc.get("ai_account_enabled", True) is not False,
             "last_sync": state["last_sync"] if state else None,
             "sync_error": state["last_error"] if state else None,
             "backoff_until": state["backoff_until"] if state else None,

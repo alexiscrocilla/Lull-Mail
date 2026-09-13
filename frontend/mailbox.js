@@ -1506,6 +1506,16 @@ export async function mountMailbox(host, _opts) {
 
   const _accName = (a) => a.name || a.email || '';
 
+  // The global AI switch is not the whole answer: each account carries its
+  // own, honoured by the analysis pass and by nothing on screen. The read
+  // pane offered "Analyser" and "Rédiger une réponse" on mail from a mailbox
+  // whose AI is off -- buttons whose only possible answer was a 409.
+  function _accountAiOn(email) {
+    if (!email) return true;
+    const acc = state.accounts.find((a) => a.email === email);
+    return !acc || acc.ai_account_enabled !== false;
+  }
+
   function renderSyncLine(s) {
     const el = $('#mb-sync-line');
     if (!el) return;
@@ -3617,7 +3627,7 @@ export async function mountMailbox(host, _opts) {
     const col = avatarColor(sEmail || sName);
     const logoImg = avatarImgHtml(sEmail, 36);
 
-    const aiOn = !!window.aiEnabled;
+    const aiOn = !!window.aiEnabled && _accountAiOn(em.account_email);
     // Re-analysing belongs next to the analysis, not in the toolbar. It also
     // means the control inherits this box's `aiOn` gate instead of carrying
     // a second one of its own — a duplicate that had already drifted, which
