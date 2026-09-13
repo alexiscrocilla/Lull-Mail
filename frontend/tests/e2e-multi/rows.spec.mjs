@@ -53,3 +53,23 @@ test('the same newsletter in two mailboxes is two distinguishable rows', async (
   expect(labels.filter((l) => l.includes('Compte Pro'))).toHaveLength(2);
   expect(labels.filter((l) => l.includes('Compte Asso'))).toHaveLength(2);
 });
+
+test('the sidebar counters follow the account filter', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto('/#/inbox');
+  await settled(page);
+
+  // 6 unread on Demo, 3 on each of the others.
+  const inboxBadge = page.locator('#badge-inbox');
+  await expect(inboxBadge).toHaveText('12');
+
+  await page.locator('[data-acc="pro@lullmail.test"]').click();
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(6);
+  // A badge that keeps summing every mailbox contradicts the list beside it.
+  await expect(inboxBadge).toHaveText('3');
+
+  // Back to all accounts.
+  await page.locator('[data-acc="pro@lullmail.test"]').click();
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(TOTAL);
+  await expect(inboxBadge).toHaveText('12');
+});

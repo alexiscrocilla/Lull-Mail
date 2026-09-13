@@ -915,14 +915,26 @@ export async function mountMailbox(host, _opts) {
     });
   }
 
+  // The per-account counters the sidebar is entitled to sum. With no
+  // account filter that is all of them; with a filter it is the chosen ones
+  // only. Summing everything while the list shows one mailbox made the
+  // badges disagree with the rows right next to them -- 14 unread over a
+  // list holding three -- and put a Sent folder on screen for a mailbox that
+  // has never sent anything.
+  function _scopedStats() {
+    const all = state.accountStats || {};
+    const f = state.accountFilters;
+    if (!f || f.size === 0) return Object.values(all);
+    return [...f].map((email) => all[email]).filter(Boolean);
+  }
+
   // ── Render: folders + labels ──────────────────────────────
   function renderFolders() {
     const cont = $('#mb-folders');
     // Hidden while empty, and it appears the moment the user sends
     // something. The stat is a live count, so this needs no migration and
     // reverses itself if the mail is later deleted.
-    const sentCount = Object.values(state.accountStats || {})
-      .reduce((n, s2) => n + (s2.sent || 0), 0);
+    const sentCount = _scopedStats().reduce((n, s2) => n + (s2.sent || 0), 0);
     const builtins = FOLDERS_L.filter((f) => f.id !== 'sent' || sentCount > 0).map((f) => {
       const badgeId = f.id === 'inbox' ? 'badge-inbox'
                     : f.id === 'favourite' ? 'badge-favourite'
@@ -1760,6 +1772,10 @@ export async function mountMailbox(host, _opts) {
         }
         // Sync active states in-place — no DOM rebuild, no flicker.
         _syncAccountActive(section);
+        // The badges and the Sent row are scoped to the filter, so changing
+        // the filter has to redraw them. loadEmails() only touches the list.
+        renderFolders();
+        updateBadge();
         loadEmails();
       });
     });
@@ -1774,6 +1790,8 @@ export async function mountMailbox(host, _opts) {
           state.accountFilters.clear();
           groupEmails.forEach((em) => state.accountFilters.add(em));
           _syncAccountActive(section);
+          renderFolders();
+          updateBadge();
           loadEmails();
           return;
         }
@@ -2030,7 +2048,7 @@ export async function mountMailbox(host, _opts) {
   }
 
   function updateBadge() {
-    const stats = Object.values(state.accountStats);
+    const stats = _scopedStats();
     const setBadge = (el, count) => {
       if (!el) return;
       if (count > 0) {
