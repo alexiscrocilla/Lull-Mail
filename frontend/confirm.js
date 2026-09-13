@@ -14,8 +14,11 @@ import { escapeHtml } from '/static/api.js';
  */
 export function confirmAsync({ title = '', message = '', confirmLabel = '', danger = false } = {}) {
   const _t = window.t || ((k) => k);
-  const _title = title || _t('cleanup.confirm.default_title');
-  const _label = confirmLabel || _t('cleanup.confirm.default_ok');
+  // confirm.* and not cleanup.*: this dialog is shared with the mailbox, and
+  // a sweep of the cleanup namespace would leave every confirm button in the
+  // app rendering a raw key string.
+  const _title = title || _t('confirm.default_title');
+  const _label = confirmLabel || _t('confirm.default_ok');
   return new Promise((resolve) => {
     const backdrop = document.createElement('div');
     backdrop.className = 'confirm-backdrop';
@@ -29,7 +32,7 @@ export function confirmAsync({ title = '', message = '', confirmLabel = '', dang
         </div>
         <p class="confirm-msg">${escapeHtml(message)}</p>
         <div class="confirm-actions">
-          <button class="confirm-btn-cancel">${_t('cleanup.cancel')}</button>
+          <button class="confirm-btn-cancel">${_t('confirm.cancel')}</button>
           <button class="confirm-btn-ok ${danger ? 'is-danger' : ''}">${escapeHtml(_label)}</button>
         </div>
       </div>`;

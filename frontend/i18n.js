@@ -573,9 +573,12 @@ const STRINGS = {
     'cleanup.tab.senders':           'Expéditeurs',
     'cleanup.back':                  'Retour',
     'cleanup.close':                 'Fermer',
-    'cleanup.cancel':                'Annuler',
-    'cleanup.confirm.default_title': 'Confirmer',
-    'cleanup.confirm.default_ok':    'Confirmer',
+    // Read by frontend/confirm.js, which the mailbox imports too — so
+    // these must NOT live under cleanup.*: a sweep of that namespace
+    // would degrade every confirm dialog in the app to raw key strings.
+    'confirm.cancel':                'Annuler',
+    'confirm.default_title':         'Confirmer',
+    'confirm.default_ok':            'Confirmer',
     'cleanup.rules.new_rule':        'Nouvelle règle',
     'cleanup.rules.empty':           'Aucune règle',
     'cleanup.rules.empty_desc':      'Créez une règle pour organiser vos mails automatiquement.',
@@ -744,11 +747,13 @@ const STRINGS = {
     'cleanup.unsub.none_selected':       'Sélectionnez un expéditeur',
     'cleanup.unsub.nothing':             'Aucun expéditeur éligible au désabonnement',
     'cleanup.unsub.no_link':             'Pas de lien de désabonnement',
+    'cleanup.unsub.no_mails':            'Aucun message de cet expéditeur',
     'cleanup.unsub.searching_auto':      'Lull Mail recherche les liens de désabonnement dans vos messages. La liste se remplira toute seule.',
     'cleanup.unsub.not_analyzed':        '{n} message(s) restant(s) à inspecter',
     'cleanup.unsub.senders_with_link':   '{n} expéditeur(s) auxquels se désabonner',
     'cleanup.unsub.searching':           'Recherche des liens : {done} / {total} messages',
     'cleanup.unsub.bulk_btn':            'Se désabonner des {n} newsletters',
+    'cleanup.unsub.bulk_btn_one':        'Se désabonner de cette newsletter',
     'cleanup.unsub.re_unsub':            'Se désabonner à nouveau',
     'cleanup.unsub.unsubscribe':         'Se désabonner',
     'cleanup.unsub.web_page':            'Page web',
@@ -1610,9 +1615,9 @@ const STRINGS = {
     'cleanup.tab.senders':           'Senders',
     'cleanup.back':                  'Back',
     'cleanup.close':                 'Close',
-    'cleanup.cancel':                'Cancel',
-    'cleanup.confirm.default_title': 'Confirm',
-    'cleanup.confirm.default_ok':    'Confirm',
+    'confirm.cancel':                'Cancel',
+    'confirm.default_title':         'Confirm',
+    'confirm.default_ok':            'Confirm',
     'cleanup.rules.new_rule':        'New rule',
     'cleanup.rules.empty':           'No rules',
     'cleanup.rules.empty_desc':      'Create a rule to automatically organize your emails.',
@@ -1778,11 +1783,13 @@ const STRINGS = {
     'cleanup.unsub.none_selected':       'Select a sender',
     'cleanup.unsub.nothing':             'No eligible senders to unsubscribe',
     'cleanup.unsub.no_link':             'No unsubscribe link',
+    'cleanup.unsub.no_mails':            'No messages from this sender',
     'cleanup.unsub.searching_auto':      'Lull Mail is looking for unsubscribe links in your messages. The list will fill up on its own.',
     'cleanup.unsub.not_analyzed':        '{n} message(s) left to check',
     'cleanup.unsub.senders_with_link':   '{n} sender(s) you can unsubscribe from',
     'cleanup.unsub.searching':           'Looking for links: {done} / {total} messages',
     'cleanup.unsub.bulk_btn':            'Unsubscribe from all {n} newsletters',
+    'cleanup.unsub.bulk_btn_one':        'Unsubscribe from this newsletter',
     'cleanup.unsub.re_unsub':            'Unsubscribe again',
     'cleanup.unsub.unsubscribe':         'Unsubscribe',
     'cleanup.unsub.web_page':            'Web page',
@@ -2129,10 +2136,20 @@ function detectLocale() {
 const LOCALE = detectLocale();
 
 function t(key, vars) {
-  let s = (STRINGS[LOCALE] && STRINGS[LOCALE][key]) || STRINGS.en[key] || key;
+  // Singular variant. This function only substitutes {var}, and the dictionary
+  // has been working around that with "message(s)" — which reads like a form
+  // letter on a card that says "Se désabonner de 1 listes". When vars.n is 1
+  // and a `<key>_one` entry exists, it wins. Only the handful of keys that can
+  // legitimately reach n = 1 need the variant; everything else is untouched.
+  let k = key;
+  if (vars && Number(vars.n) === 1) {
+    const one = key + '_one';
+    if ((STRINGS[LOCALE] && STRINGS[LOCALE][one]) || STRINGS.en[one]) k = one;
+  }
+  let s = (STRINGS[LOCALE] && STRINGS[LOCALE][k]) || STRINGS.en[k] || key;
   if (vars) {
-    for (const k of Object.keys(vars)) {
-      s = s.replace(new RegExp('\\{' + k + '\\}', 'g'), vars[k]);
+    for (const kv of Object.keys(vars)) {
+      s = s.replace(new RegExp('\\{' + kv + '\\}', 'g'), vars[kv]);
     }
   }
   return s;
