@@ -870,6 +870,7 @@ def hydrate_email_bodies(
     targets: List[Dict],
     policy: AttachmentPolicy,
     on_each=None,
+    on_body=None,
 ) -> int:
     """Hydrate full body (text + html) and attachments for emails in envelope state."""
     if not targets:
@@ -894,10 +895,20 @@ def hydrate_email_bodies(
                     status, data = conn.uid("fetch", uid.encode(), "(BODY.PEEK[])")
                     if status != "OK" or not data or not data[0]:
                         db.mark_email_body_failed(msg_id, "IMAP fetch empty response")
+                        if on_body:
+                            try:
+                                on_body(msg_id, False)
+                            except Exception:
+                                pass
                         continue
                     raw = data[0][1] if isinstance(data[0], tuple) else None
                     if not isinstance(raw, (bytes, bytearray)):
                         db.mark_email_body_failed(msg_id, "IMAP fetch invalid raw bytes")
+                        if on_body:
+                            try:
+                                on_body(msg_id, False)
+                            except Exception:
+                                pass
                         continue
 
                     try:
@@ -959,6 +970,11 @@ def hydrate_email_bodies(
                     if on_each:
                         try:
                             on_each(uid, True, len(parts))
+                        except Exception:
+                            pass
+                    if on_body:
+                        try:
+                            on_body(msg_id, True)
                         except Exception:
                             pass
                 except Exception as e:

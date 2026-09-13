@@ -69,3 +69,64 @@ test('a server without the route falls back to the poll rather than going silent
   await expect(page.locator('#mb-sync-line')).toContainText('Aucune relève');
   expect(polls.length, 'the fallback never started').toBeGreaterThan(0);
 });
+
+test('new mail appears while you are looking at the list', async ({ page }) => {
+  await page.goto('/#/inbox');
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(18);
+
+  const polls = [];
+  page.on('request', (r) => {
+    if (new URL(r.url()).pathname === '/api/sync/status') polls.push(r.url());
+  });
+
+  const started = Date.now();
+  await page.request.post('/__test__/emit?kind=mail');
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(19);
+  const elapsed = Date.now() - started;
+
+  // Measured before this work: a median of 14.2 s and a worst case of 57 s,
+  // because the only arrival signal was a 3 s sample of a boolean that is
+  // true just while a pass runs.
+  expect(elapsed, `the row took ${elapsed} ms to appear`).toBeLessThan(4000);
+  expect(polls, 'the row arrived via a poll, not the stream').toHaveLength(0);
+  await expect(page.locator('#email-list .mb-card').first())
+    .toContainText('Message arrivé pendant le test');
+});
+
+test('an idle window costs nothing at all', async ({ page }) => {
+  await page.goto('/#/inbox');
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(18);
+  // The update check fires once on load; let it.
+  await page.waitForTimeout(1500);
+
+  const calls = [];
+  page.on('request', (r) => {
+    const p = new URL(r.url()).pathname;
+    if (p.startsWith('/api/') && p !== '/api/events') calls.push(p);
+  });
+  await page.waitForTimeout(20_000);
+
+  // Before: 23 requests a minute, forever, and a 21 MB list reload every 60 s.
+  expect(calls, `20 idle seconds cost ${calls.length} requests: ${calls.join(', ')}`)
+    .toHaveLength(0);
+});
+
+test('a message still downloading fills itself in when the body lands', async ({ page }) => {
+  await page.goto('/#/inbox');
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(18);
+
+  // Put the first message back to envelope, then open it.
+  const id = await page.$eval('#email-list .mb-card', (el) => Number(el.dataset.id));
+  await page.request.post(`/__test__/emit?kind=envelope&int_id=${id}`);
+  await page.locator('#email-list .mb-card').first().click();
+  await expect(page.locator('#read-pane .mb-body-loading')).toBeVisible();
+
+  // Well past the 1200 ms single retry this replaced, which against a real
+  // provider lost the race essentially always and re-armed nothing.
+  await page.waitForTimeout(3000);
+  await expect(page.locator('#read-pane .mb-body-loading')).toBeVisible();
+
+  await page.request.post(`/__test__/emit?kind=body&int_id=${id}`);
+  await expect(page.locator('#read-pane .mb-body-loading')).toHaveCount(0);
+  await expect(page.locator('#read-pane')).toContainText('Corps arrivé par le flux');
+});

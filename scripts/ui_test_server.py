@@ -138,6 +138,56 @@ def main() -> None:
     import uvicorn
     from src.api import app
 
+    from src import events
+
+    @app.post("/__test__/emit")
+    def _emit(kind: str, int_id: int = 0):
+        """Make the server announce something, the way the real code does.
+
+        This server never starts the scheduler or the IDLE watchers, so
+        nothing can publish on its own. Test-harness only.
+        """
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+        if kind == "mail":
+            now = _dt.now(_tz.utc)
+            mid = f"<streamed-{now.timestamp()}@lullmail.test>"
+            db.insert_email({
+                "message_id": mid, "account": "demo@lullmail.test",
+                "uid": "9999", "subject": "Message arrivé pendant le test",
+                "sender": "Flux <flux@lullmail.test>",
+                "recipient": "demo@lullmail.test",
+                "date_str": now.strftime("%a, %d %b %Y %H:%M:%S +0000"),
+                "body_text": "corps", "body_html": "<p>corps</p>",
+            })
+            events.hub.publish("mail", {"account": "demo@lullmail.test", "count": 1})
+            return {"ok": True, "message_id": mid}
+
+        if kind == "envelope":
+            with db._conn() as con:
+                con.execute(
+                    "UPDATE emails SET body_state='envelope', body_text='', body_html='' "
+                    "WHERE int_id = ?", (int_id,))
+            return {"ok": True}
+
+        if kind == "body":
+            with db._conn() as con:
+                con.execute(
+                    "UPDATE emails SET body_state='full', body_text='Corps arrivé par le flux.' "
+                    "WHERE int_id = ?", (int_id,))
+            events.hub.publish("body", {"int_id": int_id, "body_state": "full"})
+            return {"ok": True}
+
+        if kind == "failed":
+            with db._conn() as con:
+                con.execute(
+                    "UPDATE emails SET body_state='failed', body_error='IMAP fetch empty response' "
+                    "WHERE int_id = ?", (int_id,))
+            events.hub.publish("body", {"int_id": int_id, "body_state": "failed"})
+            return {"ok": True}
+
+        return {"ok": False, "error": "unknown kind"}
+
     @app.post("/__test__/reset")
     def _reset():
         """Put the mailbox back to its seeded state.

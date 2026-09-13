@@ -3621,17 +3621,11 @@ export async function mountMailbox(host, _opts) {
             ? `<div class="mb-body-text">${linkify(em.body_text)}</div>`
             : `<div style="color:var(--muted);font-style:italic">${t('mb.read.empty_body')}</div>`));
 
-    if (isHydrating) {
-      setTimeout(async () => {
-        if (_readPaneVersion !== readPaneVersion) return;
-        try {
-          const fresh = await api.getEmail(em.int_id);
-          if (_readPaneVersion === readPaneVersion && fresh && fresh.body_state === 'full') {
-            renderEmail(fresh);
-          }
-        } catch (_) {}
-      }, 1200);
-    }
+    // No retry here. There used to be exactly one, at 1200 ms, which against
+    // any real provider loses the race with connect + login + select + fetch
+    // essentially always — and nothing re-armed it, so the message showed
+    // three grey bars until the user clicked away and back. The server now
+    // says when the body lands.
 
     $('#read-pane').innerHTML = `
       <div class="mb-read-inner">
@@ -5381,9 +5375,7 @@ export async function mountMailbox(host, _opts) {
         message: r.message || (r.ok ? t('mb.sync.started') : t('mb.sync.already_running')),
         duration: 2400,
       });
-      _syncWasRunning = true;
       setSyncSpinner(true);
-      pollSync();
     } catch (err) {
       // Rate-limit: the backend already shipped a French message in
       // err.message ("Trop de requêtes…"). Honour Retry-After by
@@ -5407,57 +5399,6 @@ export async function mountMailbox(host, _opts) {
         window.toast({ variant: 'error', message: t('mb.sync.error', { msg: err.message || '' }) });
       }
     }
-  }
-
-  let syncTimer = null;
-  let _syncWasRunning = false; // module-level so triggerSync() can prime it
-
-  async function pollSync() {
-    if (syncTimer) return;
-    const stop = () => { if (syncTimer) { clearInterval(syncTimer); syncTimer = null; } };
-    const tick = async () => {
-      try {
-        const s = await api.getSyncStatus();
-        if (s.running) {
-          _syncWasRunning = true;
-          setSyncSpinner(true);
-          // Stream the results instead of waiting for the whole sync: the
-          // scheduler commits each account as soon as its IMAP fetch returns,
-          // and fills in the AI summary/score one email at a time after that,
-          // so there is fresh mail to show on most ticks. A slow account no
-          // longer holds back the ones that already answered.
-          //
-          // Same two guards as the 60s background refresh — an unwatched
-          // window costs nothing, and a refresh mid-selection would fight the
-          // user. Never a navigation, so the search stays and the skeleton
-          // does not flash; renderList patches in place or splices the new
-          // cards at the top, keeping the reading position.
-          if (!document.hidden && !_userIsBusy()) {
-            loadEmails({ background: true }).catch(() => {});
-            loadAccounts().catch(() => {});
-          }
-        } else {
-          setSyncSpinner(false);
-          if (_syncWasRunning) {
-            _syncWasRunning = false;
-            // Background refresh: a completed sync is NOT a navigation, so it
-            // must not clear an active search or flash the skeleton.
-            loadEmails({ background: true });
-            loadAccounts();
-          }
-          // Idle: stop the fast 5s poll instead of spinning it forever.
-          // Rearmed by triggerSync() and by the 60s background refresh, so a
-          // server-side auto-sync is still noticed (within ~60s, then polled
-          // at 5s until it finishes).
-          stop();
-        }
-      } catch (_) {
-        setSyncSpinner(false);
-        stop();
-      }
-    };
-    syncTimer = setInterval(tick, 5000);
-    tick();
   }
 
   // ── Search ────────────────────────────────────────────────
@@ -5983,34 +5924,86 @@ export async function mountMailbox(host, _opts) {
     return false;
   }
 
-  function _backgroundRefresh() {
-    // A hidden window has nobody watching: the tick still cost two requests
-    // (one of them /api/dashboard) plus a sync poll, every minute, forever.
-    // onVisibility below already refreshes on the way back in.
-    if (document.hidden) return;
-    if (_userIsBusy()) return;
+  // Reload the list because the server said something landed, never on a
+  // clock. Coalesced: a first sync writes one frame per chunk of twenty, per
+  // account, and each naive reload is a full list request.
+  //
+  // The two guards are not optional. A rebuild closes an open popover and can
+  // evict checked rows, and moving the trigger from a 60 s clock to "every
+  // arrival" makes that far more likely. A reload a guard refuses sets a flag
+  // that the next focus or visibility change drains.
+  let _reloadTimer = null;
+  let _reloadPending = false;
+
+  function _reloadNow() {
+    if (document.hidden || _userIsBusy()) {
+      _reloadPending = true;
+      return;
+    }
+    _reloadPending = false;
     loadEmails({ background: true }).catch(() => {});
     loadAccounts().catch(() => {});
-    // Re-arm the sync poll: ticks once, spins up the 5s poll if a server-side
-    // sync is running, otherwise stops immediately.
-    pollSync();
   }
 
-  const refreshTimer = setInterval(_backgroundRefresh, 60_000);
+  function _scheduleReload() {
+    if (_reloadTimer) return;
+    _reloadTimer = setTimeout(() => {
+      _reloadTimer = null;
+      _reloadNow();
+    }, 1000);
+  }
 
-  // A sync fired by the server scheduler (every 10 min) is the common case,
-  // and nothing here armed the fast poll for it: only a manual sync or the
-  // minute-timer above did, so the streaming refresh could start up to a
-  // minute after the mail had already landed. rail-toast.js polls
-  // /api/sync/status every 3s for its busy indicator and re-broadcasts the
-  // payload — ride that instead of opening a third poll. pollSync() is a
-  // no-op while already armed, so firing on every broadcast costs nothing.
+  function _drainPendingReload() {
+    if (_reloadPending) _reloadNow();
+  }
+
+  const onMailArrived = () => _scheduleReload();
+  const onResync = () => _scheduleReload();
+  window.addEventListener('lull:mail', onMailArrived);
+  window.addEventListener('lull:resync', onResync);
+
+  // A body landed. Only the open message needs anything: the list has not
+  // painted a body since lot 3 removed the summary line.
+  const onBodyReady = (e) => {
+    const d = e.detail || {};
+    if (!state.selectedId || d.int_id !== state.selectedId) return;
+    api.getEmail(state.selectedId).then((fresh) => {
+      if (fresh && state.selectedId === fresh.int_id) renderEmail(fresh);
+    }).catch(() => {});
+  };
+  window.addEventListener('lull:body', onBodyReady);
+
+  // A verdict moves the quick chips and the sidebar counters, both of which
+  // read `category` off the loaded rows.
+  const onVerdict = (e) => {
+    const d = e.detail || {};
+    const row = state.emails.find((x) => x.int_id === d.int_id);
+    if (!row) return;
+    const wasIn = !state.category || row.category === state.category;
+    row.category = d.category || row.category;
+    row.needs_reply = d.needs_reply ? 1 : 0;
+    if (d.has_draft) row.draft_response = row.draft_response || ' ';
+    renderLabels();
+    const isIn = !state.category || row.category === state.category;
+    if (wasIn !== isIn) applyFilter();
+  };
+  window.addEventListener('lull:verdict', onVerdict);
+
+  // Every status frame the stream pushes, plus the poll when the stream is
+  // down. This is the sidebar line, the per-account rows and the spinner.
   const onSyncStatus = (e) => {
     const s = e.detail || null;
+    const wasRunning = !!_lastSyncStatus?.running;
     _lastSyncStatus = s;
     renderSyncLine(s);
     _applySyncStatusToAccounts(s);
-    if (s?.running) pollSync();
+    // Both `setSyncSpinner(false)` calls used to live inside the poll this
+    // replaced, while two callers still turn it on. Without this the sidebar
+    // spinner turns forever after one manual sync.
+    setSyncSpinner(!!s?.running);
+    // A pass that just finished may have changed rows without inserting any,
+    // so no `mail` frame was sent: mark read, move, delete, an AI backlog.
+    if (wasRunning && !s?.running) _scheduleReload();
   };
   window.addEventListener('sync-status', onSyncStatus);
   // Don't wait up to 3 s for the first broadcast: the sidebar line would
@@ -6030,7 +6023,7 @@ export async function mountMailbox(host, _opts) {
     if (last && Date.now() - last < 60_000) return;
     _lastReturnFetch = Date.now();
     api.triggerSync().then((r) => {
-      if (r?.ok) { setSyncSpinner(true); pollSync(); }
+      if (r?.ok) setSyncSpinner(true);
     }).catch(() => {});
   }
 
@@ -6040,13 +6033,18 @@ export async function mountMailbox(host, _opts) {
   const onVisibility = () => {
     if (document.hidden) return;
     _maybeFetchOnReturn();
-    if (Date.now() - _lastLoadAt < 10_000) return;
-    _backgroundRefresh();
+    // Drain a reload a guard refused while the window was hidden or the user
+    // had a popover open.
+    _drainPendingReload();
   };
   document.addEventListener('visibilitychange', onVisibility);
   // The native window regaining focus (tray → open, alt-tab) fires `focus`,
   // not `visibilitychange`: same expectation of fresh mail.
-  const onFocus = () => { if (!document.hidden) _maybeFetchOnReturn(); };
+  const onFocus = () => {
+    if (document.hidden) return;
+    _maybeFetchOnReturn();
+    _drainPendingReload();
+  };
   window.addEventListener('focus', onFocus);
 
   // ── Initial render ────────────────────────────────────────
@@ -6217,7 +6215,6 @@ export async function mountMailbox(host, _opts) {
   // unhandled-rejection warning quiet.
   _emailsLoading.catch(() => {});
 
-  pollSync();
   window.lucide?.createIcons();
 
   // Cleanup on unmount
@@ -6250,8 +6247,11 @@ export async function mountMailbox(host, _opts) {
     _threads.cancel('unmounted');
     _draftLookups.cancel('unmounted');
     clearTimeout(_searchTimer);
-    if (syncTimer) clearInterval(syncTimer);
-    if (refreshTimer) clearInterval(refreshTimer);
+    if (_reloadTimer) clearTimeout(_reloadTimer);
+    window.removeEventListener('lull:mail', onMailArrived);
+    window.removeEventListener('lull:resync', onResync);
+    window.removeEventListener('lull:body', onBodyReady);
+    window.removeEventListener('lull:verdict', onVerdict);
     document.removeEventListener('visibilitychange', onVisibility);
     window.removeEventListener('focus', onFocus);
     window.removeEventListener('sync-status', onSyncStatus);

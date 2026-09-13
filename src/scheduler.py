@@ -31,6 +31,7 @@ from dateutil import parser as dateparser
 
 from src import config as cfg
 from src import database as db
+from src import events
 from src import injection_guard
 from src import draft_verify
 from src.ai_processor import init_client, process_email, enrich_draft
@@ -216,6 +217,14 @@ class _AccountCtx:
         if emails:
             db.update_sync_state(self.email, last_uid=self.max_uid, uidvalidity=self.uidvalidity)
         progress.account_fetch_progress(self.email, self.fetched, self.new)
+        if new:
+            # Announced per chunk of twenty, not per pass: the window shows
+            # mail as it is written rather than when a pass happens to be
+            # sampled. Only rows actually inserted — a re-sync of known UIDs
+            # must not look like an arrival. No row ids: `insert_email`
+            # returns a boolean, and reading them back would be one SELECT
+            # per message on the thread holding the fetch lock.
+            events.hub.publish("mail", {"account": self.email, "count": new})
         return new
 
     def finish(self, error: Optional[str] = None, server_uidvalidity: Optional[str] = None,
@@ -712,8 +721,18 @@ def _hydrate_round(accounts: List[Dict], att_policy, deadline: float,
         targets = db.claim_emails_for_body_hydration(limit=HYDRATION_BATCH, account=acc["email"])
         if not targets:
             continue
+        by_msg = {t.get("message_id"): t.get("int_id") for t in targets}
+
+        def _announce(message_id, ok):
+            int_id = by_msg.get(message_id)
+            if int_id is not None:
+                events.hub.publish("body", {
+                    "int_id": int_id, "message_id": message_id,
+                    "body_state": "full" if ok else "failed",
+                })
+
         try:
-            got = hydrate_email_bodies(acc, targets, att_policy)
+            got = hydrate_email_bodies(acc, targets, att_policy, on_body=_announce)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[{acc['email']}] Hydration error: {e}")
             db.release_hydration_claims([t.get("message_id") for t in targets])
@@ -949,6 +968,15 @@ def _analyse_round(conf: Dict, accounts: List[Dict], ai_on: bool, deadline: floa
                         logger.warning(f"enrich_draft error: {e}")
 
             db.update_email_ai(em["message_id"], result)
+            # The card no longer paints the category, but the quick chips
+            # filter on it and the sidebar counters are computed from it —
+            # and the reloads that used to keep those honest are gone.
+            events.hub.publish("verdict", {
+                "int_id": em.get("int_id"),
+                "category": result.get("category"),
+                "needs_reply": bool(result.get("needs_reply")),
+                "has_draft": bool(result.get("draft_response")),
+            })
             settled += 1
             if auto_drafted:
                 db.mark_auto_draft(em["message_id"])

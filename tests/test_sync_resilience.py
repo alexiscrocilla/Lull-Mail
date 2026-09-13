@@ -210,7 +210,7 @@ def test_analysis_classifies_before_the_whole_backlog_is_downloaded(fresh_app, m
     for uid in range(100):
         db.insert_email(_envelope(uid=uid))
 
-    def fake_hydrate(acc, targets, policy, on_each=None):
+    def fake_hydrate(acc, targets, policy, on_each=None, on_body=None):
         for t in targets:
             db.update_email_body_hydrated(t["message_id"], body_text="body", body_html="")
         return len(targets)
@@ -245,7 +245,7 @@ def test_a_failing_account_is_skipped_for_the_rest_of_the_pass(fresh_app, monkey
 
     calls = []
 
-    def dead(acc, targets, policy, on_each=None):
+    def dead(acc, targets, policy, on_each=None, on_body=None):
         calls.append(acc["email"])
         db.release_hydration_claims([t["message_id"] for t in targets])
         return 0
