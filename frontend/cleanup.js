@@ -272,6 +272,86 @@ export async function mountCleanup(host, opts = {}) {
     resumeRunningJobs();
   }
 
+  // ── preview ───────────────────────────────────────────────────────────
+  //
+  // What the press will take, before it takes it. Undo answers "I pressed
+  // and I was wrong" -- complete, but only inside twenty seconds and only
+  // if you already know. This answers "I do not know what this is", which
+  // is the reason nobody pressed these buttons.
+  //
+  // Senders, never messages: the sender is the unit a false positive comes
+  // in, and it compresses a thousand-message pile to a few dozen rows. The
+  // messages are one click away through the card's peek link.
+
+  function _previewRow(s, showAccount) {
+    const bits = [];
+    if (showAccount && s.account) bits.push(s.account);
+    bits.push(t('cleanup.preview.row', { n: s.n, unread: s.unread }));
+    if (s.last) {
+      bits.push(t('cleanup.preview.last', {
+        d: new Date(s.last).toLocaleDateString([], { day: 'numeric', month: 'short' }),
+      }));
+    }
+    return {
+      label: s.name || s.sender,
+      sub: bits.join(' · '),
+      value: `${s.sender}|${s.account || ''}`,
+    };
+  }
+
+  async function askWithPreview(card) {
+    let view = null;
+    try {
+      view = await api.getCleanupPreview(card.id, account || undefined);
+    } catch (_) {
+      // The preview is the better dialog, not the only one: a page that
+      // refuses to act because a read failed is worse than one that asks
+      // the old question.
+      view = null;
+    }
+    if (destroyed) return null;
+
+    if (!view || !view.senders?.length) {
+      const ok = await confirmAsync({
+        title: cardTitle(card),
+        message: t(`cleanup.card.${card.id}.gain`, card.vars),
+        confirmLabel: t(`cleanup.card.${card.id}.btn`, card.vars),
+        danger: TRASH_CARDS.has(card.id),
+      });
+      return ok ? {} : null;
+    }
+
+    const showAccount = accounts.length > 1;
+    const total = view.covered;
+    // value -> how many messages that row stands for, so the button can
+    // count messages rather than senders.
+    const weight = new Map(view.senders.map(
+      (s) => [`${s.sender}|${s.account || ''}`, s.n]));
+    const messagesLeft = (checked) =>
+      checked.reduce((n, v) => n + (weight.get(v) || 0), 0);
+    const res = await confirmAsync({
+      title: t('cleanup.preview.title', { n: total }),
+      message: t(`cleanup.card.${card.id}.gain`, card.vars),
+      // Per press, and said so: a persistent per-sender exclusion is the
+      // rules engine this page exists without.
+      note: t('cleanup.preview.note'),
+      confirmLabel: t(`cleanup.card.${card.id}.btn`, { ...card.vars, n: total }),
+      danger: TRASH_CARDS.has(card.id),
+      checkable: true,
+      wide: true,
+      details: view.senders.map((s) => _previewRow(s, showAccount)),
+      onChange: (checked) => t(`cleanup.card.${card.id}.btn`,
+                              { ...card.vars, n: messagesLeft(checked) }),
+    });
+    if (!res || !res.ok || destroyed) return null;
+
+    const keepSenders = (res.unchecked || []).map((v) => {
+      const [sender, acct] = String(v).split('|');
+      return { sender, account: acct || null };
+    });
+    return { window: view.window, keepSenders };
+  }
+
   // ── actions ───────────────────────────────────────────────────────────
 
   function showError(li, err) {
@@ -291,14 +371,13 @@ export async function mountCleanup(host, opts = {}) {
     if (card.id === 'unsub_bulk') return runBulkUnsubscribe(card, li);
     if (card.id === 'unsub_one') return runManualUnsubscribe(card, li);
 
+    // Below the gate a card stays one click and a twenty-second undo: at
+    // three spams a dialog is the friction, not the safety, and a dialog
+    // shown every time is the one that gets dismissed without reading.
+    let choice = {};
     if (card.confirm) {
-      const ok = await confirmAsync({
-        title: cardTitle(card),
-        message: t(`cleanup.card.${card.id}.gain`, card.vars),
-        confirmLabel: t(`cleanup.card.${card.id}.btn`, card.vars),
-        danger: TRASH_CARDS.has(card.id),
-      });
-      if (!ok || destroyed) return;
+      choice = await askWithPreview(card);
+      if (!choice || destroyed) return;
     }
 
     const go = li.querySelector('.cln-card-go');
@@ -308,7 +387,10 @@ export async function mountCleanup(host, opts = {}) {
 
     let res;
     try {
-      res = await api.applyCleanupCard(card.id, account || undefined);
+      res = await api.applyCleanupCard(card.id, account || undefined, {
+        window: choice.window,
+        keepSenders: choice.keepSenders,
+      });
     } catch (err) {
       showError(li, err);
       return;
@@ -598,5 +680,9 @@ export async function mountCleanup(host, opts = {}) {
     for (const id of timers) { clearTimeout(id); clearInterval(id); }
     timers.clear();
     window.removeEventListener('sync-status', onSyncStatus);
+    // confirmAsync appends to document.body, so the router wiping #view
+    // leaves a modal pinned over the next page with everything behind it
+    // inert.
+    document.querySelectorAll('.confirm-backdrop').forEach((el) => el.remove());
   };
 }

@@ -400,13 +400,27 @@ export const api = {
     return j(`/api/cleanup/suggestions${qs}`, requestOptions);
   },
 
+  // Who a card's button would touch, grouped by sender. A read, and a
+  // separate one from /suggestions: most visits never open a preview.
+  getCleanupPreview(card, account) {
+    const sp = new URLSearchParams({ card });
+    if (account) sp.set('account', account);
+    return j(`/api/cleanup/preview?${sp.toString()}`);
+  },
+
   // Run one suggestion. The body is a card id, never a filter: the server
   // re-runs that card's own query so the set acted on is the one it counted.
-  applyCleanupCard(card, account) {
+  // `window` and `keep_senders` come back from a preview and can only ever
+  // narrow that set.
+  applyCleanupCard(card, account, opts = {}) {
     return j('/api/cleanup/apply', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ card, account }),
+      body: JSON.stringify({
+        card, account,
+        window: opts.window || null,
+        keep_senders: opts.keepSenders || null,
+      }),
     });
   },
 

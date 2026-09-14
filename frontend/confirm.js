@@ -19,7 +19,10 @@ import { escapeHtml } from '/static/api.js';
  * quieter line (the mailbox, the counts) and `value` is what comes back.
  *
  * With `checkable`, each entry gets a ticked checkbox and the promise
- * resolves to `{ok: true, unchecked: [value, …]}` instead of `true`. That is
+ * resolves to `{ok: true, unchecked: [value, …]}` instead of `true`.
+ * `onChange(checkedValues, allValues)` is called on every tick and may
+ * return the button's new label -- the caller counts, because a row can
+ * stand for one thing or for forty and only it knows which. That is
  * for a preview of an irreversible or wide-reaching action, where "this is
  * what I am about to do, and these two are wrong" has no other expression.
  * Without it the list stays read-only, which is right for everything whose
@@ -120,15 +123,17 @@ export function confirmAsync({
     if (checkable) {
       const live = card.querySelector('.confirm-live');
       const sync = () => {
-        const left = entries.length - unchecked().length;
+        const checked = [...card.querySelectorAll('.confirm-details input:checked')]
+          .map((el) => el.value);
         // The button carries the live count, so the number the user presses
         // is the number they are about to act on and not the one the card
-        // showed a moment ago.
+        // showed a moment ago. The caller does the counting: a row can stand
+        // for one thing or for forty, and only it knows which.
         if (typeof onChange === 'function') {
-          const text = onChange(left, entries.length);
+          const text = onChange(checked, entries.map((e) => e.value));
           if (text) { okBtn.textContent = text; live.textContent = text; }
         }
-        okBtn.disabled = left === 0;
+        okBtn.disabled = checked.length === 0;
       };
       card.addEventListener('change', (e) => {
         if (e.target.matches('.confirm-details input')) sync();

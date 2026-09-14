@@ -270,6 +270,36 @@ def main() -> None:
 
         return {"ok": False, "error": "unknown kind"}
 
+    @app.post("/__test__/cleanup")
+    def _seed_cleanup(kind: str = "spam", n: int = 260, senders: int = 5,
+                      account: str = PRIMARY):
+        """Seed a pile big enough for a card to reach its confirm gate.
+
+        The default mailbox is 18 well-behaved messages, which is by design:
+        the cards the preview exists for only appear past a few hundred.
+        Test-harness only.
+        """
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+        now = _dt.now(_tz.utc)
+        for i in range(n):
+            mid = f"<cln-{kind}-{i}@lullmail.test>"
+            db.insert_email({
+                "message_id": mid, "account": account, "uid": str(5000 + i),
+                "subject": f"Offre {i}",
+                "sender": f"Expediteur {i % senders} <s{i % senders}@bulk.example>",
+                "recipient": account,
+                "date_str": (now - _td(days=40, minutes=i)).strftime(
+                    "%a, %d %b %Y %H:%M:%S +0000"),
+                "body_text": "corps", "body_html": "<p>corps</p>",
+                "is_read": i % 2 == 0,
+            })
+        with db._conn() as con:
+            con.execute(
+                "UPDATE emails SET category = ?, local_classified = 0 "
+                "WHERE message_id LIKE ?", (kind, f"<cln-{kind}-%"))
+        return {"ok": True, "seeded": n}
+
     @app.post("/__test__/reset")
     def _reset():
         """Put the mailbox back to its seeded state.
