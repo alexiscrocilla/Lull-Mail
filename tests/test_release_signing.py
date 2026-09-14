@@ -273,3 +273,14 @@ def test_the_release_job_checks_out_the_scripts_it_runs():
     names = [s.get("uses", "") for s in _steps("release")]
     assert any("actions/checkout" in u for u in names), (
         "the release job runs repository scripts without checking the repo out")
+
+
+def test_a_generated_signing_key_can_never_be_committed():
+    """`git add -A` does not ask. The generator writes the private key into
+    the working tree by default, so the ignore rule is the only thing between
+    a routine commit and publishing the key that signs every update."""
+    import subprocess
+    for name in ("update-signing-key.private", "update-signing-key",
+                 "anything.private"):
+        rc = subprocess.run(["git", "check-ignore", "-q", name], cwd=ROOT)
+        assert rc.returncode == 0, f"{name} is not gitignored"
