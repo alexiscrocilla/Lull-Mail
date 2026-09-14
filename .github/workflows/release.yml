@@ -72,11 +72,23 @@ jobs:
       # PyPI doesn't publish a cp311 win_amd64 wheel for 0.3.0, so pip falls
       # back to building from source (long, fragile under MSVC). The abetlen
       # extra index serves a pre-built win_amd64 wheel that we use here.
+      # Retried, and bash rather than cmd: the wheel is a GitHub release asset
+      # on a third-party index, and one HTTP 504 from that CDN killed a whole
+      # tagged release — the other two platforms built, this step failed on a
+      # download nobody controls, and `release` was skipped, so no draft and
+      # no signed manifest were produced.
       - name: Install local LLM backend
-        shell: cmd
+        shell: bash
         run: |
-          .venv\Scripts\pip install -r requirements-local.txt ^
-            --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+          for attempt in 1 2 3; do
+            .venv/Scripts/pip install -r requirements-local.txt \
+              --retries 5 --timeout 60 \
+              --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu && exit 0
+            echo "::warning::llama-cpp-python download failed (attempt $attempt/3); retrying in 30s"
+            sleep 30
+          done
+          echo "::error::llama-cpp-python could not be downloaded after 3 attempts"
+          exit 1
 
       - name: Build app (PyInstaller)
         shell: cmd
@@ -188,10 +200,23 @@ jobs:
 
       # Local LLM backend (llama-cpp-python). Same as Windows — PyPI doesn't
       # publish cp311 macOS wheels for 0.3.0, abetlen does.
+      #
+      # Retried: the wheel is a GitHub release asset on a third-party index,
+      # and one HTTP 504 from that CDN killed a whole tagged release — the
+      # other two platforms built, this step failed on a download nobody
+      # controls, and `release` was skipped, so no draft and no signed
+      # manifest were produced.
       - name: Install local LLM backend
         run: |
-          .venv/bin/pip install -r requirements-local.txt \
-            --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+          for attempt in 1 2 3; do
+            .venv/bin/pip install -r requirements-local.txt \
+              --retries 5 --timeout 60 \
+              --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu && exit 0
+            echo "::warning::llama-cpp-python download failed (attempt $attempt/3); retrying in 30s"
+            sleep 30
+          done
+          echo "::error::llama-cpp-python could not be downloaded after 3 attempts"
+          exit 1
 
       # Generate .icns from the 1024px light source using sips + iconutil (both
       # built-in on macOS — no external dependencies needed).
