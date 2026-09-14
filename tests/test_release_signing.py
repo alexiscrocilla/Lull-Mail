@@ -284,3 +284,18 @@ def test_a_generated_signing_key_can_never_be_committed():
                  "anything.private"):
         rc = subprocess.run(["git", "check-ignore", "-q", name], cwd=ROOT)
         assert rc.returncode == 0, f"{name} is not gitignored"
+
+
+def test_a_quote_stripped_key_variable_says_what_happened(monkeypatch, capsys):
+    """PowerShell 5.1 strips double quotes from a native command's argument,
+    so `--body '{"k":"v"}'` is stored as {k:v}. The raw JSONDecodeError that
+    produced is useless when the value lives in a repository variable you
+    cannot see."""
+    monkeypatch.setenv("LULLMAIL_UPDATE_PUBLIC_KEYS",
+                       "{2026-09:eyXdoYuSIBMDFIxeIEhNx6jIWB1/BSVkN2xSeicOqrs=}")
+    with pytest.raises(SystemExit) as excinfo:
+        runpy.run_path(str(SCRIPTS / "embed_update_keys.py"), run_name="__main__")
+    message = str(excinfo.value)
+    assert "not valid JSON" in message
+    assert "PowerShell" in message, "the actual cause is not named"
+    assert "gh variable set" in message, "no way out is offered"

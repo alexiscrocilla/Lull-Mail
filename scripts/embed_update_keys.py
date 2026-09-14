@@ -17,7 +17,26 @@ def main() -> None:
             raise SystemExit("LULLMAIL_UPDATE_PUBLIC_KEYS is required for a signed release build")
         keys: dict[str, str] = {}
     else:
-        parsed = json.loads(raw)
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            # Almost always one specific accident: PowerShell 5.1 strips the
+            # double quotes out of an argument on its way to a native
+            # executable, so `--body '{"k":"v"}'` is stored as {k:v}. Say so,
+            # because "Expecting property name enclosed in double quotes" on a
+            # value you cannot see in the Actions UI is a long afternoon.
+            raise SystemExit("\n".join([
+                f"LULLMAIL_UPDATE_PUBLIC_KEYS is not valid JSON ({exc}).",
+                f"  got:      {raw[:120]}",
+                '  expected: {"<key-id>":"<base64 32 bytes>"}',
+                "",
+                "  If it was set from PowerShell, the double quotes were most",
+                "  likely eaten on the way to gh. Pipe the value in instead of",
+                "  passing it as --body:",
+                "",
+                "    '{\"k\":\"v\"}' | gh variable set LULLMAIL_UPDATE_PUBLIC_KEYS"
+                " --repo OWNER/REPO",
+            ])) from exc
         if not isinstance(parsed, dict) or not parsed:
             raise SystemExit("LULLMAIL_UPDATE_PUBLIC_KEYS must be a non-empty JSON object")
         keys = {}
