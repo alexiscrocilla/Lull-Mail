@@ -9,14 +9,28 @@
 import { escapeHtml } from '/static/api.js';
 
 /**
- * Show a branded confirm dialog. Returns a Promise<boolean>.
- * opts: { title, message, confirmLabel, danger, details }
- * `details` is an optional array of plain strings rendered as a read-only
- * list — used by the unsubscribe sheet to name the senders. Read-only on
- * purpose: checkboxes here would be configuration in a costume.
+ * Show a branded confirm dialog.
+ *
+ * opts: { title, message, note, confirmLabel, danger, details, checkable,
+ *         wide, onChange }
+ *
+ * `details` is an optional list of what the action will touch. Entries are
+ * either plain strings or `{label, sub, value}` objects — `sub` is a second,
+ * quieter line (the mailbox, the counts) and `value` is what comes back.
+ *
+ * With `checkable`, each entry gets a ticked checkbox and the promise
+ * resolves to `{ok: true, unchecked: [value, …]}` instead of `true`. That is
+ * for a preview of an irreversible or wide-reaching action, where "this is
+ * what I am about to do, and these two are wrong" has no other expression.
+ * Without it the list stays read-only, which is right for everything whose
+ * set the user already chose.
+ *
+ * Returns a Promise<boolean> — or, when `checkable`, a Promise of
+ * `false | {ok: true, unchecked: string[]}`.
  */
 export function confirmAsync({
-  title = '', message = '', confirmLabel = '', danger = false, details = null,
+  title = '', message = '', note = '', confirmLabel = '', danger = false,
+  details = null, checkable = false, wide = false, onChange = null,
 } = {}) {
   const _t = window.t || ((k) => k);
   // confirm.* and not cleanup.*: this dialog is shared with the mailbox, and
@@ -32,12 +46,24 @@ export function confirmAsync({
   return new Promise((resolve) => {
     const backdrop = document.createElement('div');
     backdrop.className = 'confirm-backdrop';
-    const list = Array.isArray(details) && details.length
-      ? `<ul class="confirm-details">${details
-          .map((d) => `<li>${escapeHtml(String(d))}</li>`).join('')}</ul>`
+    const rows = Array.isArray(details) ? details : [];
+    const asEntry = (d, i) => (typeof d === 'object' && d !== null
+      ? { label: String(d.label ?? ''), sub: String(d.sub ?? ''), value: String(d.value ?? i) }
+      : { label: String(d), sub: '', value: String(i) });
+    const entries = rows.map(asEntry);
+    const body = (e) =>
+      `<span class="confirm-detail-label">${escapeHtml(e.label)}</span>`
+      + (e.sub ? `<span class="confirm-detail-sub">${escapeHtml(e.sub)}</span>` : '');
+    const list = entries.length
+      ? `<ul class="confirm-details${checkable ? ' is-checkable' : ''}">${entries
+          .map((e) => (checkable
+            ? `<li><label><input type="checkbox" checked value="${escapeHtml(e.value)}">`
+              + `<span class="confirm-detail-text">${body(e)}</span></label></li>`
+            : `<li><span class="confirm-detail-text">${body(e)}</span></li>`))
+          .join('')}</ul>`
       : '';
     backdrop.innerHTML = `
-      <div class="confirm-card" role="alertdialog" aria-modal="true"
+      <div class="confirm-card${wide ? ' is-wide' : ''}" role="alertdialog" aria-modal="true"
            aria-labelledby="confirm-title" aria-describedby="confirm-msg"
            tabindex="-1">
         <div class="confirm-head">
@@ -47,7 +73,9 @@ export function confirmAsync({
           <strong id="confirm-title">${escapeHtml(_title)}</strong>
         </div>
         <p class="confirm-msg" id="confirm-msg">${escapeHtml(message)}</p>
+        ${note ? `<p class="confirm-note">${escapeHtml(note)}</p>` : ''}
         ${list}
+        <p class="confirm-live" aria-live="polite"></p>
         <div class="confirm-actions">
           <button class="confirm-btn-cancel">${_t('confirm.cancel')}</button>
           <button class="confirm-btn-ok ${danger ? 'is-danger' : ''}">${escapeHtml(_label)}</button>
@@ -55,7 +83,9 @@ export function confirmAsync({
       </div>`;
 
     const card = backdrop.querySelector('.confirm-card');
-    const focusables = () => [...card.querySelectorAll('button')]
+    // Not just buttons. With a checkable list the trap would otherwise yank
+    // focus off every checkbox the moment the user Tabbed onto one.
+    const focusables = () => [...card.querySelectorAll('button, input:not([disabled])')]
       .filter((el) => !el.disabled);
 
     // The previous version only removed the Escape handler when Escape was
@@ -84,8 +114,30 @@ export function confirmAsync({
       resolve(result);
     };
 
+    const unchecked = () => [...card.querySelectorAll('.confirm-details input:not(:checked)')]
+      .map((el) => el.value);
+    const okBtn = backdrop.querySelector('.confirm-btn-ok');
+    if (checkable) {
+      const live = card.querySelector('.confirm-live');
+      const sync = () => {
+        const left = entries.length - unchecked().length;
+        // The button carries the live count, so the number the user presses
+        // is the number they are about to act on and not the one the card
+        // showed a moment ago.
+        if (typeof onChange === 'function') {
+          const text = onChange(left, entries.length);
+          if (text) { okBtn.textContent = text; live.textContent = text; }
+        }
+        okBtn.disabled = left === 0;
+      };
+      card.addEventListener('change', (e) => {
+        if (e.target.matches('.confirm-details input')) sync();
+      });
+      sync();
+    }
     backdrop.querySelector('.confirm-btn-cancel').addEventListener('click', () => close(false));
-    backdrop.querySelector('.confirm-btn-ok').addEventListener('click', () => close(true));
+    okBtn.addEventListener('click',
+      () => close(checkable ? { ok: true, unchecked: unchecked() } : true));
     backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(false); });
     document.addEventListener('keydown', onKey, true);
 

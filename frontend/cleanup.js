@@ -50,6 +50,9 @@ export async function mountCleanup(host, opts = {}) {
   // mail the one time the user forgets which filter they left on.
   let account = '';
   let accounts = [];
+  // Whether "which mailbox" is a question at all. With one account every
+  // row would carry the same address: pure noise.
+  const multiAccount = () => accounts.length > 1;
 
   function navigateTo(hash) {
     if (typeof opts.onRouteChange === 'function') opts.onRouteChange(hash);
@@ -382,14 +385,24 @@ export async function mountCleanup(host, opts = {}) {
   const JOB_KEY = (cardId) => `cleanup.job.${cardId}`;
 
   async function runBulkUnsubscribe(card, li) {
-    const names = card.vars.names || [];
+    // Every subscription, by name, with the mailbox it belongs to. This is
+    // the page's only action with no undo, and the sheet used to name three
+    // senders and say "+ 6" about the rest.
+    const detail = card.detail || (card.vars.names || []).map((name) => ({ name }));
     const ok = await confirmAsync({
       title: t('cleanup.unsub.sheet.title', { n: card.vars.n }),
       message: t('cleanup.unsub.sheet.body'),
       confirmLabel: t('cleanup.unsub.sheet.confirm', { n: card.vars.n }),
       danger: false,
-      details: names.length < card.senders.length
-        ? [...names, `+ ${card.senders.length - names.length}`] : names,
+      wide: detail.length > 6,
+      details: detail.map((d) => ({
+        label: d.name || d.sender || '',
+        sub: [
+          multiAccount() && d.account ? d.account : '',
+          d.total != null ? t('cleanup.unsub.sheet.row', { n: d.total, read: d.read ?? 0 }) : '',
+        ].filter(Boolean).join(' · '),
+        value: `${d.sender || ''}|${d.account || ''}`,
+      })),
     });
     if (!ok || destroyed) return;
 

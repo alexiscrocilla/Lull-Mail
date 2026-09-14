@@ -195,3 +195,36 @@ def test_the_suggestions_endpoint_scopes_to_the_account_it_is_given(client):
         assert cards["unsub_one"]["entries"][0]["account"] == "perso@x.fr"
     else:
         raise AssertionError("no unsubscribe card for the scoped account")
+
+
+def test_the_bulk_card_names_every_sender_it_will_contact(fresh_app):
+    """The sheet used to name three and say "+ 6" about the rest, on the one
+    action this app cannot undo."""
+    from src import database as db, cleanup_suggestions as sug
+
+    for i in range(9):
+        _seed_one_click(db, "perso@x.fr", f"news{i}@news.example")
+
+    bulk = next(c for c in sug.compute()["cards"] if c["id"] == "unsub_bulk")
+    assert bulk["vars"]["n"] == 9
+    assert len(bulk["vars"]["names"]) == 9
+    assert len(bulk["detail"]) == 9
+    row = bulk["detail"][0]
+    assert set(row) == {"name", "sender", "account", "total", "read"}
+    assert row["total"] >= row["read"] >= 0
+
+
+def test_every_card_says_how_many_messages_each_mailbox_contributes(fresh_app):
+    from src import database as db, cleanup_suggestions as sug
+
+    for i in range(40):
+        _insert(db, f"<spam-a-{i}>", "perso@x.fr", "Spam <s@spam.example>", days_ago=5)
+    for i in range(12):
+        _insert(db, f"<spam-b-{i}>", "boulot@x.fr", "Spam <s@spam.example>", days_ago=5)
+    with db._conn() as con:
+        con.execute("UPDATE emails SET category = 'spam'")
+
+    spam = next(c for c in sug.compute()["cards"] if c["id"] == "spam")
+    # A card saying "52 spams" over two accounts is a press reaching into
+    # two mailboxes, and nothing on its face said so.
+    assert spam["vars"]["per_account"] == {"perso@x.fr": 40, "boulot@x.fr": 12}

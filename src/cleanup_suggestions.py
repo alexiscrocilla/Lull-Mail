@@ -206,6 +206,19 @@ def _count(con, card_id: str, account: Optional[str]) -> Tuple[int, int]:
     return int(row["n"] or 0), int(row["llm"] or 0)
 
 
+def _per_account(con, card_id: str, account: Optional[str]) -> Dict[str, int]:
+    """{mailbox: how many of this card's messages are in it}.
+
+    A card saying "412 spams" over three accounts is a press that reaches
+    into three mailboxes, and nothing on its face said so.
+    """
+    where, params = _card_where(card_id, account)
+    rows = con.execute(
+        f"SELECT account_email, COUNT(*) AS n FROM emails WHERE {where}"
+        f" GROUP BY account_email", params).fetchall()
+    return {r["account_email"]: int(r["n"]) for r in rows}
+
+
 # ── unsubscribable senders ───────────────────────────────────────────────────
 
 def _months_observed(first: Optional[str], last: Optional[str]) -> float:
@@ -317,6 +330,7 @@ def compute(account: Optional[str] = None) -> Dict[str, Any]:
 
         senders = _unsub_senders(con, account)
         counts = {cid: _count(con, cid, account) for cid in APPLIABLE}
+        per_account = {cid: _per_account(con, cid, account) for cid in APPLIABLE}
 
     # ── unsubscribe: the only action that stops mail arriving ────────────
     one_click = [s for s in senders if s["one_click"]]
@@ -331,7 +345,10 @@ def compute(account: Optional[str] = None) -> Dict[str, Any]:
                 "total": sum(s["total"] for s in one_click),
                 "read": sum(s["total"] - s["unread"] for s in one_click),
                 "rate": rate,
-                "names": [s["name"] for s in one_click[:3]],
+                # Every one of them, not the first three. This is the
+                # page's only action with no undo, and the sheet used to
+                # name three senders and say "+ 6" about the rest.
+                "names": [s["name"] for s in one_click],
                 # How many mailboxes this press reaches into. A card saying
                 # "9 senders" over three accounts is nine subscriptions on
                 # three sets of credentials, which is worth knowing before
@@ -342,6 +359,11 @@ def compute(account: Optional[str] = None) -> Dict[str, Any]:
             # The unit the action actually works on: one link per mailbox.
             "entries": [{"sender": s["email"], "account": s["account"]}
                         for s in one_click],
+            # What the sheet lists, one row per subscription.
+            "detail": [{"name": s["name"], "sender": s["email"],
+                        "account": s["account"], "total": s["total"],
+                        "read": s["total"] - s["unread"]}
+                       for s in one_click],
             "reversible": False, "confirm": True, "peek": None,
             "score": _score(3 * rate, 1.0),
         })
@@ -370,7 +392,8 @@ def compute(account: Optional[str] = None) -> Dict[str, Any]:
         if n < floor:
             return
         capped = min(n, APPLY_CAP)
-        vars_ = {"n": capped, "matched": n}
+        vars_ = {"n": capped, "matched": n,
+                 "per_account": per_account.get(card_id, {})}
         if extra:
             vars_.update(extra)
         cards.append({
