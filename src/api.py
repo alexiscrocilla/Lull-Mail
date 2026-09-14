@@ -666,6 +666,13 @@ def generate_draft_stream(int_id: int, locale: str = Depends(get_locale)):
     em = db.get_email_by_id(int_id)
     if not em:
         raise HTTPException(404, tr("email.not_found", locale))
+    # Même garde que /draft. Sans elle, la seule route qui atteignait
+    # réellement le modèle pour un compte dont l'IA est coupée était la
+    # variante streaming : le corps du message partait au provider et le
+    # brouillon était persisté, là où /draft répondait 409.
+    if not _account_ai_enabled(em.get("account_email")):
+        raise HTTPException(409, tr("email.ai_disabled.account", locale,
+                                    email=em.get("account_email") or ""))
     if em.get("draft_response"):
         # Idempotent : on renvoie un mini-flux qui annonce direct le
         # texte déjà persisté. Permet au frontend de garder le même

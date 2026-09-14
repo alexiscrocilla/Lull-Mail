@@ -113,3 +113,41 @@ def test_a_failing_reconcile_never_fails_the_write(client, monkeypatch):
     with open(cfg.CONFIG_PATH) as f:
         saved = yaml.safe_load(f)
     assert [a["email"] for a in saved["accounts"]] == ["a@x.fr", "c@x.fr"]
+
+
+def test_a_replaced_watcher_does_not_report_its_mailbox_offline(fresh_app):
+    """The push indicator said "off" for every account after any edit.
+
+    A watcher can be parked up to `check_seconds` inside a socket call, so
+    the one being replaced writes its final push_state(False) seconds AFTER
+    the replacement already wrote push_state(True) for the same mailbox.
+    """
+    from src import idle_watcher
+
+    seen = []
+    original = idle_watcher._progress.push_state
+
+    def spy(email, connected, **kw):
+        seen.append((email, connected))
+        return original(email, connected, **kw)
+
+    idle_watcher._progress.push_state = spy
+    try:
+        w = idle_watcher.AccountWatcher(
+            {"email": "a@x.fr"}, lambda _e: None, lambda _a: None)
+        w._publish(True, supported=True)
+        assert seen[-1] == ("a@x.fr", True)
+
+        # Replaced, not shut down.
+        w.retire()
+        w._publish(False)
+        assert seen[-1] == ("a@x.fr", True), "a retired watcher still spoke for its mailbox"
+
+        # A genuine shutdown must still report it.
+        w2 = idle_watcher.AccountWatcher(
+            {"email": "b@x.fr"}, lambda _e: None, lambda _a: None)
+        w2.stop()
+        w2._publish(False)
+        assert seen[-1] == ("b@x.fr", False)
+    finally:
+        idle_watcher._progress.push_state = original

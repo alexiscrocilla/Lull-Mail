@@ -860,10 +860,16 @@ def _backfill_unsubscribe_headers(accounts: List[Dict], deadline: float) -> int:
     if remaining == 0:
         db.set_kv("unsubscribe_backfill_done_at", datetime.now(timezone.utc).isoformat())
         logger.info("Liens de désabonnement : analyse initiale terminée")
-    elif done == 0 and attempted and not deferred:
-        # Every mailbox that still had work was tried, and none of them gave
-        # anything back. Stop retrying every pass; the Nettoyage page keeps a
-        # manual re-run.
+    elif done == 0 and not deferred:
+        # Nothing is going to move. Either every mailbox that still had work
+        # was tried and gave nothing back (`attempted`), or the rows that
+        # remain belong to no reachable mailbox at all (`attempted == 0`) --
+        # an account disabled or deleted while it still had un-inspected
+        # rows. That second case used to satisfy none of the branches, so the
+        # flag was never set and the job restarted from scratch on every
+        # 60-second analysis tick, rebuilding a multi-thousand-row list each
+        # time, forever. Stop retrying; the Nettoyage page keeps a manual
+        # re-run, and re-enabling the account is itself a restart.
         #
         # `deferred` is what this used to get wrong. One account in backoff,
         # or a deadline reached before its turn, produced done == 0 -- and the

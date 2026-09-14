@@ -139,7 +139,11 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_emails_account    ON emails(account_email);
             CREATE INDEX IF NOT EXISTS idx_emails_category   ON emails(category);
             CREATE INDEX IF NOT EXISTS idx_emails_importance ON emails(importance_score DESC);
-            CREATE INDEX IF NOT EXISTS idx_emails_date       ON emails(date_received DESC);
+            -- NB: no index on the raw `date_received` header. It sorts on
+            -- the weekday name ("Fri" < "Mon"), so it answered nothing;
+            -- idx_emails_date_iso below is the one that works. It used to be
+            -- created here and dropped later in this same function, paying a
+            -- full index build over every row on every launch.
             CREATE INDEX IF NOT EXISTS idx_emails_read       ON emails(is_read);
         """)
 
@@ -269,7 +273,10 @@ def init_db():
         )
         con.execute("CREATE INDEX IF NOT EXISTS idx_emails_folder ON emails(folder)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_emails_favourite ON emails(is_favourite)")
-        con.execute("CREATE INDEX IF NOT EXISTS idx_emails_unsub ON emails(unsubscribe_url, unsubscribe_mailto)")
+        # No index on (unsubscribe_url, unsubscribe_mailto): no query has an
+        # equality term on a URL, so it is never seekable. Created and then
+        # dropped in this same function until now -- a full index build over
+        # every row, every launch, for something nothing could use.
 
         # Tiny KV bucket for app-level flags (unsubscribe backfill timestamp, etc.).
         con.execute("""
@@ -543,6 +550,9 @@ def init_db():
 
         # Two indexes that can never be used, dropped rather than left to
         # confuse the next reader and slow every insert down:
+        # Both were created by older builds; the DROPs stay so an existing
+        # database sheds them on its next launch. Neither is created any
+        # more -- see the two comments above.
         #   idx_emails_date indexes the raw RFC 2822 header, which sorts on
         #     the weekday name. Nothing has ordered by it since
         #     date_received_iso landed.

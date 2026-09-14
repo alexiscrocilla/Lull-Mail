@@ -94,3 +94,21 @@ def test_a_pass_that_runs_out_of_time_leaves_the_rest_for_next_time(sched):
     sched._backfill_unsubscribe_headers(accounts, time.monotonic() - 1)
 
     assert db.get_kv(FLAG) is None
+
+
+def test_rows_belonging_to_no_reachable_account_do_not_spin_forever(sched):
+    """An account disabled or deleted while it still had un-inspected rows.
+
+    Those rows are never attempted and never deferred, so the give-up guard
+    saw done==0, attempted==0, deferred==0 and set no flag — and the job
+    restarted from scratch on every 60-second analysis tick, rebuilding a
+    multi-thousand-row list each time, forever.
+    """
+    from src import database as db
+
+    _seed_missing(db, "gone@x.fr", 5)          # no longer in the config
+    accounts = [_account("live@x.fr")]          # and it has nothing pending
+
+    sched._backfill_unsubscribe_headers(accounts, time.monotonic() + 30)
+
+    assert db.get_kv(FLAG) is not None, "the backfill will re-scan on every pass forever"

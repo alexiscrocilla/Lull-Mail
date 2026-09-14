@@ -131,3 +131,34 @@ def test_requeue_with_no_eligible_account_touches_nothing(fresh_app):
     # An empty list means "no mailbox turned it back on", not "every mailbox".
     assert db.requeue_emails_by_reason(ACCOUNT_AI_OFF_REASON, accounts=[]) == 0
     assert db.get_emails(limit=5)[0]["category"] == "other"
+
+
+def test_the_streaming_draft_route_is_gated_too(client, monkeypatch):
+    """The streaming twin was the only route that still reached the model.
+
+    /draft answered 409 while /draft/stream handed the body to the provider
+    and persisted the result — so the switch the user flipped was honoured
+    by every path except the one the read pane actually uses on a local
+    model.
+    """
+    from src import config as cfg, database as db
+    _seed_config(cfg, {"on@x.fr": True, "off@x.fr": False})
+    _forbid_llm(monkeypatch)
+    off_id = _insert(db, "<off3@x>", "off@x.fr")
+
+    r = client.post(f"/api/emails/{off_id}/draft/stream")
+    assert r.status_code == 409, r.text
+    assert "off@x.fr" in r.json()["detail"]
+
+
+def test_the_streaming_draft_route_still_serves_an_allowed_account(client, monkeypatch):
+    """The gate must refuse the opted-out mailbox and nothing else."""
+    from src import config as cfg, database as db
+    _seed_config(cfg, {"on@x.fr": True, "off@x.fr": False})
+    on_id = _insert(db, "<on1@x>", "on@x.fr")
+
+    r = client.post(f"/api/emails/{on_id}/draft/stream")
+    # 409 is still allowed here (the provider is not local in this config),
+    # but it must NOT be the per-account refusal.
+    if r.status_code == 409:
+        assert "on@x.fr" not in r.json().get("detail", "")

@@ -122,11 +122,32 @@ class AccountWatcher(threading.Thread):
         self._reconnect_max = reconnect_max
         self._stop = threading.Event()
         self._kick = threading.Event()
+        # Set when this watcher has been REPLACED rather than shut down. It
+        # can be parked up to `check_seconds` inside a socket call, so its
+        # final "push is off" lands seconds after its replacement already
+        # reported "push is on" -- and the sidebar then says the mailbox lost
+        # instant delivery while it is sitting in IDLE. A retired watcher
+        # publishes nothing; only the live one speaks for the account.
+        self._retired = threading.Event()
         self.connects = 0      # for tests / diagnostics
         self.fired = 0
 
+    def _publish(self, connected: bool, **kw) -> None:
+        if self._retired.is_set():
+            return
+        _progress.push_state(self.email, connected, **kw)
+
     # ── control ──────────────────────────────────────────────────────────
     def stop(self) -> None:
+        self._stop.set()
+
+    def retire(self) -> None:
+        """Stop, and say nothing more about this mailbox on the way out.
+
+        For replacement only. A real shutdown uses stop(), because there the
+        final "push is off" is the truth and nothing races it.
+        """
+        self._retired.set()
         self._stop.set()
 
     def kick(self) -> None:
@@ -144,10 +165,10 @@ class AccountWatcher(threading.Thread):
                 self.connects += 1
                 if not _supports_idle(client.capabilities()):
                     logger.info("[%s] Le serveur IMAP ne supporte pas IDLE — polling seul", self.email)
-                    _progress.push_state(self.email, False, supported=False)
+                    self._publish(False, supported=False)
                     return
                 client.select_folder("INBOX", readonly=True)
-                _progress.push_state(self.email, True, supported=True)
+                self._publish(True, supported=True)
                 delay = self._reconnect_min
                 logger.info("[%s] IMAP IDLE actif", self.email)
 
@@ -161,7 +182,7 @@ class AccountWatcher(threading.Thread):
                         self._fire()
             except _Reconnect as why:
                 logger.info("[%s] Reconnexion IDLE (%s)", self.email, why)
-                _progress.push_state(self.email, False)
+                self._publish(False)
                 delay = self._reconnect_min
                 self._stop.wait(1.0)
             except Exception as e:  # noqa: BLE001 — never let the thread die
@@ -169,7 +190,7 @@ class AccountWatcher(threading.Thread):
                     break
                 logger.warning("[%s] IDLE interrompu (%s) — nouvel essai dans %ds",
                                self.email, e, int(delay))
-                _progress.push_state(self.email, False, error=f"{type(e).__name__}: {e}")
+                self._publish(False, error=f"{type(e).__name__}: {e}")
                 self._stop.wait(delay)
                 delay = min(self._reconnect_max, delay * 2)
             finally:
@@ -181,7 +202,7 @@ class AccountWatcher(threading.Thread):
                             client.shutdown()
                         except Exception:  # noqa: BLE001
                             pass
-        _progress.push_state(self.email, False)
+        self._publish(False)
 
     def _idle_once(self, client) -> bool:
         """One IDLE session: at most ``renew_seconds`` long, polled in
@@ -230,7 +251,10 @@ class IdleManager:
     def start(self, accounts: Iterable[Dict[str, Any]],
               on_new_mail: Callable[[str], None]) -> List[str]:
         """(Re)start watchers for *accounts*; returns the emails watched."""
-        self.stop()
+        # `retire=True`: these watchers are being REPLACED, not shut down, so
+        # they must not publish a final "push is off" for a mailbox whose new
+        # watcher is about to report it connected.
+        self.stop(retire=True)
         started: List[str] = []
         with self._lock:
             for acc in accounts:
@@ -247,15 +271,19 @@ class IdleManager:
             logger.info("IMAP IDLE : %d compte(s) surveillé(s)", len(started))
         return started
 
-    def stop(self, join_timeout: float = 2.0) -> None:
+    def stop(self, join_timeout: float = 2.0, retire: bool = False) -> None:
         with self._lock:
             watchers = list(self._watchers.values())
             self._watchers.clear()
         for w in watchers:
-            w.stop()
+            w.retire() if retire else w.stop()
         for w in watchers:
             w.join(timeout=join_timeout)
-        if watchers:
+        # Only on a real shutdown. During a replacement the new watchers are
+        # about to publish for these same mailboxes, and forgetting their
+        # state here would blank the sidebar's push indicator every time an
+        # account is edited.
+        if watchers and not retire:
             _progress.forget_push([w.email for w in watchers])
 
     def kick(self) -> None:
