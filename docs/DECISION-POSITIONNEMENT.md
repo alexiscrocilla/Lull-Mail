@@ -15,7 +15,7 @@ section à lire en premier, parce que le code se révoque et les données non.
 
 ---
 
-All work read at `459c966` on `feat/cleanup-v2`. `git status --short` empty at start and end — no repo file touched. Measurements ran from a scratchpad harness that imports `scripts/ui_test_server.py` and `src.api` without modifying the tree: `C:\Users\Alexis\AppData\Local\Temp\claude\D--Donn-es-Utilisateur-Documents-GitHub-Lull-Mail-dev\7b0511db-f3f8-4a74-8deb-21e0d8908bc3\scratchpad\pos\`.
+Every measurement below was taken against the tree as committed, from a scratch harness that imports `scripts/ui_test_server.py` and `src.api` without modifying anything tracked.
 
 **[M]** = measured on this machine. **[C]** = counted from the code by brace/range matching, not estimated. **[D]** = derived. **[E]** = my estimate, labelled as such.
 
