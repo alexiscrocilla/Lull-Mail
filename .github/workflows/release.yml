@@ -86,6 +86,12 @@ jobs:
           # Abort the build (instead of silently dropping llama_cpp) if the
           # previous "Install local LLM backend" step somehow regressed.
           LULLMAIL_REQUIRE_LOCAL: '1'
+          # The trust store, sealed into the binary. Without these two the
+          # build used to succeed with an EMPTY store, and the shipped app
+          # then refused every update for ever — it cannot be repaired after
+          # the fact, because the keys are baked in at this step.
+          LULLMAIL_UPDATE_PUBLIC_KEYS: ${{ vars.LULLMAIL_UPDATE_PUBLIC_KEYS }}
+          LULLMAIL_REQUIRE_SIGNED_UPDATES: '1'
         run: call scripts\build.bat
 
       - name: Verify build output
@@ -123,11 +129,23 @@ jobs:
             exit /b 1
           )
 
+      # Tells the signer which platform this file is for and how it
+      # installs. The signer reads these; nothing produced them, which is why
+      # no release has ever carried a manifest.
+      - name: Describe the artifact
+        shell: bash
+        run: |
+          python scripts/write_artifact_sidecar.py \
+            --file "dist/LullMail-Setup-${{ steps.ver.outputs.version }}.exe" \
+            --platform windows --arch "$RUNNER_ARCH" --install inno
+
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: LullMail-Setup-${{ steps.ver.outputs.version }}-windows
-          path: dist/LullMail-Setup-${{ steps.ver.outputs.version }}.exe
+          path: |
+            dist/LullMail-Setup-${{ steps.ver.outputs.version }}.exe
+            dist/LullMail-Setup-${{ steps.ver.outputs.version }}.exe.artifact.json
           retention-days: 30
 
   # ───────────────────────────────────────────────────────────────────────────
@@ -197,6 +215,12 @@ jobs:
           # Abort the build (instead of silently dropping llama_cpp) if the
           # previous "Install local LLM backend" step somehow regressed.
           LULLMAIL_REQUIRE_LOCAL: '1'
+          # The trust store, sealed into the binary. Without these two the
+          # build used to succeed with an EMPTY store, and the shipped app
+          # then refused every update for ever — it cannot be repaired after
+          # the fact, because the keys are baked in at this step.
+          LULLMAIL_UPDATE_PUBLIC_KEYS: ${{ vars.LULLMAIL_UPDATE_PUBLIC_KEYS }}
+          LULLMAIL_REQUIRE_SIGNED_UPDATES: '1'
         run: bash scripts/build.sh
 
       - name: Verify build output
@@ -251,11 +275,19 @@ jobs:
             exit 1
           fi
 
+      - name: Describe the artifact
+        run: |
+          python scripts/write_artifact_sidecar.py \
+            --file "dist/LullMail-${{ steps.ver.outputs.version }}.dmg" \
+            --platform macos --arch "$RUNNER_ARCH" --install dmg
+
       - name: Upload .dmg artifact
         uses: actions/upload-artifact@v4
         with:
           name: LullMail-${{ steps.ver.outputs.version }}-macos
-          path: dist/LullMail-${{ steps.ver.outputs.version }}.dmg
+          path: |
+            dist/LullMail-${{ steps.ver.outputs.version }}.dmg
+            dist/LullMail-${{ steps.ver.outputs.version }}.dmg.artifact.json
           retention-days: 30
 
   # ───────────────────────────────────────────────────────────────────────────
@@ -319,6 +351,12 @@ jobs:
           # Abort the build (instead of silently dropping llama_cpp) if the
           # previous "Install local LLM backend" step somehow regressed.
           LULLMAIL_REQUIRE_LOCAL: '1'
+          # The trust store, sealed into the binary. Without these two the
+          # build used to succeed with an EMPTY store, and the shipped app
+          # then refused every update for ever — it cannot be repaired after
+          # the fact, because the keys are baked in at this step.
+          LULLMAIL_UPDATE_PUBLIC_KEYS: ${{ vars.LULLMAIL_UPDATE_PUBLIC_KEYS }}
+          LULLMAIL_REQUIRE_SIGNED_UPDATES: '1'
         run: bash scripts/build.sh
 
       - name: Verify build output
@@ -345,11 +383,19 @@ jobs:
             exit 1
           fi
 
+      - name: Describe the artifact
+        run: |
+          python scripts/write_artifact_sidecar.py \
+            --file "dist/LullMail-${{ steps.ver.outputs.version }}.tar.gz" \
+            --platform linux --arch "$RUNNER_ARCH" --install tar.gz
+
       - name: Upload .tar.gz artifact
         uses: actions/upload-artifact@v4
         with:
           name: LullMail-${{ steps.ver.outputs.version }}-linux
-          path: dist/LullMail-${{ steps.ver.outputs.version }}.tar.gz
+          path: |
+            dist/LullMail-${{ steps.ver.outputs.version }}.tar.gz
+            dist/LullMail-${{ steps.ver.outputs.version }}.tar.gz.artifact.json
           retention-days: 30
 
   # ───────────────────────────────────────────────────────────────────────────
@@ -363,6 +409,9 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Resolve version
         id: ver
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
@@ -384,6 +433,60 @@ jobs:
         with:
           name: LullMail-${{ steps.ver.outputs.version }}-linux
           path: release-assets/
+
+      # Everything above this point only collected files. The manifest is
+      # what the in-app updater actually reads: it names each artifact, its
+      # size and its SHA-256, and it is signed with a key the shipped
+      # binaries already trust. Without it check_for_update() has nothing to
+      # verify and every install stays on its current version for ever.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install signing dependency
+        run: python -m pip install --quiet 'cryptography>=42'
+
+      - name: Sign the update manifest
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$UPDATE_SIGNING_PRIVATE_KEY" ]]; then
+            echo "::error::UPDATE_SIGNING_PRIVATE_KEY is not set. The builds"
+            echo "::error::already trust a key, so publishing without a signed"
+            echo "::error::manifest would ship a release no install can see."
+            exit 1
+          fi
+          KEY_ID='${{ vars.LULLMAIL_UPDATE_KEY_ID }}'
+          if [[ -z "$KEY_ID" ]]; then
+            echo "::error::Set the repository variable LULLMAIL_UPDATE_KEY_ID"
+            echo "::error::to the key id used in LULLMAIL_UPDATE_PUBLIC_KEYS."
+            exit 1
+          fi
+          # NOT $GITHUB_REPOSITORY. Every artifact URL in the manifest has to
+          # sit under the repository the shipped binaries trust
+          # (src/updater.py::GITHUB_REPO), because _validate_artifact rejects
+          # anything else. A release cut from a different repo would produce
+          # a perfectly valid signature over URLs every install refuses, and
+          # the only symptom would be "no update available", for ever.
+          REPO=$(python -c 'import src.updater as u; print(u.GITHUB_REPO)')
+          echo "Artifact URLs will point at $REPO"
+          python scripts/sign_update_manifest.py \
+            --artifact-dir release-assets \
+            --repo "$REPO" \
+            --tag "$GITHUB_REF_NAME" \
+            --version "${{ steps.ver.outputs.version }}" \
+            --key-id "$KEY_ID"
+          # The sidecars are build metadata, not something users download.
+          rm -f release-assets/*.artifact.json
+          ls -l release-assets/
+
+      # A signature the shipped binaries cannot verify is the same as no
+      # release at all, and it is far cheaper to find out here.
+      - name: Verify the manifest against the published public keys
+        env:
+          LULLMAIL_UPDATE_PUBLIC_KEYS: ${{ vars.LULLMAIL_UPDATE_PUBLIC_KEYS }}
+        run: python scripts/verify_release_manifest.py --artifact-dir release-assets
 
       # Body is left to GitHub's generated notes; maintainers replace it
       # with a short English user-facing summary before publish — see docs/RELEASE-NOTES.md

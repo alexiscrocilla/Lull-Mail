@@ -15,6 +15,53 @@ see [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 - [ ] `git filter-repo` installed (`pip install git-filter-repo`).
 - [ ] Inno Setup installed locally if you want to test the Windows
       installer build before pushing (CI also builds it).
+- [ ] **Update signing configured on the PUBLIC repo** — see below. Until
+      it is, a release build fails on purpose rather than shipping an app
+      that can never update itself.
+
+### Update signing (one-time, public repo)
+
+The app verifies an Ed25519 signature over the release manifest before it
+offers an update, and the trusted public keys are **sealed into the binary
+at build time**. That ordering is the whole reason this is a prerequisite:
+a build made without keys produces an installer that refuses every update
+for ever, and no later fix to CI can repair the copies already downloaded.
+
+1. Generate the pair, once, on a machine you trust:
+
+   ```bash
+   python scripts/new_update_key.py --key-id 2026-09
+   ```
+
+2. On **`alexiscrocilla/Lull-Mail`** (the repo releases are published
+   from — not the dev repo), add:
+
+   | Kind | Name | Value |
+   |------|------|-------|
+   | Variable | `LULLMAIL_UPDATE_PUBLIC_KEYS` | the JSON the script printed |
+   | Variable | `LULLMAIL_UPDATE_KEY_ID` | the `--key-id` you chose |
+   | Secret | `UPDATE_SIGNING_PRIVATE_KEY` | the contents of the key file |
+
+   ```bash
+   gh secret set UPDATE_SIGNING_PRIVATE_KEY --repo alexiscrocilla/Lull-Mail      < update-signing-key.private
+   ```
+
+3. Delete the private key file, or move it to a password manager. Losing
+   it means you can never sign another update for the installs that trust
+   that key; leaking it means someone else can.
+
+**Releases must be tagged on the public repo.** `src/updater.py` only
+accepts download URLs under `alexiscrocilla/Lull-Mail`, so a release cut
+from the dev repo produces a correctly signed manifest pointing at URLs
+every install rejects — and the only symptom is "no update available".
+The release job reads that constant rather than `$GITHUB_REPOSITORY`, and
+verifies the finished manifest against the published public keys before
+the draft is created, so this fails in CI rather than in the field.
+
+**Rotating a key:** keep the old public key in the JSON alongside the new
+one until nobody is still running a build that predates the new one. A
+build trusts every key in that object. Removing one strands anybody who
+has not updated since.
 
 ## Per-release checklist
 
@@ -30,6 +77,8 @@ see [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 - [ ] Open `docs/RELEASE-NOTES.md` for the voice + template.
 - [ ] Draft the highlights section against the user-visible changes
       since the last tag. Keep it under one screen.
+- [ ] Write it to `docs/releases/vX.Y.Z.md` so the text is reviewed with
+      the code rather than typed into the GitHub form at publish time.
 - [ ] PR titles since last tag: `git log v<previous>..HEAD --oneline`.
 
 ### 3. Run preflight checks
