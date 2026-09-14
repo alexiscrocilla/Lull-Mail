@@ -185,7 +185,23 @@ public since the last fetch aborts instead of being silently erased.
 
 ### 5. Tag and trigger the build
 
-- [ ] On the public mirror: `git tag vX.Y.Z && git push public vX.Y.Z`.
+- [ ] Tag **from the sanitised clone**, never from `Lull-Mail-dev`. The two
+      repositories have different commits for the same work; a tag made in
+      dev points at an unsanitised commit, and pushing it to public
+      publishes that commit's whole history — every dev-only path included.
+      `cd` first, on its own line, and check where you are:
+
+  ```bash
+  cd /tmp/public-sync          # the filter-repo output, not the dev repo
+  git rev-parse --abbrev-ref HEAD && git log --oneline -1
+  git tag vX.Y.Z
+  git push public vX.Y.Z
+  ```
+
+  `&&` is not a statement separator in Windows PowerShell 5.1: the line
+  fails to parse and *neither* command runs. That is how this step was
+  found — the parse error is the only thing that stopped a `git tag` from
+  landing in the dev repo after a `cd` had silently moved the shell back.
 - [ ] The `Release` workflow (`.github/workflows/release.yml`) fires:
       builds Windows / macOS / Linux artefacts, attaches them to a
       *draft* GitHub release.
