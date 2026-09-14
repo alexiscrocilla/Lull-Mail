@@ -73,3 +73,26 @@ test('the sidebar counters follow the account filter', async ({ page }) => {
   await expect(page.locator('#email-list .mb-card')).toHaveCount(TOTAL);
   await expect(inboxBadge).toHaveText('12');
 });
+
+test('a search over two mailboxes returns both, and says so', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto('/#/inbox');
+  await settled(page);
+
+  // Two accounts selected. The request used to carry no account filter at
+  // all and prune client-side, so past the row cap the busier mailbox took
+  // every slot and the other returned nothing.
+  await page.locator('[data-acc="pro@lullmail.test"]').click();
+  await page.locator('[data-acc="asso@lullmail.test"]').click({ modifiers: ['Shift'] });
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(12);
+
+  await page.locator('#search').fill('Rivage');
+  const hits = page.locator('#email-list .mb-card');
+  await expect(hits).toHaveCount(4);
+  const accounts = await hits.locator('.mb-card-acc-name').allInnerTexts();
+  expect(new Set(accounts)).toEqual(new Set(['Pro', 'Asso']));
+
+  // And the header says an account filter is on -- the sidebar's account
+  // section collapses, so nothing else did.
+  await expect(page.locator('#filter-chips .mb-chip-filter')).toContainText('2 comptes');
+});

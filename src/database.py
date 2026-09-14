@@ -935,9 +935,24 @@ def search_emails(parsed: Dict, account: Optional[str] = None,
     free-text `query` matches subject/body/sender/recipient. Date filters
     compare on the DATE portion only (substr 1..10) so they're timezone-offset
     independent."""
-    q = "SELECT * FROM emails WHERE folder != 'deleted'"
+    # The trash exclusion is a DEFAULT, not a rule. As an opening clause it
+    # was also a rule, so `in:deleted` -- the one folder value the help
+    # actively teaches -- could only ever return nothing.
+    q = "SELECT * FROM emails WHERE 1=1"
     p: list = []
-    if account:
+    # One account → equality; several → IN(). Passing a list used to raise
+    # sqlite3.ProgrammingError, so a multi-account selection fell back to
+    # "no filter, prune client-side": with the row cap in play, two selected
+    # mailboxes returned the busier one's mail and none of the other's.
+    if isinstance(account, (list, tuple, set)):
+        accs = [a for a in account if a]
+        if len(accs) == 1:
+            q += " AND account_email = ?"
+            p.append(accs[0])
+        elif accs:
+            q += f" AND account_email IN ({','.join('?' for _ in accs)})"
+            p.extend(accs)
+    elif account:
         q += " AND account_email = ?"
         p.append(account)
     if parsed.get("query"):
@@ -955,10 +970,14 @@ def search_emails(parsed: Dict, account: Optional[str] = None,
         q += " AND lower(subject) LIKE ?"
         p.append(f"%{parsed['subject'].strip().lower()}%")
     if parsed.get("folder") == "favourite":
-        q += " AND is_favourite = 1"
+        # Favourites is a view over every folder, so it keeps the default's
+        # trash exclusion that the opening clause used to give it for free.
+        q += " AND is_favourite = 1 AND folder != 'deleted'"
     elif parsed.get("folder"):
         q += " AND folder = ?"
         p.append(parsed["folder"])
+    else:
+        q += " AND folder != 'deleted'"
     if parsed.get("is_read") is not None:
         q += " AND is_read = ?"
         p.append(1 if parsed["is_read"] else 0)
@@ -974,6 +993,11 @@ def search_emails(parsed: Dict, account: Optional[str] = None,
     if parsed.get("min_score"):
         q += " AND importance_score >= ?"
         p.append(int(parsed["min_score"]))
+    if parsed.get("label_id") is not None:
+        # The sidebar's label selection, which arrives as an id. The `label:`
+        # operator below is the by-name variant and they can both be on.
+        q += " AND int_id IN (SELECT email_int_id FROM email_labels WHERE label_id = ?)"
+        p.append(int(parsed["label_id"]))
     if parsed.get("label"):
         # Label names are unique-ish and user-typed — match case-insensitively.
         q += (" AND int_id IN (SELECT el.email_int_id FROM email_labels el"

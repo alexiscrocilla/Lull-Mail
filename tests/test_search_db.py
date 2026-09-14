@@ -114,3 +114,73 @@ def test_search_endpoint(client):
     body = r.json()
     assert body["parsed"]["from"] == "client.com"
     assert {row["message_id"] for row in body["results"]} == {"<a@t>", "<c@t>"}
+
+
+# ── the two holes the clickable filters made visible ────────────────────────
+
+def _seed_folder(db, account, folder="inbox", n=3, subject="Sujet"):
+    ids = []
+    for i in range(n):
+        mid = f"<{account}-{folder}-{i}>"
+        db.insert_email({
+            "message_id": mid, "account": account, "uid": str(abs(hash(mid)) % 9999),
+            "subject": f"{subject} {i}", "sender": f"S <s{i}@x.fr>",
+            "recipient": account, "date_str": "Mon, 14 Sep 2026 09:00:00 +0000",
+            "body_text": "corps", "body_html": "<p>corps</p>",
+        })
+        ids.append(mid)
+    # insert_email always lands in the inbox; the folder is a later move.
+    if folder != "inbox":
+        with db._conn() as con:
+            con.executemany("UPDATE emails SET folder = ? WHERE message_id = ?",
+                            [(folder, m) for m in ids])
+
+
+def test_search_can_reach_the_trash(fresh_app):
+    """`in:deleted` is the one folder value the search help taught, and the
+    opening `folder != 'deleted'` made it permanently empty."""
+    from src import database as db
+    from src.search_query import parse_search_query
+
+    _seed_folder(db, "a@x.fr", folder="inbox", n=2)
+    _seed_folder(db, "a@x.fr", folder="deleted", n=3)
+
+    trashed = db.search_emails(parse_search_query("in:deleted Sujet"))
+    assert len(trashed) == 3
+    assert {r["folder"] for r in trashed} == {"deleted"}
+
+    # And the default is unchanged: no folder named, no trash.
+    assert len(db.search_emails(parse_search_query("Sujet"))) == 2
+
+
+def test_favourites_search_still_excludes_the_trash(fresh_app):
+    from src import database as db
+    from src.search_query import parse_search_query
+
+    _seed_folder(db, "a@x.fr", folder="deleted", n=2)
+    with db._conn() as con:
+        con.execute("UPDATE emails SET is_favourite = 1")
+
+    # A starred message that was thrown away is still thrown away. This used
+    # to come free from the opening clause.
+    assert db.search_emails(parse_search_query("in:favourite Sujet")) == []
+
+
+def test_search_accepts_several_accounts(fresh_app):
+    """A multi-selection used to be sent as no filter at all: past the row
+    cap that returns the busier mailbox's mail and none of the other's."""
+    from src import database as db
+    from src.search_query import parse_search_query
+
+    _seed_folder(db, "a@x.fr", n=2)
+    _seed_folder(db, "b@x.fr", n=2)
+    _seed_folder(db, "c@x.fr", n=2)
+
+    parsed = parse_search_query("Sujet")
+    both = db.search_emails(parsed, account=["a@x.fr", "b@x.fr"])
+    assert {r["account_email"] for r in both} == {"a@x.fr", "b@x.fr"}
+    assert len(both) == 4
+
+    # A one-element list behaves like the scalar it used to be.
+    solo = db.search_emails(parsed, account=["c@x.fr"])
+    assert {r["account_email"] for r in solo} == {"c@x.fr"}

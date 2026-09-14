@@ -1997,8 +1997,13 @@ export async function mountMailbox(host, _opts) {
         drop: 'accounts',
       });
     }
-    if (state.labelFilter) {
-      out.push({ label: t('mb.filter.label', { v: state.labelFilter }), drop: 'label' });
+    if (state.labelFilter != null) {
+      // state.labelFilter is an id; the chip has to say the name.
+      const lab = state.userLabels.find((l) => l.id === state.labelFilter);
+      out.push({
+        label: t('mb.filter.label', { v: lab?.name || state.labelFilter }),
+        drop: 'label',
+      });
     }
     if (state.category) {
       const meta = LABELS.find((l) => l.id === state.category);
@@ -5858,9 +5863,18 @@ export async function mountMailbox(host, _opts) {
     const folder = state.folder || 'inbox';
     if (folder === 'draft') { state.searchResults = null; applyFilter(); return; }
     const myToken = ++_searchToken;
-    const params = { folder };
-    if (state.accountFilters.size === 1) params.account = [...state.accountFilters][0];
-    const cacheKey = `${folder}|${params.account || ''}|${q.toLowerCase()}`;
+    const params = { folder, limit: 500 };
+    // Same shape as loadEmails: one account is a single value, several are a
+    // comma list the server turns into an IN(). Sending nothing for a
+    // multi-selection and pruning here returned the busier mailbox's mail
+    // and none of the other's once the row cap kicked in.
+    const picked = [...state.accountFilters].sort();
+    if (picked.length === 1) params.account = picked[0];
+    else if (picked.length > 1) params.accounts = picked.join(',');
+    if (state.labelFilter != null) params.label_id = state.labelFilter;
+    // The key must carry the whole selection: params.account is undefined for
+    // any multi-selection, so two different ones collided on one entry.
+    const cacheKey = `${folder}|${picked.join(',')}|${state.labelFilter || ''}|${q.toLowerCase()}`;
     const cached = _searchCache.get(cacheKey);
     if (cached && (Date.now() - cached.timestamp < SEARCH_CACHE_TTL_MS)) {
       state.searchResults = cached.results;

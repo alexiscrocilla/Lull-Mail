@@ -335,7 +335,9 @@ def brand_logo(domain: str):
 
 @app.get("/api/emails/search")
 def search_emails_ep(q: str, account: Optional[str] = None,
+                     accounts: Optional[str] = None,
                      folder: Optional[str] = None,
+                     label_id: Optional[int] = None,
                      limit: int = 100, offset: int = 0):
     """Server-side search with Gmail-style operators (from:/to:/subject:/in:/
     is:/has:/before:/after:). `folder` scopes results to the current view's
@@ -344,7 +346,22 @@ def search_emails_ep(q: str, account: Optional[str] = None,
     parsed = parse_search_query(q)
     if folder and not parsed.get("folder"):
         parsed["folder"] = folder
-    rows = db.search_emails(parsed, account=account,
+    # A label picked in the sidebar scopes the list but never reached search,
+    # so selecting one and then typing silently searched the whole folder.
+    # It arrives as an id (what the sidebar holds); the `label:` operator
+    # matches by name, so they are separate keys.
+    if label_id is not None:
+        parsed["label_id"] = label_id
+    # `accounts` (comma-separated) is the multi-account variant, same shape as
+    # /api/emails. Without it a multi-selection was sent as no filter at all
+    # and pruned client-side, which past the row cap returned the busier
+    # mailbox's mail and none of the other's.
+    acct_filter: Optional[object] = account
+    if accounts:
+        picked = [a.strip() for a in accounts.split(",") if a.strip()]
+        if picked:
+            acct_filter = picked if len(picked) > 1 else picked[0]
+    rows = db.search_emails(parsed, account=acct_filter,
                             limit=min(limit, 2000), offset=offset)
     _attach_counts_and_labels(rows)
     return {"parsed": parsed, "results": rows}
