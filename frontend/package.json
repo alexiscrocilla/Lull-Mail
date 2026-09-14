@@ -15,7 +15,7 @@
     "quality": "node --test tests/*.test.mjs && tsc -p jsconfig.json && node scripts/check-generated-css.mjs && node scripts/check-vendor.mjs"
   },
   "dependencies": {
-    "dompurify": "3.2.6"
+    "dompurify": "3.4.15"
   },
   "devDependencies": {
     "@playwright/test": "1.55.0",

@@ -2,15 +2,15 @@
   "files": [
     {
       "path": "dompurify.es.mjs",
-      "package": "dompurify@3.2.6",
+      "package": "dompurify@3.4.15",
       "license": "Apache-2.0 OR MPL-2.0",
-      "sha256": "4b95c409255f7253ea09bc348e2467702224594adf021ba013295d829c1bd30f"
+      "sha256": "e7d8182ea0aae9daa46c3294a486067b3f4461bd18f8ca76e499c623e9bda6e3"
     },
     {
       "path": "DOMPURIFY-LICENSE",
-      "package": "dompurify@3.2.6",
+      "package": "dompurify@3.4.15",
       "license": "Apache-2.0 OR MPL-2.0",
-      "sha256": "1b02e03c3fb4f87d476c128f0eb9def1f5a1709d28b180465228bd41574623b7"
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
     }
   ]
 }
