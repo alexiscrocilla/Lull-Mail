@@ -99,7 +99,7 @@ class EventHub:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._subs: List[_Subscriber] = []
-        self._ring: Deque[Tuple[int, bytes]] = deque(maxlen=RING_SIZE)
+        self._ring: Deque[Tuple[int, str, bytes]] = deque(maxlen=RING_SIZE)
         self._seq = 0
         self._run_id = uuid.uuid4().hex
         self._dirty = False
@@ -154,7 +154,7 @@ class EventHub:
         with self._lock:
             self._seq += 1
             payload = _frame(self._seq, event, data)
-            self._ring.append((self._seq, payload))
+            self._ring.append((self._seq, event, payload))
             if not self._subs:
                 return 0
             targets = list(self._subs)
@@ -171,7 +171,20 @@ class EventHub:
                 sub.queue.put_nowait(payload)
             except asyncio.QueueFull:
                 sub.lagged = True
-                # Wake the generator so it can end itself.
+                # Wake the generator so it can end itself. Emptying the
+                # queue first is what makes that possible at all: the
+                # sentinel was being pushed into the very queue that had
+                # just refused a frame, so it never landed, the generator
+                # never returned, and the stream stayed open carrying a
+                # silent gap -- the one state the sequence numbers exist to
+                # rule out. The backlog is discarded on purpose: this
+                # subscriber is being dropped, and the browser reconnects
+                # with a cursor that replays what it missed.
+                while True:
+                    try:
+                        sub.queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
                 try:
                     sub.queue.put_nowait(None)
                 except asyncio.QueueFull:
@@ -234,7 +247,16 @@ class EventHub:
             oldest = self._ring[0][0]
             if cursor < oldest - 1 or cursor > self._seq:
                 return None
-            return [payload for seq, payload in self._ring if seq > cursor]
+            # `sync` frames are deliberately not replayed. The route sends a
+            # freshly built snapshot in `hello` before these, so a replayed
+            # status frame is older than what the client already has and
+            # would overwrite it -- putting the window back on a pass that
+            # finished during the outage, and leaving the busy indicator on
+            # until something else happened to change the status. The ring
+            # exists for the arrival signals (`mail`, `body`, `verdict`),
+            # which are events rather than state and cannot be re-derived.
+            return [payload for seq, event, payload in self._ring
+                    if seq > cursor and event != "sync"]
 
     # ── lifecycle ────────────────────────────────────────────────────────
     def start_ticker(self, loop: asyncio.AbstractEventLoop) -> None:

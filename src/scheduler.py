@@ -341,14 +341,32 @@ def _drain_trash_ops(acc_by_email: Dict[str, Dict]) -> int:
     return done
 
 
-def _drain_pending_ops(accounts: List[Dict]):
-    """Replay offline mutations (seen, flagged, trash) queued in pending_ops."""
+def _drain_pending_ops(accounts: List[Dict], deadline: Optional[float] = None):
+    """Replay offline mutations (seen, flagged, trash) queued in pending_ops.
+
+    Bounded, and only against mailboxes that are actually reachable --
+    `claim_pending_ops` documents that contract, and this was the one caller
+    that did not keep it. It ran before the pass consulted its budget at
+    all, fifty operations at one connection each, against every enabled
+    account including the ones the fetch pass had just declared dead. A
+    queue that cannot drain therefore held the analysis lock for up to
+    twenty-five minutes at a time, and for all of it the inbox said it was
+    downloading messages.
+    """
     from src.email_fetcher import (
         mark_seen_on_server,
         mark_unseen_on_server,
         set_flagged_on_server,
     )
-    acc_by_email = {a["email"]: a for a in accounts}
+    now_iso = datetime.now(timezone.utc).isoformat()
+    acc_by_email = {}
+    for a in accounts:
+        state = db.get_sync_state(a["email"])
+        if state and state.get("backoff_until") and state["backoff_until"] > now_iso:
+            continue
+        acc_by_email[a["email"]] = a
+    if not acc_by_email:
+        return
     _drain_trash_ops(acc_by_email)
 
     # Flag changes still open one connection each, so they stay on a small
@@ -357,6 +375,13 @@ def _drain_pending_ops(accounts: List[Dict]):
     claimed = db.claim_pending_ops(limit=50, exclude_operations=["trash"],
                                    accounts=list(acc_by_email))
     for op in claimed:
+        if deadline is not None and time.monotonic() >= deadline:
+            # Hand back what was claimed and not attempted. Leaving it
+            # `in_flight` would be worse than slow: nothing but a restart
+            # resets an in-flight op, so the mutation would be lost.
+            db.fail_pending_op(op["id"], op["revision"],
+                               "Budget de la passe écoulé", retry_delay_seconds=0)
+            continue
         acc = acc_by_email[op["account_email"]]
         uid = op.get("uid")
         if not uid:
@@ -427,18 +452,47 @@ def is_running() -> bool:
     return is_fetching() or is_analysing()
 
 
-# Bumped every time a pass lock is handed out. A holder that was broken out
-# of keeps its old token, which is how it knows -- in its own `finally`, long
-# after the fact -- that the lock it is about to release is no longer its own.
+def _analysis_past_watchdog() -> bool:
+    """Whether the analysis lock has been held longer than anyone may hold it."""
+    started = _analysis_started_at
+    return started is not None and time.monotonic() - started > ANALYSIS_WATCHDOG_SECONDS
+
+
+# Bumped every time a pass lock is handed out, and recorded against the lock
+# it was handed out for. A holder that was broken out of keeps its old token,
+# which is how it knows -- in its own `finally`, long after the fact -- that
+# the lock it is about to release is no longer its own.
+#
+# Recorded per lock, not as one counter for all of them. Fetch and analysis
+# are separate passes on separate locks, and they overlap constantly: an
+# analysis pass is budgeted ten minutes, and any mail arriving in that window
+# flushes a targeted fetch two seconds later. A single "latest token wins"
+# counter told whichever pass took its lock first that it no longer owned a
+# lock nobody else had touched, so it never released it. `is_analysing()`
+# then stayed true for the life of the process -- the inbox said it was
+# downloading messages forever, and `request_analysis()`, which refuses to
+# start while that is true, ended background hydration and classification
+# until the app was restarted.
+#
+# Keyed by the lock object itself: `_thread.lock` supports neither weak
+# references nor any identity better than its own. Entries are dropped on
+# release and overwritten when the watchdog hands a lock on, so the map stays
+# the size of the number of pass locks.
 _pass_gen = 0
 _pass_gen_lock = threading.Lock()
+_pass_owner: Dict[Any, int] = {}
 
 
-def _new_pass_token() -> int:
+def _mint_token(lock: threading.Lock) -> int:
+    """Record *lock*'s new owner and return its token.
+
+    Callers must already hold ``_pass_gen_lock``: minting is one half of an
+    ownership transition and must not be visible without the other.
+    """
     global _pass_gen
-    with _pass_gen_lock:
-        _pass_gen += 1
-        return _pass_gen
+    _pass_gen += 1
+    _pass_owner[lock] = _pass_gen
+    return _pass_gen
 
 
 def _acquire_or_break(lock: threading.Lock, started_at: Optional[float],
@@ -454,9 +508,15 @@ def _acquire_or_break(lock: threading.Lock, started_at: Optional[float],
     and the rightful holder's own `release()` raised RuntimeError from a
     `finally` and took the scheduler job down with it.
     """
-    if lock.acquire(blocking=False):
-        return _new_pass_token()
-    if started_at is not None and time.monotonic() - started_at > watchdog_seconds:
+    # Acquiring, breaking and releasing all happen under `_pass_gen_lock`, so
+    # a watchdog break can never land between another pass's ownership check
+    # and the `release()` that check authorised. Nothing inside blocks:
+    # `acquire(blocking=False)` returns immediately either way.
+    with _pass_gen_lock:
+        if lock.acquire(blocking=False):
+            return _mint_token(lock)
+        if started_at is None or time.monotonic() - started_at <= watchdog_seconds:
+            return None
         logger.error(
             "%s bloqué depuis %d s — verrou forcé, reprise.",
             label, int(time.monotonic() - started_at),
@@ -465,8 +525,7 @@ def _acquire_or_break(lock: threading.Lock, started_at: Optional[float],
             lock.release()
         except RuntimeError:
             pass
-        return _new_pass_token() if lock.acquire(blocking=False) else None
-    return None
+        return _mint_token(lock) if lock.acquire(blocking=False) else None
 
 
 def _release_if_owner(lock: threading.Lock, token: Optional[int]) -> bool:
@@ -477,13 +536,14 @@ def _release_if_owner(lock: threading.Lock, token: Optional[int]) -> bool:
     -- is still its to do.
     """
     with _pass_gen_lock:
-        if token is None or token != _pass_gen:
+        if token is None or _pass_owner.get(lock) != token:
             return False
-    try:
-        lock.release()
-    except RuntimeError:
-        return False
-    return True
+        _pass_owner.pop(lock, None)
+        try:
+            lock.release()
+        except RuntimeError:
+            return False
+        return True
 
 
 def get_status() -> Dict[str, Any]:
@@ -1176,7 +1236,7 @@ def analysis_pass(*, time_budget_seconds: float = ANALYSIS_TIME_BUDGET_SECONDS) 
 
         # ── Offline mutations queue (seen, flagged, trash) ─────────────────
         try:
-            _drain_pending_ops(accounts)
+            _drain_pending_ops(accounts, deadline)
         except Exception as e:
             logger.warning(f"Échec drain pending_ops : {e}")
 
@@ -1247,8 +1307,19 @@ def request_fetch(
 
 
 def request_analysis() -> bool:
-    """Start an analysis pass on a background thread unless one is running."""
-    if is_analysing():
+    """Start an analysis pass on a background thread unless one is running.
+
+    The ``is_analysing()`` check is an optimisation, not the guard -- the
+    guard is the lock inside ``analysis_pass`` itself. A pass that is past
+    its watchdog is let through on purpose, so that the watchdog is reachable
+    at all: this is the only thing that starts an analysis pass in the
+    background, so a lock that is somehow still held would otherwise end
+    hydration and classification for the life of the process, silently and
+    with no way back but a restart. That is what a shared ownership token
+    used to cause, and the cost of the backstop is one thread per minute
+    that immediately finds the lock taken and returns.
+    """
+    if is_analysing() and not _analysis_past_watchdog():
         return False
     threading.Thread(target=analysis_pass, daemon=True, name="analysis-pass").start()
     return True

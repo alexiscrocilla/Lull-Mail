@@ -353,3 +353,135 @@ def test_the_rightful_holder_never_raises_from_its_finally(fresh_app):
     scheduler._release_if_owner(lock, token)
     # A double release used to be RuntimeError out of a `finally`.
     assert scheduler._release_if_owner(lock, token) is False
+
+
+# ── Two locks, one counter ───────────────────────────────────────────────────
+# The tests above prove the ownership token works. They all use a single lock,
+# which is exactly how the bug got through: the token was minted from one
+# process-wide counter shared by both pass locks, so taking either lock
+# invalidated the other's live token.
+
+
+def _release_pass_locks():
+    """Leave the module's locks free whatever the assertions did."""
+    from src import scheduler
+
+    for lock in (scheduler._fetch_lock, scheduler._analysis_lock):
+        try:
+            lock.release()
+        except RuntimeError:
+            pass
+
+
+def test_taking_one_pass_lock_does_not_invalidate_the_others_token(fresh_app):
+    """Fetch and analysis are independent passes on independent locks.
+
+    They overlap constantly in production: an analysis pass is budgeted ten
+    minutes, and any mail arriving in that window flushes a targeted fetch
+    two seconds later.
+    """
+    import threading
+    from src import scheduler
+
+    fetch = threading.Lock()
+    analysis = threading.Lock()
+
+    f_token = scheduler._acquire_or_break(fetch, None, "Relève", 60.0)
+    a_token = scheduler._acquire_or_break(analysis, None, "Analyse", 60.0)
+    assert f_token is not None and a_token is not None
+
+    # Neither pass was broken out of, so each still owns the lock it took.
+    assert scheduler._release_if_owner(fetch, f_token) is True
+    assert not fetch.locked(), "the fetch lock leaked when analysis took its own lock"
+    assert scheduler._release_if_owner(analysis, a_token) is True
+    assert not analysis.locked(), "the analysis lock leaked"
+
+
+def test_the_sync_indicator_returns_to_idle_after_interleaved_passes(fresh_app):
+    """`is_running()` is what the inbox spinner is bound to.
+
+    `get_status()` reports `running = is_fetching() or is_analysing()`, the
+    API passes it through, and rail-toast.js keeps a persistent loading toast
+    up while it is true. A lock that is never released is a spinner that
+    never stops.
+    """
+    from src import scheduler
+
+    try:
+        a_token = scheduler._acquire_or_break(
+            scheduler._analysis_lock, None, "Analyse", scheduler.ANALYSIS_WATCHDOG_SECONDS)
+        f_token = scheduler._acquire_or_break(
+            scheduler._fetch_lock, None, "Relève", scheduler.FETCH_WATCHDOG_SECONDS)
+        assert a_token is not None and f_token is not None
+        assert scheduler.is_running()
+
+        scheduler._release_if_owner(scheduler._fetch_lock, f_token)
+        scheduler._release_if_owner(scheduler._analysis_lock, a_token)
+
+        assert not scheduler.is_running(), (
+            "the inbox spinner never goes back to idle: "
+            f"fetching={scheduler.is_fetching()} analysing={scheduler.is_analysing()}"
+        )
+    finally:
+        _release_pass_locks()
+
+
+def test_an_overlapping_fetch_does_not_kill_background_analysis(fresh_app, monkeypatch):
+    """The spinner is the symptom; this is the damage.
+
+    `request_analysis()` refuses to start a pass while `is_analysing()`, and
+    the sixty-second analysis job goes through it. Nothing else calls
+    `analysis_pass()` in the background, so the watchdog inside
+    `_acquire_or_break` is never reached: a leaked analysis lock ends body
+    hydration and AI classification until the app is restarted.
+    """
+    import threading
+    from src import scheduler
+
+    try:
+        a_token = scheduler._acquire_or_break(
+            scheduler._analysis_lock, None, "Analyse", scheduler.ANALYSIS_WATCHDOG_SECONDS)
+        # Mail arrives mid-pass; the IDLE watcher flushes a targeted fetch.
+        f_token = scheduler._acquire_or_break(
+            scheduler._fetch_lock, None, "Relève", scheduler.FETCH_WATCHDOG_SECONDS)
+        scheduler._release_if_owner(scheduler._fetch_lock, f_token)
+        # The analysis pass now unwinds normally.
+        scheduler._release_if_owner(scheduler._analysis_lock, a_token)
+
+        ran = threading.Event()
+        monkeypatch.setattr(scheduler, "analysis_pass", lambda *a, **k: ran.set())
+        assert scheduler.request_analysis() is True, (
+            "background analysis is dead: request_analysis() still believes a pass is running")
+        assert ran.wait(5), "the analysis thread never started"
+    finally:
+        _release_pass_locks()
+
+
+def test_a_stuck_analysis_lock_is_eventually_reached_by_the_watchdog(fresh_app, monkeypatch):
+    """`ANALYSIS_WATCHDOG_SECONDS` has to be reachable to mean anything.
+
+    `request_analysis()` is the only thing that starts an analysis pass in
+    the background, so short-circuiting on `is_analysing()` alone put the
+    watchdog behind the very condition it exists to clear.
+    """
+    import threading
+    from src import scheduler
+
+    try:
+        # A pass is holding the lock and is long past its budget.
+        assert scheduler._analysis_lock.acquire(blocking=False)
+        monkeypatch.setattr(
+            scheduler, "_analysis_started_at",
+            scheduler.time.monotonic() - scheduler.ANALYSIS_WATCHDOG_SECONDS - 1)
+
+        ran = threading.Event()
+        monkeypatch.setattr(scheduler, "analysis_pass", lambda *a, **k: ran.set())
+        assert scheduler.request_analysis() is True, (
+            "a hung pass blocks every later one: the watchdog is never reached")
+        assert ran.wait(5)
+
+        # A pass still inside its budget is still left alone.
+        monkeypatch.setattr(scheduler, "_analysis_started_at", scheduler.time.monotonic())
+        assert scheduler.request_analysis() is False
+    finally:
+        _release_pass_locks()

@@ -393,3 +393,55 @@ def test_an_outage_longer_than_the_ring_asks_for_a_resync(fresh_app):
         )
 
     asyncio.run(scenario())
+
+
+def test_an_over_full_subscriber_is_actually_ended_not_only_flagged(fresh_app):
+    """`lagged` is a flag nothing reads. The `None` sentinel is what ends a
+    stream — and it was being pushed into the very queue that had just
+    refused a frame, so it never landed. The route's `if frame is None:
+    return` was unreachable, and a browser that fell behind kept an open
+    stream with a silent gap instead of reconnecting with a cursor.
+    """
+    from src.events import EventHub, QUEUE_DEPTH
+
+    async def scenario():
+        hub = EventHub()
+        sub = hub.subscribe(asyncio.get_running_loop())
+        assert sub is not None
+
+        for i in range(QUEUE_DEPTH + 20):
+            hub.publish("mail", {"n": i})
+        await asyncio.sleep(0.05)
+
+        # Drain the way the route's generator does.
+        ended = False
+        while not sub.queue.empty():
+            if sub.queue.get_nowait() is None:
+                ended = True
+                break
+        assert ended, "the subscriber was flagged lagged but never told to end"
+        hub.close_all()
+
+    asyncio.run(scenario())
+
+
+def test_a_replay_does_not_put_the_window_back_on_a_stale_status(fresh_app):
+    """The route yields a freshly built `hello` snapshot before the replay.
+
+    So any `sync` frame in the ring is older than what the client already
+    has. Replaying it overwrites the correct status with the one from the
+    outage — and if a pass was running then, the busy indicator comes back
+    on and stays on until something else changes the status.
+    """
+    from src.events import EventHub
+
+    hub = EventHub()
+    hub.publish("sync", {"running": True, "analysing": True})
+    hub.publish("mail", {"int_id": 7})
+    hub.publish("sync", {"running": True, "analysing": True})
+
+    missed = hub.replay_since("0", hub.run_id)
+    assert missed is not None, "a cursor inside the ring must be replayable"
+    blob = b"".join(missed)
+    assert b"event: mail" in blob, "arrival signals still have to be replayed"
+    assert b"event: sync" not in blob, "a stale status frame was replayed over the fresh one"

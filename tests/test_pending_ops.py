@@ -107,3 +107,72 @@ def test_trash_and_undo_cancellation(fresh_app):
     db.set_email_folder_tx(1, folder="inbox")
     assert db.get_email_by_id(1)["folder"] == "inbox"
     assert db.count_pending_ops() == 0
+
+
+def test_the_drain_leaves_a_backed_off_account_alone(fresh_app, monkeypatch):
+    """`claim_pending_ops` says the caller must pass mailboxes it can reach.
+
+    The drain passed every enabled account, so an account the fetch pass had
+    just declared unreachable still got fifty one-connection attempts — each
+    one waiting for a timeout, with the analysis lock held and the inbox
+    saying it was downloading messages the whole time.
+    """
+    from src import scheduler, database as db
+    import src.email_fetcher as ef
+
+    db.insert_email({
+        "message_id": "<op-1@x>", "account": "dead@x.fr", "uid": "11",
+        "subject": "s", "date_str": "Mon, 05 May 2026 10:00:00 +0000",
+    })
+    db.queue_pending_op(1, "dead@x.fr", "seen", "1")
+    db.set_sync_error("dead@x.fr", "connexion refusée", backoff_seconds=3600)
+
+    calls = []
+    monkeypatch.setattr(ef, "mark_seen_on_server", lambda a, u: calls.append(u) or True)
+    monkeypatch.setattr(scheduler, "_drain_trash_ops", lambda acc: 0)
+
+    scheduler._drain_pending_ops([{"email": "dead@x.fr", "imap_host": "h"}])
+
+    assert calls == [], f"the drain opened {len(calls)} connection(s) to a backed-off account"
+    with db._conn() as con:
+        stuck = con.execute(
+            "SELECT COUNT(*) FROM pending_ops WHERE status = 'in_flight'").fetchone()[0]
+        waiting = con.execute(
+            "SELECT COUNT(*) FROM pending_ops WHERE status = 'pending'").fetchone()[0]
+    assert stuck == 0, "an op was claimed and then never worked on"
+    assert waiting == 1, "the mutation must still be queued for when the account comes back"
+
+
+def test_the_drain_stops_at_the_pass_deadline_without_losing_work(fresh_app, monkeypatch):
+    """It used to run before the pass consulted its budget at all."""
+    from src import scheduler, database as db
+    import src.email_fetcher as ef
+
+    for i in range(5):
+        db.insert_email({
+            "message_id": f"<op-{i}@x>", "account": "live@x.fr", "uid": str(100 + i),
+            "subject": "s", "date_str": "Mon, 05 May 2026 10:00:00 +0000",
+        })
+        db.queue_pending_op(i + 1, "live@x.fr", "seen", "1")
+
+    calls = []
+
+    def slow(acc, uid):
+        calls.append(uid)
+        return True
+
+    monkeypatch.setattr(ef, "mark_seen_on_server", slow)
+    monkeypatch.setattr(scheduler, "_drain_trash_ops", lambda acc: 0)
+
+    # A budget that is already spent: nothing may be attempted.
+    scheduler._drain_pending_ops([{"email": "live@x.fr", "imap_host": "h"}],
+                                 scheduler.time.monotonic() - 1)
+
+    assert calls == [], f"{len(calls)} operation(s) ran past the deadline"
+    with db._conn() as con:
+        stuck = con.execute(
+            "SELECT COUNT(*) FROM pending_ops WHERE status = 'in_flight'").fetchone()[0]
+        waiting = con.execute(
+            "SELECT COUNT(*) FROM pending_ops WHERE status = 'pending'").fetchone()[0]
+    assert stuck == 0, f"{stuck} operations were claimed and abandoned in flight"
+    assert waiting == 5, "every mutation must still be queued for the next pass"
