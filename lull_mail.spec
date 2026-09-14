@@ -38,8 +38,18 @@ def _app_bundle_version() -> str:
     # CFBundleShortVersionString should be a numeric major.minor.patch (no prerelease tag).
     return ver.split("-")[0].split("+")[0] or "0.0.0"
 
+_ROOT = _os.path.dirname(_os.path.abspath(SPEC))
+if _ROOT not in _sys.path:
+    _sys.path.insert(0, _ROOT)
+from scripts.frontend_assets import frontend_datas  # noqa: E402
+
 datas = []
-datas += [("frontend", "frontend")]
+# Not `[("frontend", "frontend")]`. That shipped the directory wholesale,
+# which was right until frontend/ grew a 52 MB node_modules, a Playwright
+# package and a tree of screenshot baselines — all of it copied into every
+# installer and served at /static/. frontend_datas keeps everything the app
+# can actually reach and drops the tooling by name.
+datas += frontend_datas(_ROOT)
 datas += collect_data_files("webview")           # bundled JS/HTML used by pywebview
 datas += collect_data_files("apscheduler")
 datas += collect_data_files("certifi")           # CA bundle — needed on macOS where the
