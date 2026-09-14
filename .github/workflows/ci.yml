@@ -40,14 +40,16 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
+      # bash so a failure is fatal: under cmd a step's exit code is only its
+      # last command's, so a failed `pip install` here was invisible.
       - name: Install Python dependencies
-        shell: cmd
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
       - name: Install frontend dependencies
-        shell: cmd
+        shell: bash
         working-directory: frontend
         run: pnpm install --frozen-lockfile
 
@@ -111,14 +113,32 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
+      # bash, not cmd. `pnpm` on Windows is a .cmd shim, and inside a batch
+      # script calling one .cmd from another WITHOUT `call` transfers control
+      # and never returns — so `pnpm install` ran, the script ended there, and
+      # `playwright install` silently never executed. The step still exited 0,
+      # and the browser was simply absent: every test then failed with
+      # "Executable doesn't exist at …\chromium_headless_shell-1187\…".
+      # bash has no such rule, and -e makes a real failure fatal instead of
+      # letting the step's exit code come from whichever line happened to run
+      # last.
       - name: Install dependencies
-        shell: cmd
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
           cd frontend
           pnpm install --frozen-lockfile
           pnpm exec playwright install chromium
+
+      # A missing browser must never again look like a successful install.
+      # --dry-run would not do: it prints what WOULD be downloaded whether or
+      # not anything is there. Launching is the only check that answers the
+      # question the tests are about to ask.
+      - name: Verify the browser actually launches
+        shell: bash
+        working-directory: frontend
+        run: node scripts/check-browser.mjs
 
       - name: Run Playwright
         shell: cmd
