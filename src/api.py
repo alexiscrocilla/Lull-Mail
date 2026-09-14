@@ -1614,9 +1614,43 @@ def cleanup_unhide(request: Request):
     return {"ok": True, "restored": n, "suggestions": sug.compute()}
 
 
+class CleanupWindowEdge(BaseModel):
+    date: Optional[str] = None
+    int_id: int = 0
+
+
+class CleanupWindow(BaseModel):
+    top: Optional[CleanupWindowEdge] = None
+    bottom: Optional[CleanupWindowEdge] = None
+
+
+class CleanupKeep(BaseModel):
+    sender: str
+    account: Optional[str] = None
+
+
 class CleanupApplyReq(BaseModel):
     card: str
     account: Optional[str] = None
+    # Both come from a preview the user just looked at. They can only ever
+    # narrow the set: the card id still chooses the query.
+    window: Optional[CleanupWindow] = None
+    keep_senders: Optional[List[CleanupKeep]] = None
+
+
+@app.get("/api/cleanup/preview")
+def cleanup_preview(card: str, account: Optional[str] = None):
+    """The senders a card's button would touch, and how many each.
+
+    A read, and a separate one: most visits to the page never open a
+    preview, and the page's brief is to be useful in two seconds.
+
+    Aggregates only -- no message row leaves the server.
+    """
+    from src import cleanup_suggestions as sug
+    if card not in sug.APPLIABLE:
+        raise HTTPException(400, tr("cleanup.card_unknown", "fr", card=card))
+    return sug.preview(card, account=account)
 
 
 @app.post("/api/cleanup/apply")
@@ -1638,7 +1672,11 @@ def cleanup_apply(request: Request, req: CleanupApplyReq, bg: BackgroundTasks,
     if req.card not in sug.APPLIABLE:
         raise HTTPException(400, tr("cleanup.card_unknown", locale, card=req.card))
 
-    rows = sug.select_rows(req.card, account=req.account, limit=sug.APPLY_CAP)
+    rows = sug.select_rows(
+        req.card, account=req.account, limit=sug.APPLY_CAP,
+        window=req.window.model_dump() if req.window else None,
+        keep_senders=[k.model_dump() for k in (req.keep_senders or [])],
+    )
     if not rows:
         return {"ok": True, "affected": 0, "undo": None,
                 "suggestions": sug.compute(req.account)}

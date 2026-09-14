@@ -55,8 +55,17 @@ SCORE_FLOOR = 1.6
 MAX_CARDS = 3
 
 # A confirm dialog for a trash action only past this many messages: at three
-# spams the dialog is the friction, not the safety.
+# spams the dialog is the friction, not the safety. `after_unsub` is the one
+# exception: its floor is 5, so it is always under this, and it is the only
+# card with no peek link -- without the dialog there is no way at all to see
+# what it means before pressing it.
 CONFIRM_ABOVE = 200
+ALWAYS_CONFIRM = {"after_unsub"}
+
+# How many (sender, mailbox) pairs an apply will honour as exclusions, and
+# how many fit in one statement's host parameters.
+KEEP_MAX = 200
+KEEP_CHUNK = 100
 
 
 # A card the user dismissed stays out of the way for this long. One rule, one
@@ -183,18 +192,164 @@ def _card_where(card_id: str, account: Optional[str]) -> Tuple[str, list]:
     return _acct(where, account, params), params
 
 
+# The order a capped press walks the pile in. Newest first, so it clears
+# what the user is most likely looking at -- and `int_id` after the date,
+# because without a tiebreak the cap boundary is not deterministic and
+# "what the preview showed" and "what the press took" can differ by a row.
+_APPLY_ORDER = "ORDER BY date_received_iso DESC, int_id DESC"
+
+
+def _window_clause(window: Optional[Dict], params: list) -> str:
+    """Restrict to the slice a preview actually showed.
+
+    `window` is the (date, int_id) of the preview's first and last row. It is
+    what makes "acted on ⊆ previewed" true by construction: mail that arrived
+    since sorts above the top cursor, and rows below the cap sort under the
+    bottom one. Without it, ANY exclusion lets the LIMIT backfill from below
+    the cap -- the press still touches `limit` rows, three of which the user
+    never saw, and `affected` still matches the promised number so nothing on
+    screen says otherwise.
+    """
+    if not window:
+        return ""
+    out = ""
+    top, bottom = window.get("top"), window.get("bottom")
+    if top and top.get("date") is not None:
+        out += " AND (date_received_iso, int_id) <= (?, ?)"
+        params.extend([top["date"], int(top["int_id"])])
+    if bottom and bottom.get("date") is not None:
+        out += " AND (date_received_iso, int_id) >= (?, ?)"
+        params.extend([bottom["date"], int(bottom["int_id"])])
+    return out
+
+
+def _keep_clause(keep: Optional[List], params: list) -> str:
+    """Drop the (sender, mailbox) pairs the user unticked.
+
+    Chunked, because SQLite caps host parameters per statement. An AND of
+    NOT IN chunks is the same set as one big NOT IN -- unlike an OR of IN
+    chunks, which is not.
+    """
+    pairs = [(str(k.get("sender") or "").strip().lower(),
+              str(k.get("account") or ""))
+             for k in (keep or []) if k]
+    pairs = [p for p in pairs if p[0]][:KEEP_MAX]
+    if not pairs:
+        return ""
+    out = ""
+    for i in range(0, len(pairs), KEEP_CHUNK):
+        chunk = pairs[i:i + KEEP_CHUNK]
+        values = ",".join("(?,?)" for _ in chunk)
+        out += f" AND (sender_addr, account_email) NOT IN (VALUES {values})"
+        for sender, acct in chunk:
+            params.extend([sender, acct])
+    return out
+
+
 def select_rows(card_id: str, account: Optional[str] = None,
-                limit: int = APPLY_CAP) -> List[Dict]:
-    """The rows the card's button acts on. Newest first, so a capped press
-    clears what the user is most likely looking at."""
+                limit: int = APPLY_CAP,
+                window: Optional[Dict] = None,
+                keep_senders: Optional[List[Dict]] = None) -> List[Dict]:
+    """The rows the card's button acts on.
+
+    `window` and `keep_senders` come from a preview the user just looked at.
+    Neither is a filter in the sense the design forbade: the generator is
+    still this card's own `_card_where`, re-run server-side, and these are AND
+    terms over literal values. The degenerate case inverts safely -- an empty
+    exclusion excludes nothing, so the worst a broken client can do is delete
+    FEWER messages.
+    """
     if card_id not in APPLIABLE:
         raise ValueError(f"{card_id!r} is not an appliable card")
     where, params = _card_where(card_id, account)
+    where += _window_clause(window, params)
+    where += _keep_clause(keep_senders, params)
     with db._conn() as con:
         return [dict(r) for r in con.execute(
             f"SELECT int_id, folder, is_read FROM emails WHERE {where}"
-            f" ORDER BY date_received_iso DESC LIMIT ?", [*params, int(limit)]
+            f" {_APPLY_ORDER} LIMIT ?", [*params, int(limit)]
         ).fetchall()]
+
+
+def preview(card_id: str, account: Optional[str] = None,
+            limit: int = APPLY_CAP) -> Dict[str, Any]:
+    """Who the card's button would touch, grouped by sender.
+
+    The sender is the unit a false positive comes in -- "Le Monde should not
+    be in there" -- and it compresses the list by about forty times, so the
+    answer is readable where a thousand message rows would not be. The
+    messages themselves stay one click away through the card's peek link, in
+    the inbox, which already has search, selection and its own undo.
+
+    No message row leaves the server: this returns aggregates only.
+    """
+    if card_id not in APPLIABLE:
+        raise ValueError(f"{card_id!r} is not an appliable card")
+    where, params = _card_where(card_id, account)
+    cap = int(limit)
+    with db._conn() as con:
+        matched = con.execute(
+            f"SELECT COUNT(*) FROM emails WHERE {where}", params).fetchone()[0]
+        # Grouped over the CAPPED set: exactly the rows select_rows would
+        # hand the action. Grouping over the full match would name senders
+        # the press will not reach.
+        rows = [dict(r) for r in con.execute(f"""
+            SELECT sender_addr, account_email, sender,
+                   COUNT(*) AS n,
+                   COALESCE(SUM(is_read = 0), 0) AS unread,
+                   MAX(date_received_iso) AS last
+              FROM (SELECT int_id, sender_addr, account_email, sender, is_read,
+                           date_received_iso
+                      FROM emails WHERE {where}
+                     {_APPLY_ORDER} LIMIT ?)
+             GROUP BY sender_addr, account_email
+             ORDER BY n DESC, last DESC
+        """, [*params, cap]).fetchall()]
+        # The slice's own bounds, so the press can be held to it.
+        edges = con.execute(f"""
+            SELECT MIN(date_received_iso) AS lo_d, MAX(date_received_iso) AS hi_d
+              FROM (SELECT date_received_iso FROM emails WHERE {where}
+                     {_APPLY_ORDER} LIMIT ?)
+        """, [*params, cap]).fetchone()
+        bounds = con.execute(f"""
+            SELECT date_received_iso AS d, int_id FROM emails WHERE {where}
+             {_APPLY_ORDER} LIMIT ?
+        """, [*params, cap]).fetchall()
+
+    covered = sum(r["n"] for r in rows)
+    window = None
+    if bounds:
+        first, last = bounds[0], bounds[-1]
+        window = {
+            "top": {"date": first["d"], "int_id": int(first["int_id"])},
+            "bottom": {"date": last["d"], "int_id": int(last["int_id"])},
+        }
+    per_account: Dict[str, int] = {}
+    senders = []
+    for r in rows:
+        display, _ = db._canonical_sender(r["sender"] or "")
+        per_account[r["account_email"]] = per_account.get(r["account_email"], 0) + r["n"]
+        senders.append({
+            "sender": r["sender_addr"],
+            "name": display or r["sender_addr"],
+            "account": r["account_email"],
+            "n": int(r["n"]),
+            "unread": int(r["unread"] or 0),
+            "last": r["last"],
+        })
+    return {
+        "card": card_id,
+        "account": account,
+        "unit": "senders",
+        "matched": int(matched),
+        # What the press will take, which past the cap is less than `matched`.
+        "n": covered,
+        "covered": covered,
+        "per_account": per_account,
+        "senders": senders,
+        "window": window,
+        "_edges": {"lo": edges["lo_d"], "hi": edges["hi_d"]} if edges else None,
+    }
 
 
 def _count(con, card_id: str, account: Optional[str]) -> Tuple[int, int]:
@@ -402,7 +557,8 @@ def compute(account: Optional[str] = None) -> Dict[str, Any]:
             "gain": {"value": capped, "unit": unit},
             "vars": vars_,
             "reversible": True,
-            "confirm": card_id != "old_unread" and capped >= CONFIRM_ABOVE,
+            "confirm": card_id in ALWAYS_CONFIRM or (
+                card_id != "old_unread" and capped >= CONFIRM_ABOVE),
             "peek": {"query": peek} if peek else None,
             "score": _score(weight * capped, confidence),
         })
