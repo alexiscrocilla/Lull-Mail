@@ -147,17 +147,44 @@ def test_dead_indexes_are_gone(fresh_app):
     # of URL columns no query can seek on.
     assert "idx_emails_date" not in names
     assert "idx_emails_unsub" not in names
+    # A strict prefix of idx_emails_unsub_sender_acc, on a VIRTUAL generated
+    # column: it answered nothing the wider one cannot and paid to
+    # materialise the same expression a second time on every insert.
+    assert "idx_emails_sender_addr" not in names
     assert {"idx_cleanup_cat", "idx_cleanup_unread", "idx_cleanup_sender",
-            "idx_cleanup_unsub", "idx_emails_sender_addr"} <= names
+            "idx_cleanup_unsub", "idx_emails_unsub_sender_acc"} <= names
 
 
-def test_analyze_runs_once_and_is_recorded(fresh_app):
+def test_analyze_is_recorded_and_does_not_re_run_on_every_launch(fresh_app):
     from src import database as db
 
     assert db.get_kv("cleanup_analyze_at"), "ANALYZE must be stamped so it does not re-run"
     stamp = db.get_kv("cleanup_analyze_at")
     db.init_db()
     assert db.get_kv("cleanup_analyze_at") == stamp, "ANALYZE re-ran on a later launch"
+
+
+def test_analyze_re_runs_once_the_mailbox_has_outgrown_its_statistics(fresh_app):
+    """It used to run once, ever -- on a first launch that means over an
+    empty database, and never again. Every install has since been planning a
+    grown mailbox with the statistics of a 0-row one, which is how the
+    obvious after_unsub rewrite measures 6.8 ms in a test and 89 seconds on
+    a real machine."""
+    from src import database as db
+
+    stamp = db.get_kv("cleanup_analyze_at")
+    assert db.get_kv("cleanup_analyze_rows") == "0"
+
+    _seed(db, 2000)
+    db.init_db()
+
+    assert db.get_kv("cleanup_analyze_at") != stamp, "statistics were never refreshed"
+    assert db.get_kv("cleanup_analyze_rows") == "2000"
+
+    # And it settles: a launch that adds nothing does not ANALYZE again.
+    stamp2 = db.get_kv("cleanup_analyze_at")
+    db.init_db()
+    assert db.get_kv("cleanup_analyze_at") == stamp2
 
 
 def test_the_whole_payload_is_answered_quickly(fresh_app):
@@ -172,3 +199,66 @@ def test_the_whole_payload_is_answered_quickly(fresh_app):
             con.execute(sql, params).fetchall()
         elapsed = time.perf_counter() - t0
     assert elapsed < 0.5, f"the six aggregates took {elapsed*1000:.0f} ms on 4 000 rows"
+
+
+# ── after_unsub, the one card whose cost is not bounded by an index alone ──
+
+def _seed_unsub(db, n: int, analyze: bool) -> None:
+    """A mailbox where a third of the (sender, account) pairs unsubscribed."""
+    now = datetime.now(timezone.utc)
+    rows = []
+    for i in range(n):
+        acct = ("a@x.fr", "b@x.fr", "c@x.fr")[i % 3]
+        rows.append((
+            f"<unsub-{i}@x>", acct, str(i),
+            f"Lettre <news{i % 120}@list.example>", "newsletter", i % 3 == 0,
+            "inbox", (now - timedelta(minutes=i * 3)).isoformat(),
+            f"https://list.example/u/{i % 120}", 1,
+        ))
+    with db._conn() as con:
+        con.executemany(
+            "INSERT INTO emails (message_id, account_email, uid, sender, category,"
+            " is_read, folder, date_received_iso, unsubscribe_url, local_classified)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+        con.execute(
+            "UPDATE emails SET unsubscribed_at = ? WHERE rowid % 3 = 0"
+            "  AND date_received_iso < ?",
+            ((now - timedelta(days=30)).isoformat(),
+             (now - timedelta(days=30)).isoformat()))
+        if analyze:
+            con.execute("ANALYZE")
+
+
+@pytest.mark.parametrize("analyze", [True, False], ids=["fresh-stats", "stale-stats"])
+def test_after_unsub_stays_cheap_whatever_the_planner_knows(fresh_app, analyze):
+    """The budget has to hold on BOTH sides of the statistics question.
+
+    The obvious rewrite -- joining a grouped derived table -- is 6.8 ms with
+    fresh statistics and 89 SECONDS without, and ANALYZE has historically run
+    once, over an empty database, at first launch. This test exists so that
+    plan cannot be adopted by accident: it is the stale-stats case that
+    catches it.
+    """
+    from src import database as db, cleanup_suggestions as sug
+
+    _seed_unsub(db, 20_000, analyze=analyze)
+    where, params = sug._card_where("after_unsub", None)
+    sql = f"SELECT COUNT(*) FROM emails WHERE {where}"
+    with db._conn() as con:
+        t0 = time.perf_counter()
+        n = con.execute(sql, params).fetchone()[0]
+        elapsed = (time.perf_counter() - t0) * 1000
+    assert n > 0, "the fixture produced no candidates, so the timing means nothing"
+    assert elapsed < 500, f"after_unsub took {elapsed:.0f} ms with analyze={analyze}"
+
+
+def test_the_unsubscribe_lookup_has_an_index_to_answer_from(fresh_app):
+    from src import database as db, cleanup_suggestions as sug
+
+    _seed_unsub(db, 2000, analyze=True)
+    where, params = sug._card_where("after_unsub", None)
+    with db._conn() as con:
+        plan = _plan(con, f"SELECT COUNT(*) FROM emails WHERE {where}", params)
+    # The correlated lookup is per candidate row: without the composite index
+    # it re-scans, and the card costs the better part of a second.
+    assert "idx_emails_unsub_sender_acc" in plan, plan

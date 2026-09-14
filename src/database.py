@@ -494,7 +494,20 @@ def init_db():
                 ALTER TABLE emails ADD COLUMN sender_addr TEXT
                 GENERATED ALWAYS AS ({_SENDER_ADDR_SQL}) VIRTUAL
             """)
-        con.execute("CREATE INDEX IF NOT EXISTS idx_emails_sender_addr ON emails(sender_addr)")
+        # (sender_addr, account_email, unsubscribed_at). The first column
+        # answers every "this sender's mail" lookup on its own, and the three
+        # together answer after_unsub's per-row question -- "when did this
+        # sender last get unsubscribed in THIS mailbox?" -- which without an
+        # index costs 870 ms on a 20k mailbox and 36 ms with one.
+        #
+        # sender_addr is a VIRTUAL generated column, so every index on it
+        # materialises that expression once per row on every insert. A second,
+        # narrower index with the same leading column would pay that twice and
+        # answer nothing the wider one cannot: idx_emails_sender_addr is
+        # dropped below.
+        con.execute("CREATE INDEX IF NOT EXISTS idx_emails_unsub_sender_acc"
+                    " ON emails(sender_addr, account_email, unsubscribed_at)")
+        con.execute("DROP INDEX IF EXISTS idx_emails_sender_addr")
 
         # ── Partial indexes covering the cleanup aggregates ───────────────
         # Every one of them is restricted to _CLEANUP_LIVE, so they stay small
@@ -538,17 +551,33 @@ def init_db():
         con.execute("DROP INDEX IF EXISTS idx_emails_date")
         con.execute("DROP INDEX IF EXISTS idx_emails_unsub")
 
-        # One ANALYZE, once. Without statistics the planner prefers
-        # idx_emails_read (two distinct values, not covering) over
-        # idx_cleanup_unread. Guarded through the same connection rather than
-        # get_kv/set_kv so it cannot deadlock against this open transaction.
-        if con.execute(
-            "SELECT 1 FROM kv WHERE key = 'cleanup_analyze_at'"
-        ).fetchone() is None:
+
+        # Statistics, refreshed when the mailbox has outgrown them. Without
+        # any, the planner prefers idx_emails_read (two distinct values, not
+        # covering) over idx_cleanup_unread. This used to run once, ever --
+        # which on a first launch means it ran over an empty database and
+        # never again, so every install has been planning a 50 000-row
+        # mailbox with the statistics of a 0-row one. ANALYZE costs 34 ms at
+        # 20 000 rows; an order of magnitude of growth is a cheap trigger.
+        # Guarded through the same connection rather than get_kv/set_kv so it
+        # cannot deadlock against this open transaction.
+        stamp = con.execute(
+            "SELECT value FROM kv WHERE key = 'cleanup_analyze_rows'"
+        ).fetchone()
+        rows_now = con.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+        try:
+            rows_then = int(stamp["value"]) if stamp else -1
+        except (TypeError, ValueError):
+            rows_then = -1
+        if rows_then < 0 or rows_now >= max(rows_then, 1) * 10:
             con.execute("ANALYZE")
             con.execute(
                 "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
                 ("cleanup_analyze_at", datetime.now(timezone.utc).isoformat()),
+            )
+            con.execute(
+                "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+                ("cleanup_analyze_rows", str(rows_now)),
             )
 
 

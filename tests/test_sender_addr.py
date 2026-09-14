@@ -271,7 +271,10 @@ def test_sender_lookups_are_indexed_not_scanned(fresh_app):
         plan = " ".join(r[3] for r in con.execute(
             "EXPLAIN QUERY PLAN SELECT int_id FROM emails"
             " WHERE folder != 'deleted' AND sender_addr = 's1@bulk.example'"))
-    assert "idx_emails_sender_addr" in plan, plan
+    # Any index whose leading column is sender_addr will do; today that is
+    # idx_emails_unsub_sender_acc, which also answers after_unsub. What must
+    # never come back is the table scan.
+    assert "SEARCH" in plan and "sender_addr=?" in plan, plan
 
     t0 = time.perf_counter()
     rows = db.find_by_sender("s1@bulk.example")
