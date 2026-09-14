@@ -139,6 +139,7 @@ notes:
 | `BACKLOG.md` | Unshipped feature list; sets expectations we haven't committed to. |
 | `docs/AUDIT-UX-BOITE-MAIL.md` | Catalogue of 81 internal UX/a11y defects with line numbers. |
 | `docs/PLAN-CORRECTIFS-BOITE-MAIL.md` | Remediation plan naming what is still deliberately unfixed. |
+| `docs/AUDIT-MULTI-COMPTES.md` | Same shape as the UX audit: regressions and pre-existing defects with file:line, several still open on purpose. |
 
 Everything else ships. In particular `MARKETING.md` (voice guide),
 `SECURITY-ROADMAP.md` (deliberate scope cuts, no exploitable detail) and
@@ -156,16 +157,18 @@ cd /tmp/public-sync
 git filter-repo --force --invert-paths \
   --path BACKLOG.md \
   --path docs/AUDIT-UX-BOITE-MAIL.md \
-  --path docs/PLAN-CORRECTIFS-BOITE-MAIL.md
+  --path docs/PLAN-CORRECTIFS-BOITE-MAIL.md \
+  --path docs/AUDIT-MULTI-COMPTES.md
 
 # 3. Verify before pushing anything
-#    - the three paths return 0 commits:
-for f in BACKLOG.md docs/AUDIT-UX-BOITE-MAIL.md docs/PLAN-CORRECTIFS-BOITE-MAIL.md; do
+#    - every dev-only path returns 0 commits:
+for f in BACKLOG.md docs/AUDIT-UX-BOITE-MAIL.md \
+         docs/PLAN-CORRECTIFS-BOITE-MAIL.md docs/AUDIT-MULTI-COMPTES.md; do
   git log --all --oneline -- "$f" | wc -l
 done
 #    - every remaining file is byte-identical to dev main (empty diff):
 diff <(git -C /path/to/Lull-Mail-dev ls-tree -r main \
-        | grep -vE 'BACKLOG|AUDIT-UX-BOITE-MAIL|PLAN-CORRECTIFS-BOITE-MAIL' \
+        | grep -vE 'BACKLOG|AUDIT-UX-BOITE-MAIL|PLAN-CORRECTIFS-BOITE-MAIL|AUDIT-MULTI-COMPTES' \
         | awk '{print $3, $4}' | sort) \
      <(git ls-tree -r HEAD | awk '{print $3, $4}' | sort)
 #    - preflight passes on the sanitised tree:
