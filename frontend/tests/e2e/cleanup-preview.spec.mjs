@@ -174,3 +174,27 @@ test('a sender whose address contains a pipe is still spared', async ({ page }) 
   const senders = new Set(left.results.map((r) => r.sender));
   expect([...senders]).toEqual(['Expediteur 0 <new|s0@bulk.example>']);
 });
+
+test('the live label reads as a singular when one message is left', async ({ page }) => {
+  await page.request.post('/__test__/reset');
+  await page.request.post('/__test__/cleanup?kind=spam&n=201&senders=3&solo=1');
+  await page.goto('/#/cleanup');
+  await expect(card(page)).toBeVisible();
+  await card(page).locator('.cln-card-go').click();
+  await expect(rows(page)).toHaveCount(4);   // three bulk senders + the solo one
+
+  // The label is recomputed from the ticks, so it can reach n = 1 -- and
+  // confirm.js also pushes it into an aria-live region, so a screen reader
+  // says it out loud.
+  const counts = [];
+  for (const row of await rows(page).all()) {
+    const sub = await row.locator('.confirm-detail-sub').innerText();
+    counts.push(parseInt(sub.match(/(\d+)/)[1], 10));
+  }
+  expect(Math.min(...counts)).toBe(1);
+
+  for (const [i, row] of (await rows(page).all()).entries()) {
+    if (counts[i] !== 1) await row.locator('input').uncheck();
+  }
+  await expect(dialog(page).locator('.confirm-btn-ok')).not.toContainText('les 1');
+});

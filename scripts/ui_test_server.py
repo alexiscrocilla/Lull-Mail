@@ -287,7 +287,7 @@ def main() -> None:
 
     @app.post("/__test__/cleanup")
     def _seed_cleanup(kind: str = "spam", n: int = 260, senders: int = 5,
-                      account: str = PRIMARY, pipe: int = 0):
+                      account: str = PRIMARY, pipe: int = 0, solo: int = 0):
         """Seed a pile big enough for a card to reach its confirm gate.
 
         The default mailbox is 18 well-behaved messages, which is by design:
@@ -297,27 +297,40 @@ def main() -> None:
         from datetime import datetime as _dt, timedelta as _td, timezone as _tz
 
         now = _dt.now(_tz.utc)
+
+        def _sender(i: int) -> str:
+            # `solo` gives the last message a sender of its own, so the pile
+            # contains a group of exactly one -- the case where the preview's
+            # live label has to read as a singular.
+            if solo and i == n - 1:
+                return "Expediteur Seul <seul@bulk.example>"
+            # `pipe` puts the separator the preview once used as a key inside
+            # an address. A header can carry one, and sender_addr is derived
+            # from the raw header by string surgery.
+            if pipe and i % senders == 0:
+                return "Expediteur 0 <new|s0@bulk.example>"
+            return f"Expediteur {i % senders} <s{i % senders}@bulk.example>"
+
+        rows = []
         for i in range(n):
-            mid = f"<cln-{kind}-{i}@lullmail.test>"
-            db.insert_email({
-                "message_id": mid, "account": account, "uid": str(5000 + i),
-                "subject": f"Offre {i}",
-                # `pipe` puts the separator the preview once used as a key
-                # inside an address. A header can carry one, and sender_addr
-                # is derived from the raw header by string surgery.
-                "sender": (f"Expediteur {i % senders} <s{i % senders}@bulk.example>"
-                           if not (pipe and i % senders == 0)
-                           else "Expediteur 0 <new|s0@bulk.example>"),
-                "recipient": account,
-                "date_str": (now - _td(days=40, minutes=i)).strftime(
-                    "%a, %d %b %Y %H:%M:%S +0000"),
-                "body_text": "corps", "body_html": "<p>corps</p>",
-                "is_read": i % 2 == 0,
-            })
+            when = now - _td(days=40, minutes=i)
+            rows.append((
+                f"<cln-{kind}-{i}@lullmail.test>", account, str(5000 + i),
+                f"Offre {i}", _sender(i), account,
+                when.strftime("%a, %d %b %Y %H:%M:%S +0000"), when.isoformat(),
+                "corps", "<p>corps</p>", 1 if i % 2 == 0 else 0,
+                "inbox", kind, 0,
+            ))
+        # One statement, one commit. Row-by-row insert_email commits per
+        # message, and a few hundred commits on WAL took long enough that the
+        # seeding call itself outran Playwright's 30 s test timeout.
         with db._conn() as con:
-            con.execute(
-                "UPDATE emails SET category = ?, local_classified = 0 "
-                "WHERE message_id LIKE ?", (kind, f"<cln-{kind}-%"))
+            con.executemany(
+                "INSERT INTO emails (message_id, account_email, uid, subject,"
+                " sender, recipient, date_received, date_received_iso, body_text,"
+                " body_html, is_read, folder, category, local_classified,"
+                " is_favourite, needs_reply)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0)", rows)
         return {"ok": True, "seeded": n}
 
     @app.post("/__test__/reset")
