@@ -8,6 +8,23 @@
 // drift from the one cleanup.js and mailbox.js already import.
 import { escapeHtml } from '/static/api.js';
 
+// Every dialog currently on screen, so a view being torn down can close one
+// properly instead of deleting its node. Deleting the node skips close(),
+// which is what removes the document-level capture keydown listener -- and
+// that listener's Tab trap then preventDefaults every Tab in the app, for
+// the rest of the session, against a card that is no longer in the document.
+const _open = new Set();
+
+/** Close every open confirm dialog, resolving each to `false`.
+ *
+ *  A view's teardown must call this rather than removing `.confirm-backdrop`
+ *  itself: the promise has to settle and the listener has to come off. */
+export function dismissOpenConfirms() {
+  for (const close of [..._open]) {
+    try { close(false); } catch (_) { /* one bad dialog must not block the rest */ }
+  }
+}
+
 /**
  * Show a branded confirm dialog.
  *
@@ -95,6 +112,9 @@ export function confirmAsync({
     // the thing that closed the dialog — clicking Cancel or OK left a live
     // document-level listener behind, one per dialog ever opened.
     const onKey = (e) => {
+      // The node was removed by something other than close(). Settle and
+      // unhook rather than trapping Tab against a detached card forever.
+      if (!backdrop.isConnected) { close(false); return; }
       if (e.key === 'Escape') { close(false); return; }
       if (e.key !== 'Tab') return;
       // Trap: without this, Tab walks the page behind the modal.
@@ -111,11 +131,13 @@ export function confirmAsync({
       }
     };
     const close = (result) => {
+      _open.delete(close);
       document.removeEventListener('keydown', onKey, true);
       backdrop.remove();
       try { opener?.focus?.(); } catch (_) { /* the trigger may be gone */ }
       resolve(result);
     };
+    _open.add(close);
 
     const unchecked = () => [...card.querySelectorAll('.confirm-details input:not(:checked)')]
       .map((el) => el.value);

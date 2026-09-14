@@ -67,12 +67,13 @@ export function isExpressible(value) {
 }
 
 function splice(text, start, end, replacement) {
-  const before = text.slice(0, start);
-  const after = text.slice(end);
-  let out = before + replacement + after;
-  // One space where the removal left two, and no leading/trailing space.
-  out = out.replace(/[ \t]{2,}/g, ' ');
-  return out.trim();
+  // Only the two seams are tidied. Collapsing whitespace over the WHOLE
+  // string also rewrote the inside of quoted values the user typed
+  // elsewhere: editing the From field turned subject:"Re:  budget" into
+  // subject:"Re: budget", a different phrase and a different result set.
+  const before = text.slice(0, start).replace(/[ \t]+$/, '');
+  const after = text.slice(end).replace(/^[ \t]+/, '');
+  return [before, replacement, after].filter((part) => part !== '').join(' ').trim();
 }
 
 /**

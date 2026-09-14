@@ -130,3 +130,56 @@ test('API read methods forward cancellation signals', async () => {
     (err) => err.cancelled === true,
   );
 });
+
+// ── the wrappers' payload shape ────────────────────────────────────────────
+//
+// These are the seam between a view and the server, and nothing else covers
+// them: the Python tests POST to the endpoint directly, and the e2e never
+// pressed this particular button. A wrapper that silently drops a field
+// therefore produced a request the server answered "ok" to, having done
+// nothing.
+
+async function captureBody(run) {
+  let sent = null;
+  globalThis.fetch = async (_url, init) => {
+    sent = JSON.parse(init.body);
+    return new Response('{"ok":true}', {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  await run();
+  return sent;
+}
+
+test('unsubscribeBulk forwards the (sender, mailbox) pairs it is given', async () => {
+  const entries = [
+    { sender: 'news@list.example', account: 'perso@x.fr' },
+    { sender: 'news@list.example', account: 'boulot@x.fr' },
+  ];
+  const body = await captureBody(() => api.unsubscribeBulk({ entries, purge: false }));
+
+  // Dropping this is not a degraded request, it is an empty one: the server
+  // unsubscribes from nothing and still answers ok, so the card reports
+  // success over two live subscriptions.
+  assert.deepEqual(body.entries, entries);
+  assert.equal(body.purge, false);
+});
+
+test('unsubscribeBulk still accepts the flat sender list', async () => {
+  const body = await captureBody(
+    () => api.unsubscribeBulk({ senders: ['a@x.fr'], account: 'perso@x.fr' }));
+  assert.deepEqual(body.senders, ['a@x.fr']);
+  assert.equal(body.account, 'perso@x.fr');
+});
+
+test('applyCleanupCard carries the preview window and the kept senders', async () => {
+  const window_ = { top: { date: '2026-09-01', int_id: 9 }, bottom: { date: '2026-08-01', int_id: 1 } };
+  const keepSenders = [{ sender: 'lemonde@x.fr', account: 'perso@x.fr' }];
+  const body = await captureBody(
+    () => api.applyCleanupCard('spam', 'perso@x.fr', { window: window_, keepSenders }));
+
+  // Without the window the server's LIMIT backfills below the cap and the
+  // press reaches rows the preview never showed.
+  assert.deepEqual(body.window, window_);
+  assert.deepEqual(body.keep_senders, keepSenders);
+});

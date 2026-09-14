@@ -129,3 +129,48 @@ test('a small pile still goes in one click', async ({ page }) => {
   await expect(card(page)).toHaveAttribute('data-state', 'done');
   await expect(page.locator('.confirm-card')).toHaveCount(0);
 });
+
+test('leaving the page does not leave the keyboard trapped behind it', async ({ page }) => {
+  await page.goto('/#/cleanup');
+  await expect(card(page)).toBeVisible();
+  await card(page).locator('.cln-card-go').click();
+  await expect(dialog(page)).toBeVisible();
+
+  // The teardown used to delete the backdrop node directly. That skips
+  // close(), which is what removes confirm.js's document-level CAPTURE
+  // keydown listener -- and its Tab trap then preventDefaults every Tab in
+  // the app, forever, against a card no longer in the document.
+  await page.goto('/#/inbox');
+  await expect(page.locator('.confirm-backdrop')).toHaveCount(0);
+  await expect(page.locator('#email-list .mb-card').first()).toBeVisible();
+
+  await page.locator('#search').focus();
+  await page.keyboard.press('Tab');
+  const moved = await page.evaluate(() => document.activeElement?.id !== 'search');
+  expect(moved).toBe(true);
+  // And specifically onto the filter toggle, which is the next control.
+  await expect(page.locator('.mb-refine-toggle')).toBeFocused();
+});
+
+test('a sender whose address contains a pipe is still spared', async ({ page }) => {
+  await page.request.post('/__test__/reset');
+  await page.request.post('/__test__/cleanup?kind=spam&n=260&senders=5&pipe=1');
+  await page.goto('/#/cleanup');
+  await expect(card(page)).toBeVisible();
+  await card(page).locator('.cln-card-go').click();
+  await expect(rows(page)).toHaveCount(5);
+
+  // The row key used to be `${sender}|${account}`, split on the first pipe:
+  // the fields shifted, the exclusion matched nothing, and the mail the user
+  // explicitly kept was trashed anyway with nothing on screen to say so.
+  const target = rows(page).filter({ hasText: 'Expediteur 0' });
+  await expect(target).toHaveCount(1);
+  await target.locator('input').uncheck();
+  await dialog(page).locator('.confirm-btn-ok').click();
+  await expect(card(page)).toHaveAttribute('data-state', 'done');
+
+  const left = await (await page.request.get(
+    '/api/emails/search?q=Offre&folder=inbox&limit=500')).json();
+  const senders = new Set(left.results.map((r) => r.sender));
+  expect([...senders]).toEqual(['Expediteur 0 <new|s0@bulk.example>']);
+});

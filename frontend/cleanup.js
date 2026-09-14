@@ -20,7 +20,7 @@
 //     seconds.
 
 import { api, escapeHtml } from '/static/api.js';
-import { confirmAsync } from '/static/confirm.js';
+import { confirmAsync, dismissOpenConfirms } from '/static/confirm.js';
 
 // Matches _CLEANUP_UNDO_DELAY_SECONDS in src/api.py: the queued IMAP move is
 // held for this long, so an undo inside the window cancels it outright and
@@ -295,7 +295,11 @@ export async function mountCleanup(host, opts = {}) {
     return {
       label: s.name || s.sender,
       sub: bits.join(' · '),
-      value: `${s.sender}|${s.account || ''}`,
+      // JSON, not `sender|account`: an address may legitimately contain a
+      // pipe, and splitting on the first one shifted the fields so the
+      // exclusion matched nothing -- mail the user explicitly kept was
+      // trashed anyway, with no sign on screen.
+      value: JSON.stringify([s.sender, s.account || null]),
     };
   }
 
@@ -326,7 +330,7 @@ export async function mountCleanup(host, opts = {}) {
     // value -> how many messages that row stands for, so the button can
     // count messages rather than senders.
     const weight = new Map(view.senders.map(
-      (s) => [`${s.sender}|${s.account || ''}`, s.n]));
+      (s) => [JSON.stringify([s.sender, s.account || null]), s.n]));
     const messagesLeft = (checked) =>
       checked.reduce((n, v) => n + (weight.get(v) || 0), 0);
     const res = await confirmAsync({
@@ -346,9 +350,13 @@ export async function mountCleanup(host, opts = {}) {
     if (!res || !res.ok || destroyed) return null;
 
     const keepSenders = (res.unchecked || []).map((v) => {
-      const [sender, acct] = String(v).split('|');
-      return { sender, account: acct || null };
-    });
+      try {
+        const [sender, acct] = JSON.parse(v);
+        return { sender, account: acct || null };
+      } catch (_) {
+        return null;   // never widen the press because a row failed to decode
+      }
+    }).filter(Boolean);
     return { window: view.window, keepSenders };
   }
 
@@ -356,6 +364,10 @@ export async function mountCleanup(host, opts = {}) {
 
   function showError(li, err) {
     const el = li.querySelector('.cln-card-err');
+    // runBulkUnsubscribe hides the action row before the request. Without
+    // this the card ends up showing an error and nothing to press.
+    const foot = li.querySelector('.cln-card-foot');
+    if (foot) foot.hidden = false;
     // Nothing is queued client-side: if the fetch to 127.0.0.1 failed, the
     // handler never ran, so saying "we saved your action" would be a lie.
     const key = err?.timeout ? 'cleanup.err.timeout'
@@ -483,7 +495,7 @@ export async function mountCleanup(host, opts = {}) {
           multiAccount() && d.account ? d.account : '',
           d.total != null ? t('cleanup.unsub.sheet.row', { n: d.total, read: d.read ?? 0 }) : '',
         ].filter(Boolean).join(' · '),
-        value: `${d.sender || ''}|${d.account || ''}`,
+        value: JSON.stringify([d.sender || '', d.account || null]),
       })),
     });
     if (!ok || destroyed) return;
@@ -682,7 +694,8 @@ export async function mountCleanup(host, opts = {}) {
     window.removeEventListener('sync-status', onSyncStatus);
     // confirmAsync appends to document.body, so the router wiping #view
     // leaves a modal pinned over the next page with everything behind it
-    // inert.
-    document.querySelectorAll('.confirm-backdrop').forEach((el) => el.remove());
+    // inert. Through close(), not by deleting the node: the node is not the
+    // only thing a dialog owns.
+    dismissOpenConfirms();
   };
 }

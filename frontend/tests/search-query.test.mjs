@@ -95,3 +95,17 @@ test('dropping the only token leaves an empty string, not a stray space', () => 
   assert.equal(dropOperator('from:nora@x.fr', 'from'), '');
   assert.equal(dropOperator('a from:nora@x.fr b', 'from'), 'a b');
 });
+
+test('editing one operator does not rewrite the whitespace inside another', () => {
+  // The user pasted a subject that really has two spaces in it. Collapsing
+  // whitespace across the whole string turned it into a different phrase --
+  // and a different result set -- the moment they touched an unrelated field.
+  const q = 'from:alice subject:"Re:  budget"';
+  assert.equal(setOperator(q, 'from', 'bob'), 'from:bob subject:"Re:  budget"');
+  assert.equal(dropOperator(q, 'from'), 'subject:"Re:  budget"');
+});
+
+test('the seam left by a removed operator is still tidied', () => {
+  assert.equal(dropOperator('a from:x b', 'from'), 'a b');
+  assert.equal(dropOperator('from:x  trailing', 'from'), 'trailing');
+});

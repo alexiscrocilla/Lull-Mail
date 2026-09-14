@@ -472,11 +472,17 @@ export const api = {
     });
   },
 
-  unsubscribeBulk({ senders, account, purge = false }) {
+  // `entries` is the real unit: one (sender, mailbox) pair per
+  // subscription, because the unsubscribe link is a per-mailbox token. The
+  // flat `senders` list is the older shape and still works for one account.
+  // This wrapper used to destructure `senders` only, so the caller's
+  // `entries` was dropped on the floor and the POST carried no senders at
+  // all -- the server unsubscribed from nothing and answered ok.
+  unsubscribeBulk({ senders, entries, account, purge = false }) {
     return j('/api/cleanup/unsubscribe/bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ senders, account, purge }),
+      body: JSON.stringify({ senders, entries, account, purge }),
     });
   },
 

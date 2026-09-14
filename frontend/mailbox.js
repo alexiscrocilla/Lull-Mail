@@ -7,7 +7,7 @@ import {
   CATEGORY_LABEL, scoreClass,
 } from '/static/api.js';
 import { rewriteRemoteImages, senderDomain } from '/static/image-blocker.js';
-import { confirmAsync } from '/static/confirm.js';
+import { confirmAsync, dismissOpenConfirms } from '/static/confirm.js';
 import { LatestRequest } from '/static/request-latest.js';
 import { dropOperator, freeText, isExpressible, readOperator, setOperator, tokens }
   from '/static/search-query.js';
@@ -2148,10 +2148,15 @@ export async function mountMailbox(host, _opts) {
       b.textContent = label;
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
       b.addEventListener('click', () => {
+        // renderChips rebuilds this row, so the node under the user's
+        // finger is about to be replaced. A mouse user does not notice; a
+        // keyboard user loses focus to <body> and Tabs from the top again.
+        const hadFocus = el.contains(document.activeElement);
         if (key === 'unread') { state.onlyUnread = !state.onlyUnread; state.onlyReply = false; }
         if (key === 'reply')  { state.onlyReply = !state.onlyReply;  state.onlyUnread = false; }
         _filterDidChange = true;
         renderChips();
+        if (hadFocus) el.querySelector(`[data-quick="${key}"]`)?.focus();
         applyFilter();
       });
       return b;
@@ -2170,7 +2175,13 @@ export async function mountMailbox(host, _opts) {
         + '<svg class="mb-chip-x" viewBox="0 0 24 24" fill="none" stroke="currentColor"'
         + ' stroke-width="2.6" stroke-linecap="round" aria-hidden="true">'
         + '<path d="M6 6l12 12M18 6L6 18"/></svg>';
-      b.addEventListener('click', () => _dropFilter(chip));
+      b.addEventListener('click', () => {
+        // The chip itself is what disappears, so focus moves to the one
+        // fixed thing in the row rather than to <body>.
+        const hadFocus = el.contains(document.activeElement);
+        _dropFilter(chip);
+        if (hadFocus) el.querySelector('.mb-refine-toggle')?.focus();
+      });
       frag.appendChild(b);
     }
 
@@ -6816,6 +6827,11 @@ export async function mountMailbox(host, _opts) {
     window.removeEventListener('sync-status', onSyncStatus);
     window.removeEventListener('app:key', onKey);
     document.removeEventListener('keydown', onEscape);
+    // A bulk-delete confirm is appended to document.body, which the
+    // router's #view wipe does not touch: it stayed pinned over whatever
+    // mounted next, focus-trapped, asking about messages no longer on
+    // screen.
+    dismissOpenConfirms();
     // `host` (= #view) persists across navigations, so its dnd listeners
     // would leak into the next view if not removed here.
     host.removeEventListener('dragenter', _onComposerDragEnter);
