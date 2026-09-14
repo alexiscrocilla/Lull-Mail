@@ -1,2 +1,15 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Vendored third-party code is byte-for-byte what upstream published, and its
+# SHA-256 is pinned in frontend/vendor/manifest.json. `* text=auto` above
+# rewrites line endings on checkout, so on Windows — where Git for Windows
+# defaults core.autocrlf to true — a fresh clone produced a different file
+# than the one that was reviewed, failed the integrity check, and would have
+# shipped those altered bytes inside the installer.
+frontend/vendor/** -text
+
+# Screenshot baselines and icons: never touched, for the same reason.
+*.png binary
+*.icns binary
+*.ico binary
