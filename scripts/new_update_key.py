@@ -35,6 +35,8 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+SECRET = "UPDATE_SIGNING_PRIVATE_KEY"
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
@@ -73,8 +75,18 @@ def main() -> None:
     print(f"   {public_json}\n")
     print("2. Repository SECRET    UPDATE_SIGNING_PRIVATE_KEY:")
     print(f"   the contents of {args.out}")
-    print("   gh secret set UPDATE_SIGNING_PRIVATE_KEY < "
-          f"{args.out}\n", file=sys.stderr)
+    print()
+    print("   `gh secret set` reads standard input, so the key need never")
+    print("   appear in a command line — and so never in a shell history:")
+    print()
+    print(f"     bash        gh secret set {SECRET} \\")
+    print(f"                   --repo OWNER/REPO < {args.out}")
+    print(f'     PowerShell  cmd /c "gh secret set {SECRET} '
+          f'--repo OWNER/REPO < {args.out}"')
+    print()
+    print("   PowerShell reserves `<`, so let cmd do the redirection. Avoid")
+    print("   --body: that writes the key into ConsoleHost_history.txt.")
+    print()
     print(f"3. Then delete {args.out}, or store it in a password manager.")
     print("   Losing it means you can never sign another update for the\n"
           "   installs that trust this key; leaking it means someone else can.")

@@ -42,9 +42,24 @@ for ever, and no later fix to CI can repair the copies already downloaded.
    | Variable | `LULLMAIL_UPDATE_KEY_ID` | the `--key-id` you chose |
    | Secret | `UPDATE_SIGNING_PRIVATE_KEY` | the contents of the key file |
 
+   `gh secret set` reads the value from standard input, so the key never
+   has to appear in a command line — and therefore never in a shell
+   history file.
+
    ```bash
+   # bash / zsh
    gh secret set UPDATE_SIGNING_PRIVATE_KEY --repo alexiscrocilla/Lull-Mail      < update-signing-key.private
    ```
+
+   ```powershell
+   # PowerShell: `<` is a reserved operator and errors out, so let cmd do
+   # the redirection. Do NOT use --body "$(Get-Content ...)": that writes
+   # the key into ConsoleHost_history.txt.
+   cmd /c "gh secret set UPDATE_SIGNING_PRIVATE_KEY --repo alexiscrocilla/Lull-Mail < update-signing-key.private"
+   ```
+
+   Or, on any shell, run it with no `--body` and no redirection at all and
+   paste the value into the prompt `gh` opens.
 
 3. Delete the private key file, or move it to a password manager. Losing
    it means you can never sign another update for the installs that trust
