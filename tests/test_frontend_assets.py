@@ -89,3 +89,42 @@ def test_the_collection_is_small_enough_to_be_obviously_right(shipped):
     # ~2 MB today. The point is the order of magnitude: if this ever passes
     # 20 MB again, something like node_modules is back in the installer.
     assert total < 20_000_000, f"frontend payload is {total / 1e6:.0f} MB"
+
+
+# ── vendored bytes must survive a checkout ─────────────────────────────────
+
+def _check_attr(attr: str, path: str) -> str:
+    import subprocess
+    out = subprocess.run(["git", "check-attr", attr, "--", path],
+                         cwd=ROOT, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip().rsplit(": ", 1)[-1]
+
+
+@pytest.mark.parametrize("name", ["dompurify.es.mjs", "DOMPURIFY-LICENSE"])
+def test_vendored_files_are_never_line_ending_normalised(name):
+    """`* text=auto` rewrites line endings on checkout, and on Windows that
+    turned the vendored library into a different file than the one whose
+    SHA-256 is pinned — failing the integrity check, and shipping bytes
+    nobody reviewed inside the installer."""
+    assert _check_attr("text", f"frontend/vendor/{name}") == "unset", (
+        f"frontend/vendor/{name} is subject to line-ending conversion")
+
+
+def test_the_pinned_hashes_match_the_files_on_disk():
+    import hashlib
+    import json
+    vendor = os.path.join(ROOT, "frontend", "vendor")
+    with open(os.path.join(vendor, "manifest.json"), encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    for entry in manifest["files"]:
+        with open(os.path.join(vendor, entry["path"]), "rb") as fh:
+            blob = fh.read()
+        assert hashlib.sha256(blob).hexdigest() == entry["sha256"], entry["path"]
+
+
+def test_screenshot_baselines_are_binary():
+    """A PNG run through line-ending conversion is a corrupt PNG."""
+    baseline = ("frontend/tests/e2e/mailbox.spec.mjs-snapshots/"
+                "mailbox-900-light-win32.png")
+    assert _check_attr("binary", baseline) == "set"
