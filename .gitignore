@@ -46,3 +46,4 @@ Thumbs.db
 
 # Local run configurations for the preview harness (machine-specific paths)
 .claude/
+.venv311/

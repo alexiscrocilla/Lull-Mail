@@ -120,7 +120,13 @@ class AccountWatcher(threading.Thread):
         self._check = check_seconds
         self._reconnect_min = reconnect_min
         self._reconnect_max = reconnect_max
-        self._stop = threading.Event()
+        # NOT `_stop`: threading.Thread already has a private _stop() method
+        # and join() calls it the moment it observes the thread has finished.
+        # Shadowing it with an Event made every such join raise
+        # "TypeError: 'Event' object is not callable" -- non-deterministically,
+        # because join() only reaches that branch when the thread really is
+        # done inside the timeout. It passed locally and failed on CI.
+        self._stopping = threading.Event()
         self._kick = threading.Event()
         # Set when this watcher has been REPLACED rather than shut down. It
         # can be parked up to `check_seconds` inside a socket call, so its
@@ -139,7 +145,7 @@ class AccountWatcher(threading.Thread):
 
     # ── control ──────────────────────────────────────────────────────────
     def stop(self) -> None:
-        self._stop.set()
+        self._stopping.set()
 
     def retire(self) -> None:
         """Stop, and say nothing more about this mailbox on the way out.
@@ -148,7 +154,7 @@ class AccountWatcher(threading.Thread):
         final "push is off" is the truth and nothing races it.
         """
         self._retired.set()
-        self._stop.set()
+        self._stopping.set()
 
     def kick(self) -> None:
         """Force a reconnect at the next opportunity (after wake-from-sleep
@@ -158,7 +164,7 @@ class AccountWatcher(threading.Thread):
     # ── main loop ────────────────────────────────────────────────────────
     def run(self) -> None:  # noqa: C901 — one loop, deliberately explicit
         delay = self._reconnect_min
-        while not self._stop.is_set():
+        while not self._stopping.is_set():
             client = None
             try:
                 client = self._factory(self.account)
@@ -172,7 +178,7 @@ class AccountWatcher(threading.Thread):
                 delay = self._reconnect_min
                 logger.info("[%s] IMAP IDLE actif", self.email)
 
-                while not self._stop.is_set():
+                while not self._stopping.is_set():
                     if self._kick.is_set():
                         self._kick.clear()
                         raise _Reconnect("réveil")
@@ -184,14 +190,14 @@ class AccountWatcher(threading.Thread):
                 logger.info("[%s] Reconnexion IDLE (%s)", self.email, why)
                 self._publish(False)
                 delay = self._reconnect_min
-                self._stop.wait(1.0)
+                self._stopping.wait(1.0)
             except Exception as e:  # noqa: BLE001 — never let the thread die
-                if self._stop.is_set():
+                if self._stopping.is_set():
                     break
                 logger.warning("[%s] IDLE interrompu (%s) — nouvel essai dans %ds",
                                self.email, e, int(delay))
                 self._publish(False, error=f"{type(e).__name__}: {e}")
-                self._stop.wait(delay)
+                self._stopping.wait(delay)
                 delay = min(self._reconnect_max, delay * 2)
             finally:
                 if client is not None:
@@ -212,7 +218,7 @@ class AccountWatcher(threading.Thread):
         fired = False
         deadline = time.monotonic() + self._renew
         try:
-            while not self._stop.is_set() and not self._kick.is_set():
+            while not self._stopping.is_set() and not self._kick.is_set():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break

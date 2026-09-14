@@ -10,6 +10,8 @@ while the one beside it does.
 
 from __future__ import annotations
 
+import time
+
 import yaml
 
 
@@ -151,3 +153,55 @@ def test_a_replaced_watcher_does_not_report_its_mailbox_offline(fresh_app):
         assert seen[-1] == ("b@x.fr", False)
     finally:
         idle_watcher._progress.push_state = original
+
+
+def test_joining_a_finished_watcher_does_not_raise(fresh_app):
+    """AccountWatcher subclasses threading.Thread, which has its own private
+    _stop() method — and join() calls it the moment it observes the thread
+    has finished. An attribute of the same name shadowed it, so every such
+    join raised TypeError: 'Event' object is not callable.
+
+    It only bites when the thread is REALLY done inside the join timeout, so
+    it passed on one machine and failed on another. This test removes the
+    timing: the watcher is given a server that refuses IDLE, which makes
+    run() return immediately, and the join happens after it has finished.
+    """
+    from src import idle_watcher
+
+    class _NoIdle:
+        def capabilities(self):
+            return [b"IMAP4REV1"]        # no IDLE -> run() returns at once
+
+        def logout(self):
+            pass
+
+    w = idle_watcher.AccountWatcher({"email": "u@x.fr"}, lambda _e: None,
+                                    lambda _a: _NoIdle())
+    w.start()
+    w.join(timeout=5)
+    assert not w.is_alive(), "the watcher should have exited on its own"
+
+    # The second join is the one that reliably reaches Thread._stop().
+    w.join(timeout=5)
+
+
+def test_the_manager_can_stop_watchers_that_already_exited(fresh_app):
+    """IdleManager.stop() joins every watcher, so the same crash reached
+    shutdown and every account edit that reconciles the watcher set."""
+    from src import idle_watcher
+
+    class _NoIdle:
+        def capabilities(self):
+            return [b"IMAP4REV1"]
+
+        def logout(self):
+            pass
+
+    mgr = idle_watcher.IdleManager(client_factory=lambda _a: _NoIdle())
+    mgr.start([{"email": "a@x.fr", "enabled": True}], on_new_mail=lambda _e: None)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and any(w.is_alive() for w in mgr._watchers.values()):
+        time.sleep(0.01)
+    assert not any(w.is_alive() for w in mgr._watchers.values())
+    mgr.stop()                           # used to raise TypeError
+    assert mgr.watched() == []
