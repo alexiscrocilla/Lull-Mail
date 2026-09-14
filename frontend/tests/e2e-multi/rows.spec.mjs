@@ -13,9 +13,18 @@ test.beforeEach(async ({ page }) => {
 // 18 on the primary + 6 each on the two others.
 const TOTAL = 30;
 
+// The first paint after the server boots is the slow one: two requests, a
+// cold Python process and a cold SQLite page cache, and only then 30 rows.
+// Five seconds is comfortable on a developer machine and not always enough
+// on a CI runner — where the failure artefact showed all 30 rows present,
+// just later. This gate means "the app has finished loading", not "it loaded
+// within the default timeout"; every other assertion keeps the 5 s default
+// so a genuinely broken one still fails fast.
+const BOOT_MS = 30_000;
+
 async function settled(page) {
-  await expect(page.locator('#email-list .mb-card')).toHaveCount(TOTAL);
-  await expect(page.locator('#queue-ind')).toBeVisible();
+  await expect(page.locator('#email-list .mb-card')).toHaveCount(TOTAL, { timeout: BOOT_MS });
+  await expect(page.locator('#queue-ind')).toBeVisible({ timeout: BOOT_MS });
 }
 
 test('every row says which mailbox it landed in', async ({ page }) => {

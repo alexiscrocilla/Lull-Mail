@@ -10,12 +10,22 @@ test.beforeEach(async ({ page }) => {
 });
 
 const TOTAL = 30;
+// See rows.spec.mjs: the first paint after the server boots is the slow one,
+// and the gate below means "the app has finished loading", not "it loaded
+// inside the default timeout".
+const BOOT_MS = 30_000;
+
+function bootedInbox(page) {
+  return Promise.all([
+    expect(page.locator('#email-list .mb-card')).toHaveCount(TOTAL, { timeout: BOOT_MS }),
+    expect(page.locator('#queue-ind')).toBeVisible({ timeout: BOOT_MS }),
+  ]);
+}
 
 test('mail for a filtered-out mailbox moves its badge without rebuilding the list', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto('/#/inbox');
-  await expect(page.locator('#email-list .mb-card')).toHaveCount(TOTAL);
-  await expect(page.locator('#queue-ind')).toBeVisible();
+  await bootedInbox(page);
 
   // Scope the list to one mailbox.
   await page.locator('[data-acc="demo@lullmail.test"]').click();
@@ -43,8 +53,7 @@ test('mail for a filtered-out mailbox moves its badge without rebuilding the lis
 test('mail for the mailbox in view lands in the list', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto('/#/inbox');
-  await expect(page.locator('#email-list .mb-card')).toHaveCount(TOTAL);
-  await expect(page.locator('#queue-ind')).toBeVisible();
+  await bootedInbox(page);
 
   await page.locator('[data-acc="pro@lullmail.test"]').click();
   await expect(page.locator('#email-list .mb-card')).toHaveCount(6);
@@ -59,8 +68,7 @@ test('mail for the mailbox in view lands in the list', async ({ page }) => {
 test('a refresh refused mid-selection is drained when the selection clears', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto('/#/inbox');
-  await expect(page.locator('#email-list .mb-card')).toHaveCount(TOTAL);
-  await expect(page.locator('#queue-ind')).toBeVisible();
+  await bootedInbox(page);
 
   // A live multi-selection blocks a background rebuild: it would evict the
   // checked rows from the visible window.
