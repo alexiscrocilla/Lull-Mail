@@ -65,12 +65,19 @@ has not updated since.
 
 ## Per-release checklist
 
-### 1. Bump version
+### 1. Pick the version
 
-- [ ] `scripts/installer.iss`: update `MyAppVersion`.
-- [ ] Confirm the version matches what you'll tag (`vX.Y.Z`). The
-      release workflow extracts the version from the tag and fails the
-      build if the installer's `MyAppVersion` doesn't match.
+There is nothing to edit. The version comes from the tag: the workflow
+derives it from `GITHUB_REF_NAME`, `scripts/build.*` writes
+`src/_version.py` from it (a generated, gitignored file), and ISCC gets it
+as `/DMyAppVersion`.
+
+- [ ] Decide `vX.Y.Z` and check it sorts after the last tag.
+- [ ] Do **not** add a bare `#define MyAppVersion` to
+      `scripts/installer.iss`. Inno Setup takes the last `#define`, so it
+      silently overrides the workflow's `/D` — that is how a `v0.7.1` tag
+      once shipped `LullMail-Setup-0.7.0.exe`. The `#ifndef` fallback in
+      that file exists only for ad-hoc local builds.
 
 ### 2. Update release notes
 
