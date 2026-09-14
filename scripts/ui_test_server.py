@@ -45,8 +45,23 @@ def _accounts() -> list[tuple[str, str]]:
 
 
 def _prepare_environment() -> tuple[str, int]:
+    """A throwaway data directory, always.
+
+    This server exists to be wiped: every spec opens with /__test__/reset,
+    which deletes every row in emails, drafts and pending_ops. It used to
+    honour an inherited LULLMAIL_DATA, so running the suite from a shell
+    that had the documented dev override exported -- the one way anybody
+    reproduces a bug against their own mailbox -- pointed it at the real
+    mail.db and destroyed it, along with any queued IMAP operations that had
+    not yet reached the server.
+
+    LULLMAIL_UI_TEST_DATA is the deliberate opt-in for pinning the directory
+    (a CI cache, say). It is a different name on purpose: nobody exports it
+    by accident.
+    """
     os.environ["LULLMAIL_TEST_MODE"] = "1"
-    data_dir = os.environ.get("LULLMAIL_DATA") or tempfile.mkdtemp(prefix="lullmail-ui-")
+    data_dir = (os.environ.get("LULLMAIL_UI_TEST_DATA")
+                or tempfile.mkdtemp(prefix="lullmail-ui-"))
     os.environ["LULLMAIL_DATA"] = data_dir
     port = int(os.environ.get("LULLMAIL_PORT", "8765"))
     return data_dir, port
@@ -272,7 +287,7 @@ def main() -> None:
 
     @app.post("/__test__/cleanup")
     def _seed_cleanup(kind: str = "spam", n: int = 260, senders: int = 5,
-                      account: str = PRIMARY):
+                      account: str = PRIMARY, pipe: int = 0):
         """Seed a pile big enough for a card to reach its confirm gate.
 
         The default mailbox is 18 well-behaved messages, which is by design:
@@ -287,7 +302,12 @@ def main() -> None:
             db.insert_email({
                 "message_id": mid, "account": account, "uid": str(5000 + i),
                 "subject": f"Offre {i}",
-                "sender": f"Expediteur {i % senders} <s{i % senders}@bulk.example>",
+                # `pipe` puts the separator the preview once used as a key
+                # inside an address. A header can carry one, and sender_addr
+                # is derived from the raw header by string surgery.
+                "sender": (f"Expediteur {i % senders} <s{i % senders}@bulk.example>"
+                           if not (pipe and i % senders == 0)
+                           else "Expediteur 0 <new|s0@bulk.example>"),
                 "recipient": account,
                 "date_str": (now - _td(days=40, minutes=i)).strftime(
                     "%a, %d %b %Y %H:%M:%S +0000"),

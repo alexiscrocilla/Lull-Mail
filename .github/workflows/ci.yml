@@ -23,17 +23,22 @@ jobs:
           python-version: '3.11'
           cache: pip
 
+      # pnpm before Node, not after: `cache: pnpm` makes setup-node shell out
+      # to `pnpm store path --silent` to find the store, so with pnpm not yet
+      # installed the step fails with "Unable to locate executable file: pnpm"
+      # and takes the whole job — and, through `needs: quality`, every
+      # release build — with it.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.15.0
 
       - name: Install Python dependencies
         shell: cmd
@@ -89,17 +94,22 @@ jobs:
           python-version: '3.11'
           cache: pip
 
+      # pnpm before Node, not after: `cache: pnpm` makes setup-node shell out
+      # to `pnpm store path --silent` to find the store, so with pnpm not yet
+      # installed the step fails with "Unable to locate executable file: pnpm"
+      # and takes the whole job — and, through `needs: quality`, every
+      # release build — with it.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.15.0
 
       - name: Install dependencies
         shell: cmd
