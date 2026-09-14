@@ -427,12 +427,35 @@ def is_running() -> bool:
     return is_fetching() or is_analysing()
 
 
+# Bumped every time a pass lock is handed out. A holder that was broken out
+# of keeps its old token, which is how it knows -- in its own `finally`, long
+# after the fact -- that the lock it is about to release is no longer its own.
+_pass_gen = 0
+_pass_gen_lock = threading.Lock()
+
+
+def _new_pass_token() -> int:
+    global _pass_gen
+    with _pass_gen_lock:
+        _pass_gen += 1
+        return _pass_gen
+
+
 def _acquire_or_break(lock: threading.Lock, started_at: Optional[float],
-                      label: str, watchdog_seconds: float) -> bool:
-    """Non-blocking acquire with a watchdog: a holder older than
-    *watchdog_seconds* is presumed hung and its lock is broken."""
+                      label: str, watchdog_seconds: float) -> Optional[int]:
+    """Non-blocking acquire with a watchdog. Returns an ownership token, or
+    None when the lock is held by someone still within their budget.
+
+    A holder older than *watchdog_seconds* is presumed hung and its lock is
+    broken. The token is what makes that safe. `threading.Lock` can be
+    released from a thread that does not hold it, so without one the hung
+    pass's `finally` released the lock out from under the pass that had just
+    taken over: a third caller could then start a genuinely concurrent pass,
+    and the rightful holder's own `release()` raised RuntimeError from a
+    `finally` and took the scheduler job down with it.
+    """
     if lock.acquire(blocking=False):
-        return True
+        return _new_pass_token()
     if started_at is not None and time.monotonic() - started_at > watchdog_seconds:
         logger.error(
             "%s bloqué depuis %d s — verrou forcé, reprise.",
@@ -442,8 +465,25 @@ def _acquire_or_break(lock: threading.Lock, started_at: Optional[float],
             lock.release()
         except RuntimeError:
             pass
-        return lock.acquire(blocking=False)
-    return False
+        return _new_pass_token() if lock.acquire(blocking=False) else None
+    return None
+
+
+def _release_if_owner(lock: threading.Lock, token: Optional[int]) -> bool:
+    """Release *lock* only if *token* is still the live one.
+
+    Returns whether it was released, so the caller knows whether the rest of
+    its bookkeeping -- the watchdog timestamp, the "pass finished" broadcast
+    -- is still its to do.
+    """
+    with _pass_gen_lock:
+        if token is None or token != _pass_gen:
+            return False
+    try:
+        lock.release()
+    except RuntimeError:
+        return False
+    return True
 
 
 def get_status() -> Dict[str, Any]:
@@ -665,7 +705,8 @@ def fetch_pass(
     """
     global _fetch_started_at, _last_sync, _last_sync_iso, _last_fetch_mono
 
-    if not _acquire_or_break(_fetch_lock, _fetch_started_at, "Relève", FETCH_WATCHDOG_SECONDS):
+    _token = _acquire_or_break(_fetch_lock, _fetch_started_at, "Relève", FETCH_WATCHDOG_SECONDS)
+    if _token is None:
         logger.info("Relève déjà en cours, ignorée (%s).", trigger)
         return None
 
@@ -716,9 +757,13 @@ def fetch_pass(
     except Exception as e:
         logger.error(f"Erreur relève : {e}", exc_info=True)
     finally:
-        _fetch_started_at = None
-        progress.fetch_finished()
-        _fetch_lock.release()
+        # Only if this pass still owns the lock. A pass the watchdog broke
+        # out of must not clear the new holder's timestamp, must not
+        # announce that pass finished, and must not release a lock that is
+        # now someone else's.
+        if _release_if_owner(_fetch_lock, _token):
+            _fetch_started_at = None
+            progress.fetch_finished()
 
     if chain_analysis:
         try:
@@ -1079,7 +1124,8 @@ def analysis_pass(*, time_budget_seconds: float = ANALYSIS_TIME_BUDGET_SECONDS) 
     another analysis pass already holds the lock."""
     global _analysis_started_at
 
-    if not _acquire_or_break(_analysis_lock, _analysis_started_at, "Analyse", ANALYSIS_WATCHDOG_SECONDS):
+    _token = _acquire_or_break(_analysis_lock, _analysis_started_at, "Analyse", ANALYSIS_WATCHDOG_SECONDS)
+    if _token is None:
         logger.debug("Analyse déjà en cours, ignorée.")
         return False
 
@@ -1161,9 +1207,9 @@ def analysis_pass(*, time_budget_seconds: float = ANALYSIS_TIME_BUDGET_SECONDS) 
     except Exception as e:
         logger.error(f"Erreur analyse : {e}", exc_info=True)
     finally:
-        _analysis_started_at = None
-        progress.analysis_finished()
-        _analysis_lock.release()
+        if _release_if_owner(_analysis_lock, _token):
+            _analysis_started_at = None
+            progress.analysis_finished()
     return True
 
 

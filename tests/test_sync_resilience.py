@@ -306,3 +306,50 @@ def test_queued_work_for_an_account_the_drain_cannot_serve_is_left_alone(fresh_a
             "SELECT COUNT(*) FROM pending_ops WHERE status = 'pending'").fetchone()[0]
     assert stuck == 0, f"{stuck} operations were claimed and thrown away"
     assert waiting == 12, f"the paused account's 12 deletions should still be queued, found {waiting}"
+
+
+def test_a_pass_the_watchdog_broke_out_of_does_not_release_its_successors_lock(fresh_app):
+    """threading.Lock can be released from a thread that does not hold it.
+
+    So when the watchdog broke a hung pass's lock and handed it to a new
+    pass, the hung one's own `finally` released the lock out from under the
+    new holder: a third caller could then start a genuinely concurrent pass,
+    and the rightful holder's `release()` raised RuntimeError from a
+    `finally`, taking the scheduler job down with it.
+    """
+    import threading
+    from src import scheduler
+
+    lock = threading.Lock()
+
+    # A holds the lock and is long past its budget.
+    a_token = scheduler._acquire_or_break(lock, None, "T", 1.0)
+    assert a_token is not None and lock.locked()
+
+    # The watchdog breaks it and hands it to B.
+    hung_since = scheduler.time.monotonic() - 999
+    b_token = scheduler._acquire_or_break(lock, hung_since, "T", 1.0)
+    assert b_token is not None and b_token != a_token
+    assert lock.locked()
+
+    # A finally unwinds. It must not release B's lock, and must not raise.
+    assert scheduler._release_if_owner(lock, a_token) is False
+    assert lock.locked(), "the hung pass released the lock its successor holds"
+
+    # Nobody else can start a pass while B runs.
+    assert scheduler._acquire_or_break(lock, scheduler.time.monotonic(), "T", 1.0) is None
+
+    # B finishes normally.
+    assert scheduler._release_if_owner(lock, b_token) is True
+    assert not lock.locked()
+
+
+def test_the_rightful_holder_never_raises_from_its_finally(fresh_app):
+    import threading
+    from src import scheduler
+
+    lock = threading.Lock()
+    token = scheduler._acquire_or_break(lock, None, "T", 1.0)
+    scheduler._release_if_owner(lock, token)
+    # A double release used to be RuntimeError out of a `finally`.
+    assert scheduler._release_if_owner(lock, token) is False
