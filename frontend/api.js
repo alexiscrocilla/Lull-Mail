@@ -359,13 +359,28 @@ export const api = {
     return j(`/api/emails/${intId}/attachments`);
   },
 
-  // The download URL is exposed (instead of fetched as JSON) so the browser
-  // can stream the file directly via an <a download> click. `confirm=1` is
-  // required server-side for `dangerous` files; the UI adds it after the
-  // user accepts the warning modal.
-  attachmentDownloadUrl(attId, { confirm = false } = {}) {
+  // Inline bytes for the preview modal's <img> / <iframe>. Served only for
+  // `safe` rows whose media type a browser draws by itself, which is what the
+  // summary's `previewable` flag reports — don't build this URL for a row
+  // without it, the route answers 415.
+  attachmentPreviewUrl(attId) {
+    return `/api/attachments/${attId}/preview`;
+  },
+
+  // Write the file into the user's Downloads folder and report where it
+  // landed: {ok, filename, directory, path}. The server and the user are the
+  // same machine here, which is what makes a save the same operation on
+  // Windows, macOS and Linux — unlike handing the URL to the embedded
+  // browser, which behaves differently on each and not at all on macOS.
+  saveAttachment(attId, { confirm = false } = {}) {
     const qs = confirm ? '?confirm=1' : '';
-    return `/api/attachments/${attId}/download${qs}`;
+    return j(`/api/attachments/${attId}/save${qs}`, { method: 'POST' });
+  },
+
+  // Reveal the file this attachment was last saved to in the OS file manager.
+  // Takes an id, never a path: the server only opens what it wrote itself.
+  revealAttachment(attId) {
+    return j(`/api/attachments/${attId}/reveal`, { method: 'POST' });
   },
 
   attachmentBackfillStats(account) {

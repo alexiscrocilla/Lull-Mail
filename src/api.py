@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -1290,6 +1292,16 @@ def _attachment_summary(row: dict) -> dict:
         "threat_level": row.get("threat_level") or att_sec.THREAT_SAFE,
         "threat_reasons": _decode_threat_reasons(row.get("threat_reasons")),
         "available": bool(row.get("storage_path")),  # False = blocked, metadata only
+        # Whether the read pane shows the eye button next to Télécharger. The
+        # MIME whitelist lives in attachment_security so the UI cannot offer a
+        # preview the /preview route would refuse to serve.
+        "previewable": bool(row.get("storage_path")) and bool(
+            att_sec.previewable_content_type(
+                row.get("threat_level") or att_sec.THREAT_SAFE,
+                row.get("content_type_sniffed"),
+                row.get("content_type_declared"),
+            )
+        ),
         "sha256": row.get("sha256"),
     }
 
@@ -1303,50 +1315,31 @@ def list_attachments(int_id: int, locale: str = Depends(get_locale)):
     return [_attachment_summary(r) for r in rows]
 
 
-@app.get("/api/attachments/{att_id}/download")
-@limiter.limit("60/minute")
-def download_attachment(
-    request: Request,
-    att_id: int,
-    confirm: int = Query(0, description="Set to 1 to override the dangerous-file gate"),
-    locale: str = Depends(get_locale),
-):
-    """Serve one attachment with hardened response headers.
+# ── Shared byte-serving guards ────────────────────────────────────────────────
+#
+# Three routes hand an attachment's bytes somewhere: /download (save via the
+# browser), /preview (render it inside the modal) and /save (write it to the
+# user's Downloads folder). They differ only in where the bytes go, so every
+# check lives here once — a check added to one route can never be the check
+# the other two are missing.
 
-    Security checks applied (in order):
-      1. Row exists and was successfully written to disk.
-      2. Resolved absolute path stays inside `data/attachments` — protects
-         against any malicious storage_path that may have slipped in.
-      3. Recompute SHA-256 and compare with the stored fingerprint. If the
-         file on disk has been tampered with we refuse to serve it.
-      4. `dangerous` files require explicit `?confirm=1` (the UI surfaces
-         a modal first); `blocked` files are never served.
-      5. Content-Type is forced to `application/octet-stream` for anything
-         not classified as `safe`, and to `application/octet-stream` for
-         text/html even when safe — never let the browser render attacker
-         markup in-frame.
-      6. `Content-Disposition: attachment` (RFC 5987) makes browsers save
-         instead of preview.
-      7. Defensive headers neutralise sniffing and isolate any in-tab
-         rendering: `X-Content-Type-Options: nosniff`, a `default-src
-         'none'; sandbox` CSP, and `Cross-Origin-Resource-Policy: same-
-         origin`.
-    """
+
+def _attachment_row(att_id: int, locale: str) -> dict:
+    """The row, or 404/410. `blocked` files were never written to disk by
+    policy: the metadata is public via /attachments, the bytes do not exist."""
     row = db.get_attachment(att_id)
     if not row:
         raise HTTPException(404, tr("attachment.not_found", locale))
-
     threat_level = row.get("threat_level") or att_sec.THREAT_SAFE
-
-    # `blocked` files were never written to disk by policy. We expose the
-    # metadata via /list_attachments but refuse to serve bytes — there are
-    # none to serve.
     if threat_level == att_sec.THREAT_BLOCKED or not row.get("storage_path"):
         raise HTTPException(410, tr("attachment.blocked_policy", locale))
+    return row
 
-    # The dangerous-file gate. Without `?confirm=1` the UI shows a warning
-    # modal first; with it, the request is allowed but still served as
-    # octet-stream.
+
+def _dangerous_gate(row: dict, confirm: int, locale: str) -> None:
+    """`dangerous` files need an explicit `?confirm=1`. The UI shows a warning
+    first; the server asks again so a hand-typed URL isn't enough."""
+    threat_level = row.get("threat_level") or att_sec.THREAT_SAFE
     policy = att_sec.policy_from_config(cfg.get())
     if (
         threat_level == att_sec.THREAT_DANGEROUS
@@ -1363,9 +1356,17 @@ def download_attachment(
             },
         )
 
-    # Resolve + traversal guard. realpath() collapses `..` and follows any
-    # symlink, then we compare against the (also realpath'd) attachments
-    # root. If the file is outside, log + 404 — never leak the real path.
+
+def _verified_path(att_id: int, row: dict, locale: str) -> Path:
+    """Resolve `storage_path` and prove the file is the one we ingested.
+
+      1. realpath() collapses `..` and follows symlinks, then the result must
+         still be inside `data/attachments` — a malicious storage_path that
+         slipped into the DB cannot escape, and the root is resolved once at
+         import so a symlink swapped mid-request cannot win the race.
+      2. SHA-256 is recomputed and compared with the fingerprint taken at
+         ingest. Different bytes on disk = refuse to serve.
+    """
     rel = row["storage_path"]
     candidate = (_ATTACHMENTS_ROOT_ABS / rel).resolve()
     if not att_sec.is_path_within(str(candidate), str(_ATTACHMENTS_ROOT_ABS)):
@@ -1375,9 +1376,6 @@ def download_attachment(
         raise HTTPException(404, tr("attachment.not_found", locale))
     if not candidate.is_file():
         raise HTTPException(404, tr("attachment.file_missing", locale))
-
-    # Tamper detection. The stored SHA-256 was computed at ingest; if disk
-    # contents have changed, refuse to serve and flag the row.
     try:
         h = hashlib.sha256()
         with open(candidate, "rb") as f:
@@ -1393,6 +1391,37 @@ def download_attachment(
             f"(stored={row.get('sha256')!r}, disk={actual!r}); refusing serve"
         )
         raise HTTPException(409, tr("attachment.fingerprint_mismatch", locale))
+    return candidate
+
+
+@app.get("/api/attachments/{att_id}/download")
+@limiter.limit("60/minute")
+def download_attachment(
+    request: Request,
+    att_id: int,
+    confirm: int = Query(0, description="Set to 1 to override the dangerous-file gate"),
+    locale: str = Depends(get_locale),
+):
+    """Serve one attachment as a download, with hardened response headers.
+
+    Nothing in the UI calls this any more — Télécharger goes through POST
+    /save, because pointing the window at this URL is what trapped macOS users
+    inside a WKWebView PDF viewer with no way back. It stays as the one way to
+    get an attachment's raw bytes over HTTP: scripts, and anyone debugging
+    against the local API.
+
+      • Content-Type is forced to `application/octet-stream` for anything not
+        classified `safe`, and for text/html even when safe — never let the
+        engine render attacker markup in-frame.
+      • `Content-Disposition: attachment` (RFC 5987) asks browsers to save.
+      • `X-Content-Type-Options: nosniff`, `default-src 'none'; sandbox;` and
+        `Cross-Origin-Resource-Policy: same-origin` neutralise sniffing and
+        isolate any in-tab rendering that happens anyway.
+    """
+    row = _attachment_row(att_id, locale)
+    _dangerous_gate(row, confirm, locale)
+    candidate = _verified_path(att_id, row, locale)
+    threat_level = row.get("threat_level") or att_sec.THREAT_SAFE
 
     headers = att_sec.hardened_response_headers(threat_level)
     headers["Content-Disposition"] = att_sec.safe_disposition_header(row["filename"])
@@ -1412,6 +1441,195 @@ def download_attachment(
         filename=None,        # we set Content-Disposition ourselves above
         headers=headers,
     )
+
+
+@app.get("/api/attachments/{att_id}/preview")
+@limiter.limit("120/minute")
+def preview_attachment(
+    request: Request,
+    att_id: int,
+    locale: str = Depends(get_locale),
+):
+    """Serve one attachment inline, for the read pane's preview modal.
+
+    Narrower than /download in every direction: `safe` files only, and only
+    the handful of media types a browser engine draws by itself (see
+    `att_sec.PREVIEWABLE_MEDIA_TYPES`). Anything else is a 415 — the eye
+    button is only rendered for rows whose summary says `previewable`, so a
+    415 here means a hand-typed URL or a stale pane.
+
+    The dangerous-file gate is not consulted because it cannot apply: the
+    whitelist is safe-only, which is strictly stronger than "confirm first".
+    """
+    row = _attachment_row(att_id, locale)
+    threat_level = row.get("threat_level") or att_sec.THREAT_SAFE
+    media_type = att_sec.previewable_content_type(
+        threat_level,
+        row.get("content_type_sniffed"),
+        row.get("content_type_declared"),
+    )
+    if not media_type:
+        raise HTTPException(415, tr("attachment.not_previewable", locale))
+    candidate = _verified_path(att_id, row, locale)
+
+    headers = att_sec.preview_response_headers(threat_level)
+    headers["Content-Disposition"] = att_sec.inline_disposition_header(row["filename"])
+    headers["Content-Length"] = str(row["size"])
+    logger.info(
+        f"attachment {att_id} previewed ({media_type}, {row['size']} bytes) "
+        f"→ {row['filename']}"
+    )
+    return FileResponse(
+        path=str(candidate),
+        media_type=media_type,
+        filename=None,
+        headers=headers,
+    )
+
+
+# Last path written per attachment id, so "Afficher dans le dossier" can reveal
+# the file the user just saved without the client handing us a path to open —
+# an endpoint that opens an arbitrary client-supplied path is a hole we don't
+# need. Bounded because the app runs for weeks; the cap is generous compared to
+# how many attachments anyone saves in one session.
+_LAST_SAVED: Dict[int, str] = {}
+_LAST_SAVED_MAX = 64
+_LAST_SAVED_LOCK = Lock()
+
+
+def _unique_destination(folder: Path, filename: str) -> Path:
+    """Claim `folder/filename`, or `name (1).ext`, `name (2).ext`… — the
+    convention every browser uses, so a second save never silently replaces the
+    first. The file is created here with O_EXCL rather than tested with
+    exists(): two saves fired at once would otherwise both pick the same free
+    name and one would overwrite the other.
+    """
+    stem, dot, ext = filename.rpartition(".")
+    if not dot:
+        stem, ext = filename, ""
+    for i in range(0, 1000):
+        name = filename if i == 0 else (f"{stem} ({i}).{ext}" if ext else f"{stem} ({i})")
+        cand = folder / name
+        try:
+            with open(cand, "xb"):
+                pass
+            return cand
+        except FileExistsError:
+            continue
+    # A thousand copies of one name: stop guessing and take a unique suffix.
+    suffix = uuid.uuid4().hex[:8]
+    cand = folder / (f"{stem} ({suffix}).{ext}" if ext else f"{stem} ({suffix})")
+    cand.touch()
+    return cand
+
+
+@app.post("/api/attachments/{att_id}/save")
+@limiter.limit("60/minute")
+def save_attachment_to_disk(
+    request: Request,
+    att_id: int,
+    confirm: int = Query(0, description="Set to 1 to override the dangerous-file gate"),
+    locale: str = Depends(get_locale),
+):
+    """Write one attachment into the user's Downloads folder.
+
+    This is what Télécharger calls. The alternative — pointing the window at
+    /download and letting the embedded browser deal with it — behaves
+    differently on all three platforms, and on macOS doesn't download at all:
+    WKWebView answers `canShowMIMEType()` with True for a PDF or an image and
+    renders it in the main frame, replacing the app with a viewer the user
+    cannot leave (pywebview disables reload and blocks the Delete-key back
+    navigation). Writing the file here is the same operation everywhere,
+    because the server and the user are the same machine by construction.
+
+    Same gates as /download: blocked files have no bytes, dangerous ones need
+    `?confirm=1`, the path is verified and the fingerprint rechecked.
+    """
+    row = _attachment_row(att_id, locale)
+    _dangerous_gate(row, confirm, locale)
+    candidate = _verified_path(att_id, row, locale)
+
+    folder = _paths.downloads_dir()
+    # The stored filename was sanitised at ingest, but it is the one value in
+    # the row that came from the sender and it is about to become a path
+    # outside our data tree. Sanitise again, and prove the result stayed inside
+    # the folder we chose.
+    filename = att_sec.sanitize_filename(row["filename"])
+    try:
+        dest = _unique_destination(folder, filename)
+    except OSError as e:
+        logger.error(f"attachment {att_id}: cannot create a file in {folder}: {e}")
+        raise HTTPException(500, tr("attachment.save_failed", locale, msg=str(e)))
+    if not att_sec.is_path_within(str(dest.resolve()), str(folder.resolve())):
+        logger.error(f"attachment {att_id}: save target escaped {folder}: {dest}")
+        raise HTTPException(500, tr("attachment.save_failed", locale, msg=filename))
+
+    try:
+        shutil.copyfile(str(candidate), str(dest))
+    except OSError as e:
+        logger.error(f"attachment {att_id}: save to {dest} failed: {e}")
+        # Don't leave behind the empty placeholder _unique_destination created.
+        try:
+            dest.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(500, tr("attachment.save_failed", locale, msg=str(e)))
+
+    with _LAST_SAVED_LOCK:
+        if len(_LAST_SAVED) >= _LAST_SAVED_MAX:
+            _LAST_SAVED.clear()
+        _LAST_SAVED[att_id] = str(dest)
+    logger.info(f"attachment {att_id} saved → {dest}")
+    return {
+        "ok": True,
+        "filename": dest.name,
+        "directory": str(dest.parent),
+        "path": str(dest),
+    }
+
+
+@app.post("/api/attachments/{att_id}/reveal")
+@limiter.limit("30/minute")
+def reveal_saved_attachment(
+    request: Request,
+    att_id: int,
+    locale: str = Depends(get_locale),
+):
+    """Open the folder holding the file this attachment was last saved to.
+
+    Only paths this process wrote are openable: the client sends an attachment
+    id, never a path. If the save happened in an earlier run, or the user has
+    since moved the file, there is nothing to reveal.
+    """
+    with _LAST_SAVED_LOCK:
+        saved = _LAST_SAVED.get(att_id)
+    if not saved or not Path(saved).is_file():
+        raise HTTPException(404, tr("attachment.nothing_saved", locale))
+
+    import subprocess
+
+    target = Path(saved)
+    try:
+        if sys.platform == "win32":
+            # One string, not a list, and the path quoted inside the token:
+            # `explorer /select,"C:\\…\\rapport (2).pdf"`. A list makes Popen
+            # quote the whole `/select,C:\\…` argument the moment the path
+            # contains a space, and Explorer answers that by opening Documents
+            # — the wrong folder, with no error. On Windows a string command
+            # goes straight to CreateProcess, so no shell parses it, and a
+            # Windows path cannot contain a quote in the first place.
+            subprocess.Popen(f'explorer /select,"{target}"', close_fds=True)
+        elif sys.platform == "darwin":
+            # -R reveals and selects the file instead of opening it — which for
+            # an email attachment is exactly what we must not do.
+            subprocess.Popen(["open", "-R", str(target)], close_fds=True)
+        else:
+            subprocess.Popen(["xdg-open", str(target.parent)], close_fds=True)
+    except Exception as e:  # noqa: BLE001 — a missing file manager is not fatal
+        logger.exception("reveal failed")
+        raise HTTPException(500, tr("attachment.reveal_failed", locale, msg=str(e)))
+
+    return {"ok": True, "path": str(target)}
 
 
 def _run_attachment_backfill(job_id: str, account: Optional[str]):

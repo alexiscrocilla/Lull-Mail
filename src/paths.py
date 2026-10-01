@@ -44,6 +44,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,101 @@ BRAND_LOGOS_DIR: Path = DATA_DIR / "brand-logos"
 # parce qu'un GGUF est de la donnée binaire pure, pas du runtime
 # (la DB, les logs, les pièces jointes restent dans DATA_DIR).
 MODELS_DIR: Path = APP_DATA_DIR / "models"
+
+
+# ── The user's own Downloads folder ──────────────────────────────────────────
+# Deliberately NOT part of the data tree above. Everything in APP_DATA_DIR is
+# the app's business; a saved attachment is the user's, and the one place every
+# OS agrees "files I asked for" belong is Downloads.
+
+# FOLDERID_Downloads. Windows lets the user move Downloads anywhere (another
+# drive, another name), and only the shell knows where it went —
+# %USERPROFILE%\Downloads would silently create a second folder next to the
+# real one.
+_WIN_FOLDERID_DOWNLOADS = "{374DE290-123F-4565-9164-39C4925E467B}"
+
+
+def _windows_downloads_dir() -> Optional[Path]:
+    """Ask the shell for the Downloads known folder. None if unavailable."""
+    try:
+        import ctypes
+
+        class _GUID(ctypes.Structure):
+            # Filled by CLSIDFromString — we never read the fields ourselves,
+            # so 16 opaque bytes beat transcribing the DWORD/WORD layout.
+            _fields_ = [("raw", ctypes.c_byte * 16)]
+
+        clsid = _GUID()
+        if ctypes.windll.ole32.CLSIDFromString(
+            ctypes.c_wchar_p(_WIN_FOLDERID_DOWNLOADS), ctypes.byref(clsid)
+        ) != 0:
+            return None
+        out = ctypes.c_wchar_p()
+        if ctypes.windll.shell32.SHGetKnownFolderPath(
+            ctypes.byref(clsid), 0, None, ctypes.byref(out)
+        ) != 0:
+            return None
+        try:
+            return Path(out.value) if out.value else None
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(out)
+    except Exception:  # noqa: BLE001 — any ctypes/shell failure falls back
+        logger.debug("Downloads known-folder lookup failed", exc_info=True)
+        return None
+
+
+def _xdg_downloads_dir() -> Optional[Path]:
+    """XDG_DOWNLOAD_DIR from user-dirs.dirs, so a localised Linux desktop
+    (Téléchargements, Descargas…) gets its real folder instead of a second
+    English one."""
+    raw = os.environ.get("XDG_DOWNLOAD_DIR")
+    if not raw:
+        conf = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "user-dirs.dirs"
+        try:
+            for line in conf.read_text(encoding="utf-8").splitlines():
+                if line.startswith("XDG_DOWNLOAD_DIR="):
+                    raw = line.split("=", 1)[1].strip().strip('"')
+                    break
+        except OSError:
+            return None
+    if not raw:
+        return None
+    return Path(os.path.expandvars(raw.replace("$HOME", str(Path.home()))))
+
+
+def downloads_dir() -> Path:
+    """Where a saved attachment is written. Created if missing.
+
+    Order: the ``LULLMAIL_DOWNLOAD_DIR`` override (tests, a USB stick), then
+    the OS's own Downloads folder, then ``~/Downloads``, then the home
+    directory — the last fallback so a save never fails outright on a system
+    where Downloads cannot be created.
+    """
+    forced = os.environ.get("LULLMAIL_DOWNLOAD_DIR")
+    candidates: list[Path] = []
+    if forced:
+        candidates.append(Path(forced).expanduser())
+    elif sys.platform == "win32":
+        win = _windows_downloads_dir()
+        if win:
+            candidates.append(win)
+    elif sys.platform != "darwin":
+        xdg = _xdg_downloads_dir()
+        if xdg:
+            candidates.append(xdg)
+    candidates.append(Path.home() / "Downloads")
+    candidates.append(Path.home())
+
+    for cand in candidates:
+        try:
+            cand.mkdir(parents=True, exist_ok=True)
+            return cand.resolve()
+        except OSError:
+            continue
+    # Every candidate refused creation (read-only home?). Hand back the
+    # conventional path anyway and let the caller's write raise with a real
+    # errno instead of swallowing the reason here.
+    return (Path.home() / "Downloads").resolve()
 
 
 def ensure_dirs() -> None:

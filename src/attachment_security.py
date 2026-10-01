@@ -524,6 +524,88 @@ def served_content_type(threat_level: str, sniffed: Optional[str], declared: Opt
     return "application/octet-stream"
 
 
+# ── In-app preview ────────────────────────────────────────────────────────────
+#
+# The read pane offers an eye button next to Télécharger. It renders the file
+# inside a modal the user can close — the one thing the old "navigate the
+# window at the download URL" never allowed: on macOS WKWebView answers
+# `canShowMIMEType()` with True for a PDF, renders it in the main frame, and
+# the app is gone with no way back (pywebview disables reload and the Delete
+# key's back navigation).
+#
+# Only types the engine can draw on its own, with no plugin and no script,
+# and only files the scanner called `safe`. Deliberately NOT here:
+#   • image/svg+xml, text/html — markup with script surface. `served_content_type`
+#     already answers octet-stream for both, so they cannot reach the list.
+#   • image/tiff — Safari renders it, Chromium/WebView2 does not. A button
+#     that previews on one OS and shows a blank frame on the other is worse
+#     than no button.
+#   • office documents, archives — nothing to render them with.
+PREVIEWABLE_MEDIA_TYPES = frozenset({
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "text/plain",
+})
+
+
+def previewable_content_type(
+    threat_level: str, sniffed: Optional[str], declared: Optional[str]
+) -> Optional[str]:
+    """The media type to serve an inline preview as, or None if this file
+    gets no eye button.
+
+    Routed through `served_content_type` on purpose: every neutralisation it
+    performs (dangerous/suspicious → octet-stream, HTML/SVG → octet-stream)
+    lands outside the whitelist, so the preview surface can never be wider
+    than the download surface.
+    """
+    if threat_level != THREAT_SAFE:
+        return None
+    served = served_content_type(threat_level, sniffed, declared)
+    # Parameters (`text/plain; charset=utf-8`) come from attacker-controlled
+    # headers; match on the type alone.
+    base = served.split(";", 1)[0].strip().lower()
+    return base if base in PREVIEWABLE_MEDIA_TYPES else None
+
+
+def inline_disposition_header(filename: str) -> str:
+    """`Content-Disposition: inline` for the preview route only.
+
+    Same RFC 5987 encoding as `safe_disposition_header`; the difference is
+    the word inline, which is what lets the modal's <img>/<iframe> draw the
+    bytes instead of the engine treating them as a download.
+    """
+    return "inline" + safe_disposition_header(filename)[len("attachment"):]
+
+
+def preview_response_headers(threat_level: str) -> Dict[str, str]:
+    """Headers for the inline preview route.
+
+    `hardened_response_headers` is not reusable here: its CSP is
+    `default-src 'none'; sandbox;`, and `default-src` implies
+    `object-src 'none'`, which is what a browser consults before handing a
+    PDF to its built-in viewer. The download route wants that — nothing
+    should ever render there. The preview route needs the viewer, so it
+    keeps everything except the two directives that would blank the frame,
+    and leans on the iframe's own `sandbox` attribute for isolation.
+    """
+    return {
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": (
+            "default-src 'none'; img-src 'self' blob: data:; object-src 'self'; "
+            "media-src 'none'; script-src 'none'; frame-ancestors 'self'"
+        ),
+        "Referrer-Policy": "no-referrer",
+        "Cross-Origin-Resource-Policy": "same-origin",
+        "Cache-Control": "private, no-store",
+        "X-Attachment-Threat-Level": threat_level,
+    }
+
+
 def policy_from_config(conf: Dict) -> AttachmentPolicy:
     """Build an `AttachmentPolicy` from the `attachments` config block,
     falling back to safe defaults when the key is missing."""

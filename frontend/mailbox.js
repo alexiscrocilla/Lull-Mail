@@ -8,6 +8,8 @@ import {
 } from '/static/api.js';
 import { rewriteRemoteImages, senderDomain } from '/static/image-blocker.js';
 import { confirmAsync, dismissOpenConfirms } from '/static/confirm.js';
+import { openAttachmentPreview, dismissAttachmentPreview }
+  from '/static/attachment-preview.js';
 import { LatestRequest } from '/static/request-latest.js';
 import { dropOperator, freeText, isExpressible, readOperator, setOperator, tokens }
   from '/static/search-query.js';
@@ -3757,8 +3759,16 @@ export async function mountMailbox(host, _opts) {
 
   // ── Attachments (security-aware) ──────────────────────────
   // Backend has classified each attachment (safe / suspicious / dangerous
-  // / blocked). We never pre-fetch the binary; users click, confirm if
-  // needed, and a normal browser download happens.
+  // / blocked) and says, per row, whether it can be previewed. We never
+  // pre-fetch the binary: Télécharger asks the server to write the file into
+  // the user's Downloads folder, and the eye button draws it inside a modal.
+  //
+  // Neither one navigates the window, which is the whole point. Pointing it
+  // at the download URL is what used to happen, and on macOS WKWebView
+  // answers `canShowMIMEType()` with True for a PDF: it rendered the file in
+  // the main frame and the app was gone, with reload and the back navigation
+  // both disabled by pywebview. Windows (WebView2) popped a save dialog
+  // instead — same button, two behaviours, one of them a dead end.
 
   function fmtBytes(n) {
     if (!n || n <= 0) return '0 o';
@@ -3816,9 +3826,19 @@ export async function mountMailbox(host, _opts) {
       const isDangerous = a.threat_level === 'dangerous';
       const reasons = (a.threat_reasons || []).map(escapeHtml).join(' · ');
       const titleAttr = reasons ? `title="${escapeHtml(reasons)}"` : '';
+      // The eye only appears where the server says a preview is possible —
+      // `safe` rows whose media type an engine draws by itself. A button that
+      // opened an empty frame for a .docx, or one that previewed a file the
+      // scanner flagged, would both be worse than no button at all.
+      const previewBtn = a.previewable
+        ? `<button class="att-preview" data-id="${a.id}" data-name="${escapeHtml(a.filename)}" data-type="${escapeHtml(a.content_type || '')}" title="${t('mb.att.preview')}" aria-label="${t('mb.att.preview_aria', { name: escapeHtml(a.filename) })}">
+             <i data-lucide="eye" class="w-4 h-4"></i>
+           </button>`
+        : '';
       const action = isUnavailable
         ? `<span class="att-unavail">${t('mb.att.unavailable')}</span>`
-        : `<button class="att-download" data-id="${a.id}" data-level="${escapeHtml(a.threat_level)}" data-name="${escapeHtml(a.filename)}" data-reasons="${escapeHtml(reasons)}" aria-label="${t('mb.att.download_aria', { name: escapeHtml(a.filename) })}">
+        : `${previewBtn}
+           <button class="att-download" data-id="${a.id}" data-level="${escapeHtml(a.threat_level)}" data-name="${escapeHtml(a.filename)}" data-reasons="${escapeHtml(reasons)}" aria-label="${t('mb.att.download_aria', { name: escapeHtml(a.filename) })}">
              <i data-lucide="${isDangerous ? 'shield-alert' : 'download'}" class="w-4 h-4"></i>
              <span>${t('mb.att.download')}</span>
            </button>`;
@@ -3852,25 +3872,73 @@ export async function mountMailbox(host, _opts) {
     `;
   }
 
+  // Save one attachment into the user's Downloads folder, with the button
+  // reporting progress and the toast saying where the file landed. Returns a
+  // promise so the preview modal's own Télécharger can await it.
+  async function saveAttachmentFromRow(btn) {
+    const id = btn.dataset.id;
+    const level = btn.dataset.level;
+    const name = btn.dataset.name;
+    const reasons = btn.dataset.reasons;
+    let confirmed = false;
+    if (level === 'dangerous') {
+      // Two-step confirmation: user must explicitly accept downloading
+      // a flagged file. Server also enforces ?confirm=1 so a manual
+      // URL hit isn't enough.
+      const ok = window.confirm(
+        t('mb.att.danger_confirm', { name, reasons: reasons ? t('mb.att.danger_reasons', { r: reasons }) : '' })
+      );
+      if (!ok) return;
+      confirmed = true;
+    }
+    // A save is a disk write, not a navigation: nothing else tells the user it
+    // started, so the button has to.
+    const idle = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = `<i data-lucide="loader" class="w-4 h-4"></i><span>${t('mb.att.saving')}</span>`;
+    window.lucide?.createIcons({ nodes: [btn] });
+    try {
+      const res = await api.saveAttachment(id, { confirm: confirmed });
+      // The folder's own name, not its full path: "Enregistré dans
+      // Téléchargements" is the sentence, and C:\Users\… in a toast is
+      // noise. Afficher is there for anyone who wants the location itself.
+      const folder = String(res.directory || '').split(/[\\/]/).filter(Boolean).pop()
+        || String(res.directory || '');
+      window.toast?.({
+        variant: 'success',
+        message: t('mb.att.saved', { folder }),
+        duration: 6000,
+        action: {
+          label: t('mb.att.reveal'),
+          onClick: () => {
+            api.revealAttachment(id).catch((e) => window.toast?.(e.message));
+          },
+        },
+      });
+    } catch (e) {
+      window.toast?.(e.message || t('mb.att.save_failed'));
+    } finally {
+      // The pane may have been repainted under us (a sync landed, the user
+      // opened another mail); restoring a detached button changes nothing on
+      // screen, so don't bother re-running lucide on it.
+      if (btn.isConnected) {
+        btn.disabled = false;
+        btn.innerHTML = idle;
+      }
+    }
+  }
+
   function bindAttachmentHandlers(em) {
     host.querySelectorAll('#read-pane .att-download').forEach((btn) => {
+      btn.addEventListener('click', () => { saveAttachmentFromRow(btn); });
+    });
+    host.querySelectorAll('#read-pane .att-preview').forEach((btn) => {
       btn.addEventListener('click', () => {
-        const id = btn.dataset.id;
-        const level = btn.dataset.level;
-        const name = btn.dataset.name;
-        const reasons = btn.dataset.reasons;
-        if (level === 'dangerous') {
-          // Two-step confirmation: user must explicitly accept downloading
-          // a flagged file. Server also enforces ?confirm=1 so a manual
-          // URL hit isn't enough.
-          const ok = window.confirm(
-            t('mb.att.danger_confirm', { name, reasons: reasons ? t('mb.att.danger_reasons', { r: reasons }) : '' })
-          );
-          if (!ok) return;
-          window.location.href = api.attachmentDownloadUrl(id, { confirm: true });
-        } else {
-          window.location.href = api.attachmentDownloadUrl(id);
-        }
+        const dl = btn.closest('.att-action')?.querySelector('.att-download');
+        openAttachmentPreview(
+          { id: btn.dataset.id, filename: btn.dataset.name, content_type: btn.dataset.type },
+          { onDownload: dl ? () => saveAttachmentFromRow(dl) : null },
+        );
       });
     });
     // Manual rescan button (pending state). Re-opens the email after a
@@ -6832,6 +6900,10 @@ export async function mountMailbox(host, _opts) {
     // mounted next, focus-trapped, asking about messages no longer on
     // screen.
     dismissOpenConfirms();
+    // Same for an open attachment preview: it is appended to document.body
+    // too, so the #view wipe leaves it pinned over whatever mounts next,
+    // focus-trapped, showing a file from a mail nobody is reading any more.
+    dismissAttachmentPreview();
     // `host` (= #view) persists across navigations, so its dnd listeners
     // would leak into the next view if not removed here.
     host.removeEventListener('dragenter', _onComposerDragEnter);

@@ -4976,7 +4976,7 @@ kbd {
 .att-badge.att-danger,
 .att-badge.att-blocked { color: #fff;    background: var(--danger); }
 
-.att-action { display: flex; align-items: center; }
+.att-action { display: flex; align-items: center; gap: 6px; }
 
 .att-download {
   display: inline-flex;
@@ -5027,6 +5027,156 @@ kbd {
 }
 .att-rescan:hover { border-color: var(--accent); color: var(--accent); }
 .att-rescan:disabled { opacity: .6; cursor: progress; }
+
+/* The eye, left of Télécharger. Icon-only and the same height as its
+   neighbour: the filename is the label, repeating it here would push the
+   download button off a narrow pane. */
+.att-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.att-preview:hover {
+  background: var(--bg-soft, #F1F5F9);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.att-download:disabled {
+  opacity: .7;
+  cursor: progress;
+}
+/* The save is a disk write with no navigation behind it, so the only sign it
+   is running is this button. */
+.att-download:disabled svg { animation: spin 1s linear infinite; }
+
+/* ──────────────────────────────────────────────────────────────
+   Attachment preview modal (frontend/attachment-preview.js)
+
+   What the eye button opens. A frame the user can close, deliberately:
+   answering Télécharger with a window navigation rendered PDFs in the main
+   frame on macOS and left no way back into the app.
+   ────────────────────────────────────────────────────────────── */
+
+.attprev-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);  /* attachment preview */
+  background: color-mix(in oklab, #000 56%, transparent);
+  backdrop-filter: blur(4px);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.attprev-card {
+  display: flex;
+  flex-direction: column;
+  width: min(1000px, 94vw);
+  height: min(900px, 88vh);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .28);
+  overflow: hidden;
+}
+.attprev-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.attprev-head-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px; height: 32px;
+  flex: none;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  color: var(--accent);
+}
+.attprev-head-text { display: grid; gap: 1px; min-width: 0; margin-right: auto; }
+.attprev-head-text strong {
+  font-size: 13.5px;
+  color: var(--text);
+  /* Long names hide extensions; show the whole thing rather than eliding it. */
+  word-break: break-all;
+}
+.attprev-head-sub { font-size: 11.5px; color: var(--muted); }
+.attprev-dl,
+.attprev-close {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.attprev-dl:hover,
+.attprev-close:hover { background: var(--bg-soft, #F1F5F9); border-color: var(--accent); }
+.attprev-dl:disabled { opacity: .7; cursor: progress; }
+.attprev-close { padding: 7px 9px; color: var(--muted); }
+
+.attprev-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  background: var(--surface-2, #F8FAFC);
+}
+.attprev-body[data-kind="text"] { align-items: stretch; }
+.attprev-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--surface-2, #F8FAFC);
+}
+.attprev-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  /* An image with transparency reads as a hole on a white panel. */
+  background: repeating-conic-gradient(#e2e8f0 0% 25%, #f8fafc 0% 50%) 50% / 16px 16px;
+}
+.attprev-text {
+  flex: 1;
+  margin: 0;
+  padding: 16px 18px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+}
+.attprev-state {
+  margin: 0;
+  padding: 16px;
+  font-size: 12.5px;
+  color: var(--muted);
+  text-align: center;
+}
+.attprev-failed { color: var(--danger); }
 
 
 /* ─────────────────────────────────────────────────────────

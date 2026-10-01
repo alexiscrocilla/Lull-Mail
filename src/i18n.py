@@ -115,6 +115,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "attachment.blocked_policy":    "Pièce jointe bloquée par la politique de sécurité — aucune donnée stockée.",
         "attachment.file_missing":      "Fichier physiquement absent",
         "attachment.read_error":        "Lecture impossible",
+        "attachment.not_previewable":   "Aucun aperçu disponible pour ce type de fichier",
+        "attachment.save_failed":       "Enregistrement impossible ({msg})",
+        "attachment.reveal_failed":     "Ouverture du dossier impossible ({msg})",
+        "attachment.nothing_saved":     "Ce fichier n'a pas encore été enregistré",
 
         # ── Uploads (outbound) ───────────────────────────────────────────────
         "upload.filename_missing":      "Nom de fichier manquant.",
@@ -267,6 +271,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "attachment.blocked_policy":    "This attachment was blocked by the security policy and was never stored.",
         "attachment.file_missing":      "File not found on disk",
         "attachment.read_error":        "Could not read the file",
+        "attachment.not_previewable":   "No preview available for this file type",
+        "attachment.save_failed":       "Could not save the file ({msg})",
+        "attachment.reveal_failed":     "Could not open the folder ({msg})",
+        "attachment.nothing_saved":     "This file has not been saved yet",
 
         # ── Uploads (outbound) ───────────────────────────────────────────────
         "upload.filename_missing":      "Filename missing.",
