@@ -6,7 +6,7 @@ import {
   shortDate, longDate, escapeHtml, linkify, isHomographUrl, safeLinkUrl,
   CATEGORY_LABEL, scoreClass,
 } from '/static/api.js';
-import { rewriteRemoteImages, senderDomain, withRemoteContentPolicy }
+import { dropOutsidePolicy, rewriteRemoteImages, senderDomain, withRemoteContentPolicy }
   from '/static/image-blocker.js';
 import { confirmAsync, dismissOpenConfirms } from '/static/confirm.js';
 import { openAttachmentPreview, dismissAttachmentPreview }
@@ -101,6 +101,8 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
     const out = rewriteRemoteImages(safeHtml);
     safeHtml = out.html;
     blockedCount = out.blockedCount;
+  } else {
+    safeHtml = dropOutsidePolicy(safeHtml);
   }
 
   // 3. Inject our reset CSS and serialise. String.replace returns the
@@ -109,10 +111,11 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
   //    for the anchor explicitly. Emails with a <head> get INJECT inside
   //    it; those with only <html> get a fresh <head>; bare fragments get
   //    a leading <head> so <base>/reset CSS/image-blocker placeholders
-  //    always apply.
+  //    always apply. The anchor must not take <header> for <head>, and
+  //    stops at the next `<` so a run of unclosed `<head` stays linear.
   let finalHtml;
-  if (/<head[^>]*>/i.test(safeHtml)) {
-    finalHtml = safeHtml.replace(/<head([^>]*)>/i, `<head$1>${INJECT}`);
+  if (/<head(\s[^<>]*)?>/i.test(safeHtml)) {
+    finalHtml = safeHtml.replace(/<head(\s[^<>]*)?>/i, `<head$1>${INJECT}`);
   } else if (/<html[^>]*>/i.test(safeHtml)) {
     finalHtml = safeHtml.replace(/<html([^>]*)>/i, `<html$1><head>${INJECT}</head>`);
   } else {

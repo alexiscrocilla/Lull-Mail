@@ -23,6 +23,7 @@ const HOSTILE = `<!DOCTYPE html>
 <base href="${leak('base/')}">
 <link rel="stylesheet" href="${leak('link-stylesheet.css')}">
 <link rel="preload" as="image" href="${leak('link-preload.gif')}">
+<link rel="prefetch" href="${leak('link-prefetch')}">
 <style>
 @import url("${leak('style-import-url.css')}");
 @import "${leak('style-import-string.css')}";
@@ -59,17 +60,41 @@ const HOSTILE = `<!DOCTYPE html>
   </image>
 </svg>
 <iframe src="${leak('nested-iframe.html')}" width="20" height="20"></iframe>
+<iframe srcdoc="&lt;img src=&quot;${leak('srcdoc-frame-img.gif')}&quot; width=20 height=20&gt;"
+        width="20" height="20"></iframe>
 <object data="${leak('object-data.png')}" type="image/png" width="20" height="20"></object>
 <embed src="${leak('embed-src.png')}" type="image/png" width="20" height="20">
 </body></html>`;
 
-// The one thing "Charger pour ce mail" is supposed to bring back.
-const OPT_IN = `<p id="leak-marker">Bonjour.</p>
-<img src="${leak('opt-in-image.gif')}" width="40" height="40" alt="">
-<iframe src="${leak('opt-in-nested-iframe.html')}" width="20" height="20"></iframe>
-<object data="${leak('opt-in-object.png')}" type="image/png" width="20" height="20"></object>`;
+// What HOSTILE may load once the user asks for images: the sender's
+// pictures, stylesheets, fonts and media. Never a frame, an object, a
+// prefetch, a refresh, or anything a nested frame asks for.
+const SHOWN = [
+  'audio-src.mp3', 'body-background.gif', 'img-backslashes.gif', 'img-no-slashes.gif',
+  'img-srcset-only.gif', 'img-tab-in-scheme.gif', 'inline-image-set.gif', 'input-image.gif',
+  'link-preload.gif', 'link-stylesheet.css', 'relative-to-base.gif', 'style-cursor.png',
+  'style-escaped-url.gif', 'style-font-face.woff2', 'style-image-set.gif',
+  'style-import-string.css', 'style-import-url.css', 'style-list-image.gif', 'style-url.gif',
+  'svg-image-href.gif', 'svg-image-xlink.gif', 'svg-smil-set.gif', 'table-background.gif',
+  'td-background.gif', 'video-poster.gif', 'video-src.mp4',
+];
 
-const GIF = Buffer.from('R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==', 'base64');
+/**
+ * Vectors of SHOWN an engine does not fetch even when the policy lets them
+ * through, so their absence proves nothing and is not asked for. Measured,
+ * with a trusted sender: Chromium on Windows reads `\\host` as a UNC path,
+ * which a web page may not load; WebKit neither preloads media nor follows
+ * an href set by SMIL.
+ */
+function unfetchable(browserName) {
+  if (browserName === 'webkit') {
+    return new Set(['video-src.mp4', 'audio-src.mp3', 'svg-smil-set.gif']);
+  }
+  return new Set(process.platform === 'win32' ? ['img-backslashes.gif'] : []);
+}
+
+const GIF_BASE64 = 'R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+const GIF = Buffer.from(GIF_BASE64, 'base64');
 
 // A negative result needs time to be one: fonts, media preload, the SMIL
 // <set> and the one-second meta refresh can all fire after the marker
@@ -77,21 +102,46 @@ const GIF = Buffer.from('R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==', 
 // margin, not a race.
 const SETTLE_MS = 1500;
 
+const isLocal = (url) => ['127.0.0.1', 'localhost'].includes(new URL(url).hostname);
+const names = (urls) => [...new Set(urls.map((u) => new URL(u).pathname.split('/').pop()))].sort();
+
 /**
- * Serve `html` as the body of every message the page opens, and record each
- * request the page makes to a host other than the test server.
+ * Serve `html` as the body of every message the page opens, with the
+ * sender trusted or not, and record what the message asks for: every
+ * request to another host, and every request a frame other than the app's
+ * own makes, the app server included.
  *
- * Recorded in the route handler, not on the page's `request` event: Chromium
+ * Recorded in a route handler, not on the page's `request` event: Chromium
  * announces a request before its policy check, so a fetch the frame's CSP
- * refuses still fires `request`. The route only sees what reached the
+ * refuses still fires `request`. A route only sees what reached the
  * network.
  */
-async function hostileMailbox(page, html) {
-  const remote = [];
-  const isLocal = (url) => new URL(url).hostname === '127.0.0.1';
-  await page.context().route((url) => !isLocal(url.href), (route) => {
-    remote.push(route.request().url());
-    const path = new URL(route.request().url()).pathname;
+async function hostileMailbox(page, html, { trusted = false } = {}) {
+  const fetched = [];
+  // The hermetic server cannot reach IMAP, so each message the pane opens
+  // schedules a hydration that fails and announces a body event, and the
+  // pane rebuilds the frame about every two seconds, back in blocked mode.
+  // Without the event stream the frame under test stays the one the test
+  // put in front of it.
+  await page.route('**/api/events**', (route) => route.abort());
+  await page.route(/\/api\/emails\/\d+$/, async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    const response = await route.fetch();
+    const em = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...em, body_html: html, body_text: '', sender_images_trusted: trusted },
+    });
+  });
+  // Registered last, so it sees every request before the routes above.
+  await page.route(() => true, (route) => {
+    const request = route.request();
+    let fromApp = false;
+    try { fromApp = request.frame() === page.mainFrame(); } catch (_) { /* worker */ }
+    const local = isLocal(request.url());
+    if (!local || !fromApp) fetched.push(request.url());
+    if (local) return route.fallback();
+    const path = new URL(request.url()).pathname;
     if (path.endsWith('.css')) {
       return route.fulfill({ status: 200, contentType: 'text/css', body: '' });
     }
@@ -100,16 +150,7 @@ async function hostileMailbox(page, html) {
     }
     return route.fulfill({ status: 200, contentType: 'image/gif', body: GIF });
   });
-  await page.route(/\/api\/emails\/\d+$/, async (route) => {
-    if (route.request().method() !== 'GET') return route.fallback();
-    const response = await route.fetch();
-    const em = await response.json();
-    await route.fulfill({
-      response,
-      json: { ...em, body_html: html, body_text: '', sender_images_trusted: false },
-    });
-  });
-  return remote;
+  return fetched;
 }
 
 test.beforeEach(async ({ page }) => {
@@ -121,27 +162,43 @@ test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
 });
 
+const FRAME = '#read-pane .mb-body-iframe';
+const BANNER = '#read-pane .mb-img-banner';
+
 async function openFirstInInbox(page) {
   await page.goto('/#/inbox');
   await expect(page.locator('#email-list .mb-card')).toHaveCount(18);
   await page.locator('#email-list .mb-card').first().click();
   await expect(page.locator('#read-pane .mb-read-subject')).toBeVisible();
+  await expect(page.frameLocator(FRAME).locator('#leak-marker')).toBeVisible();
+  await page.waitForTimeout(SETTLE_MS);
+}
+
+async function showOnce(page) {
+  await page.locator(`${BANNER} [data-act="show-once"]`).click();
+  await expect(page.locator(BANNER)).toHaveCount(0);
+  await expect(page.frameLocator(FRAME).locator('#leak-marker')).toBeVisible();
+  await page.waitForTimeout(SETTLE_MS);
+  // Still the loaded frame: everything recorded since the click came from it.
+  await expect(page.locator(BANNER)).toHaveCount(0);
+}
+
+function expectShown(fetched, browserName) {
+  const skip = unfetchable(browserName);
+  expect(names(fetched).filter((n) => !skip.has(n)))
+    .toEqual(SHOWN.filter((n) => !skip.has(n)));
 }
 
 test('the reading pane fetches nothing remote while images are blocked', async ({ page }) => {
-  const remote = await hostileMailbox(page, HOSTILE);
+  const fetched = await hostileMailbox(page, HOSTILE);
   await openFirstInInbox(page);
 
-  await expect(page.locator('#read-pane .mb-img-banner')).toBeVisible();
-  await expect(page.frameLocator('#read-pane .mb-body-iframe').locator('#leak-marker'))
-    .toBeVisible();
-  await page.waitForTimeout(SETTLE_MS);
-
-  expect(remote).toEqual([]);
+  await expect(page.locator(BANNER)).toBeVisible();
+  expect(fetched).toEqual([]);
 });
 
 test('the assistant side reader fetches nothing remote', async ({ page }) => {
-  const remote = await hostileMailbox(page, HOSTILE);
+  const fetched = await hostileMailbox(page, HOSTILE);
   await page.goto('/#/inbox');
   await expect(page.locator('#email-list .mb-card')).toHaveCount(18);
   const id = await page.locator('#email-list .mb-card').first().getAttribute('data-id');
@@ -160,23 +217,202 @@ test('the assistant side reader fetches nothing remote', async ({ page }) => {
     .toBeVisible();
   await page.waitForTimeout(SETTLE_MS);
 
-  expect(remote).toEqual([]);
+  expect(fetched).toEqual([]);
 });
 
-test('"load for this email" brings images back and nothing else', async ({ page }) => {
-  const remote = await hostileMailbox(page, OPT_IN);
+test('a blocked message does not reach the app server either', async ({ page, baseURL }) => {
+  // No <base>: a relative URL resolves against the app itself.
+  const fetched = await hostileMailbox(page, `<p id="leak-marker">Bonjour.</p>
+    <img src="zz-relative.gif" width="20" height="20" alt="">
+    <img src="${baseURL}/zz-loopback.gif" width="20" height="20" alt="">
+    <div style="background:url(/zz-style-local.gif)">x</div>`);
   await openFirstInInbox(page);
-  await expect(page.frameLocator('#read-pane .mb-body-iframe').locator('#leak-marker'))
-    .toBeVisible();
-  await page.waitForTimeout(SETTLE_MS);
-  expect(remote).toEqual([]);
 
-  await page.locator('#read-pane .mb-img-banner [data-act="show-once"]').click();
-  await expect(page.locator('#read-pane .mb-img-banner')).toHaveCount(0);
-  // Also proves the recorder sees requests made from inside the frame, so
-  // the empty lists above are not a blind spot.
-  await expect.poll(() => remote).toContain(leak('opt-in-image.gif'));
-  await page.waitForTimeout(SETTLE_MS);
+  expect(fetched).toEqual([]);
+});
 
-  expect(remote).toEqual([leak('opt-in-image.gif')]);
+test('a trusted sender gets pictures, styles, fonts and media, and nothing else',
+  async ({ page, browserName }) => {
+    const fetched = await hostileMailbox(page, HOSTILE, { trusted: true });
+    await openFirstInInbox(page);
+
+    await expect(page.locator(BANNER)).toHaveCount(0);
+    expectShown(fetched, browserName);
+  });
+
+test('"load for this email" gets the same, and only after the click',
+  async ({ page, browserName }) => {
+    const fetched = await hostileMailbox(page, HOSTILE);
+    await openFirstInInbox(page);
+    expect(fetched).toEqual([]);
+
+    await showOnce(page);
+    expectShown(fetched, browserName);
+  });
+
+// Loaded mode renders the email's own markup, not the rewriter's tidy
+// <html><head>, so the policy has to hold whatever comes first. Each body
+// carries the same three things it must refuse even then.
+const refused = (p) => `<p id="leak-marker">Bonjour.</p>
+<img src="${leak(`${p}-img.gif`)}" width="20" height="20" alt="">
+<iframe src="${leak(`${p}-iframe.html`)}" width="20" height="20"></iframe>
+<object data="${leak(`${p}-object.png`)}" type="image/png" width="20" height="20"></object>
+<embed src="${leak(`${p}-embed.png`)}" type="image/png" width="20" height="20">`;
+
+const PLACEMENT = [
+  {
+    title: 'a no-break space before the doctype',
+    mode: 'trusted',
+    html: `\u00a0<!DOCTYPE html><html><body>${refused('nbsp')}</body></html>`,
+    shown: ['nbsp-img.gif'],
+  },
+  {
+    title: 'a <header> and no <head>',
+    mode: 'show-once',
+    html: `<header>Lettre</header>${refused('header')}`,
+    shown: ['header-img.gif'],
+  },
+  {
+    title: 'markup before <html>',
+    mode: 'show-once',
+    html: `<img src="${leak('early-lead.gif')}" width="20" height="20" alt="">`
+      + `<html><head><title>Lettre</title></head><body>${refused('early')}</body></html>`,
+    shown: ['early-img.gif', 'early-lead.gif'],
+  },
+];
+
+for (const { title, mode, html, shown } of PLACEMENT) {
+  test(`the policy holds in loaded mode with ${title}`, async ({ page }) => {
+    const fetched = await hostileMailbox(page, html, { trusted: mode === 'trusted' });
+    await openFirstInInbox(page);
+    if (mode === 'show-once') {
+      expect(fetched).toEqual([]);
+      await showOnce(page);
+    }
+
+    expect(names(fetched)).toEqual(shown);
+  });
+}
+
+test('a newsletter on a remote <base href> still offers its pictures', async ({ page }) => {
+  // Relative paths resolve to the base's host. The policy refuses them like
+  // any other remote image, so the banner has to count them, or the
+  // message shows grey boxes with no way to load them.
+  const fetched = await hostileMailbox(page, `<html><head>
+    <base href="${leak('nl/2026-10/')}"></head><body>
+    <p id="leak-marker">Lettre d'octobre</p>
+    <img src="images/hero.jpg" width="300" height="100" alt="hero">
+    <img src="images/logo.png" width="80" height="30" alt="logo">
+    </body></html>`);
+  await openFirstInInbox(page);
+
+  await expect(page.locator(`${BANNER} .mb-img-banner-label`))
+    .toHaveText('2 image(s) distante(s) bloquée(s)');
+  expect(fetched).toEqual([]);
+
+  await showOnce(page);
+  expect(names(fetched)).toEqual(['hero.jpg', 'logo.png']);
+});
+
+const LOCAL_RESOURCES = `<html><head>
+<link rel="stylesheet" href="data:text/css,%23dcss%7Bcolor%3Argb(9%2C%209%2C%209)%7D">
+<style>@import url("data:text/css,%23dimp%7Bcolor%3Argb(8%2C%208%2C%208)%7D");</style>
+</head><body>
+<p id="leak-marker">Bonjour.</p>
+<p id="dcss">data: stylesheet</p>
+<p id="dimp">data: @import</p>
+<img id="data-img" src="data:image/gif;base64,${GIF_BASE64}" width="20" height="20" alt="">
+<img id="remote-img" src="${leak('control-image.gif')}" width="40" height="40" alt="">
+</body></html>`;
+
+// Read from the parent: the pane's frame is same-origin and runs nothing.
+const frameState = (page) => page.locator(FRAME).evaluate((frame) => {
+  const doc = frame.contentDocument;
+  const style = (id) => doc.defaultView.getComputedStyle(doc.getElementById(id));
+  const remote = doc.getElementById('remote-img');
+  return {
+    dataImage: doc.getElementById('data-img').naturalWidth,
+    dataStylesheet: style('dcss').color,
+    dataImport: style('dimp').color,
+    remoteSrc: remote.currentSrc,
+    remoteLoaded: remote.complete && remote.naturalWidth > 0,
+    placeholder: style('remote-img').backgroundColor,
+  };
+});
+
+test('what is already on the machine renders under the blocked policy', async ({ page }) => {
+  const fetched = await hostileMailbox(page, LOCAL_RESOURCES);
+  await openFirstInInbox(page);
+
+  const state = await frameState(page);
+  expect(state).toMatchObject({
+    dataImage: 1,
+    dataStylesheet: 'rgb(9, 9, 9)',
+    dataImport: 'rgb(8, 8, 8)',
+    placeholder: 'rgb(203, 213, 225)',
+  });
+  expect(state.remoteSrc).toMatch(/^data:image\/gif/);
+  expect(fetched).toEqual([]);
+});
+
+test('a trusted sender gets both its pictures and the local ones', async ({ page }) => {
+  const fetched = await hostileMailbox(page, LOCAL_RESOURCES, { trusted: true });
+  await openFirstInInbox(page);
+
+  await expect.poll(async () => (await frameState(page)).remoteLoaded).toBe(true);
+  expect(await frameState(page)).toMatchObject({
+    dataImage: 1,
+    dataStylesheet: 'rgb(9, 9, 9)',
+    dataImport: 'rgb(8, 8, 8)',
+    remoteSrc: leak('control-image.gif'),
+  });
+  expect(names(fetched)).toEqual(['control-image.gif']);
+});
+
+// label -> [email HTML, what the banner should count]
+const COUNTS = {
+  'a remote src': ['<img src="https://x.example/a.gif">', 1],
+  'a srcset holding an inline SVG':
+    [`<img srcset="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E 1x">`, 0],
+  'a remote second srcset candidate': [`<img src="data:image/gif;base64,${GIF_BASE64}"
+    srcset="data:image/gif;base64,${GIF_BASE64} 1x, https://x.example/b.gif 2x">`, 1],
+  'relative paths under a remote <base>':
+    ['<base href="https://x.example/nl/"><img src="a.jpg"><img src="b/c.png">', 2],
+  'relative paths and no <base>': ['<img src="a.jpg"><img src="/b.png">', 0],
+  'https: with no slashes': ['<img src="https:x.example/a.gif">', 1],
+  'a tab inside the scheme': ['<img src="ht&#9;tps://x.example/a.gif">', 1],
+  'a table background': ['<table background="https://x.example/bg.gif"><tr><td>x</td></tr></table>', 1],
+  '<style> url() and @import':
+    ['<style>@import "https://x.example/a.css"; .a{background:url(//x.example/b.gif)}</style>', 2],
+  '<style> data: url()': [`<style>.a{background:url(data:image/gif;base64,${GIF_BASE64})}</style>`, 0],
+  'a srcdoc frame and resource hints, which are dropped': [`<iframe srcdoc="&lt;p&gt;x"></iframe>
+    <link rel="prefetch" href="https://x.example/p"><link rel="dns-prefetch" href="//x.example">`, 0],
+};
+
+test('the banner counts what the policy refuses', async ({ page }) => {
+  await page.goto('/#/inbox');
+  const got = await page.evaluate(async (cases) => {
+    const { rewriteRemoteImages } = await import('/static/image-blocker.js');
+    return Object.fromEntries(Object.entries(cases)
+      .map(([label, [html]]) => [label, rewriteRemoteImages(html).blockedCount]));
+  }, COUNTS);
+
+  expect(got).toEqual(Object.fromEntries(Object.entries(COUNTS)
+    .map(([label, [, count]]) => [label, count])));
+});
+
+test('srcdoc frames and resource hints are dropped in both modes', async ({ page }) => {
+  await page.goto('/#/inbox');
+  const out = await page.evaluate(async () => {
+    const m = await import('/static/image-blocker.js');
+    const html = '<p>x</p><iframe srcdoc="&lt;img src=x&gt;"></iframe>'
+      + '<link rel="prefetch" href="https://x.example/p">'
+      + '<link rel="PreConnect" href="https://x.example">';
+    return [m.rewriteRemoteImages(html).html, m.dropOutsidePolicy(html)];
+  });
+
+  for (const html of out) {
+    expect(html).toContain('<p>x</p>');
+    expect(html).not.toMatch(/srcdoc|prefetch|preconnect/i);
+  }
 });
