@@ -6,7 +6,8 @@ import {
   shortDate, longDate, escapeHtml, linkify, isHomographUrl, safeLinkUrl,
   CATEGORY_LABEL, scoreClass,
 } from '/static/api.js';
-import { rewriteRemoteImages, senderDomain } from '/static/image-blocker.js';
+import { rewriteRemoteImages, senderDomain, withRemoteContentPolicy }
+  from '/static/image-blocker.js';
 import { confirmAsync, dismissOpenConfirms } from '/static/confirm.js';
 import { openAttachmentPreview, dismissAttachmentPreview }
   from '/static/attachment-preview.js';
@@ -95,8 +96,8 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
   // 2. Remote-image blocker. Skipped when the user previously trusted
   //    the sender or just clicked "Charger pour ce mail".
   let blockedCount = 0;
-  const trusted = !!em.sender_images_trusted;
-  if (!trusted && !forceShowImages) {
+  const showRemote = !!em.sender_images_trusted || forceShowImages;
+  if (!showRemote) {
     const out = rewriteRemoteImages(safeHtml);
     safeHtml = out.html;
     blockedCount = out.blockedCount;
@@ -117,6 +118,9 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
   } else {
     finalHtml = `<head>${INJECT}</head>` + safeHtml;
   }
+  // 4. The policy that makes step 2 hold: the rewrite only knows the
+  //    vectors it enumerates, the browser refuses every remote fetch.
+  finalHtml = withRemoteContentPolicy(finalHtml, showRemote);
 
   // SECURITY: no `allow-scripts`. Email JavaScript never runs, which is
   // what makes `allow-same-origin` safe to add here: the dangerous combo

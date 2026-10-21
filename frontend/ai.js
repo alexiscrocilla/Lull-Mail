@@ -19,7 +19,7 @@ import {
   avatarColor, initials, avatarImgHtml, senderName, senderEmail,
   shortDate, scoreClass,
 } from '/static/api.js';
-import { rewriteRemoteImages } from '/static/image-blocker.js';
+import { rewriteRemoteImages, withRemoteContentPolicy } from '/static/image-blocker.js';
 
 const t = (k, v) => (window.t ? window.t(k, v) : k);
 
@@ -597,14 +597,15 @@ export async function mountAI(host, opts = {}) {
       bodyHtml = `<div class="aiw-reader-text">${linkify(em.body_text)}</div>`;
     } else if (hasHtml) {
       // Sandboxed (no scripts), remote images stripped — same blocker the
-      // inbox uses, minus the trust/one-shot buttons: this is a preview.
+      // inbox uses, minus the trust/one-shot buttons: this is a preview,
+      // so the policy never lets anything remote in.
       const blocked = rewriteRemoteImages(em.body_html).html;
-      const doc = '<base target="_blank"><style>'
+      const doc = withRemoteContentPolicy('<base target="_blank"><style>'
         + 'html,body{margin:0;padding:12px;overflow-x:hidden;word-break:break-word;'
         + 'font-family:system-ui,sans-serif;font-size:14px}'
         + 'img,video{max-width:100%!important;height:auto!important}'
         + 'table{max-width:100%!important;table-layout:fixed!important}'
-        + '</style>' + blocked;
+        + '</style>' + blocked);
       bodyHtml = `<iframe class="aiw-reader-iframe" sandbox="allow-popups allow-popups-to-escape-sandbox"`
         + ` srcdoc="${escapeHtml(doc)}" title="${escapeHtml(em.subject || t('aiw.no_subject'))}"></iframe>`;
     } else {
