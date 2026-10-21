@@ -18,7 +18,7 @@
     "dompurify": "3.4.16"
   },
   "devDependencies": {
-    "@playwright/test": "1.55.0",
+    "@playwright/test": "1.55.1",
     "tailwindcss": "3.4.17",
     "typescript": "5.9.2"
   }
