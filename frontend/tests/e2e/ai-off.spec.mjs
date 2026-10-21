@@ -58,12 +58,12 @@ test('the read pane makes no claim a model did not make', async ({ page }) => {
   await expect(page.locator('#read-pane .cat-chip')).toHaveCount(0);
 });
 
-test('the category list survives, because rules still classify', async ({ page }) => {
+test('the category tabs survive, because rules still classify', async ({ page }) => {
   // Spam, newsletters and receipts come from regex rules that run with no
-  // model at all, and this list is the only way to reach them now.
-  await expect(page.locator('#mb-labels [data-cat="spam"]')).toHaveCount(1);
-  await expect(page.locator('#mb-labels [data-cat="newsletter"]')).toHaveCount(1);
-  await expect(page.locator('#mb-labels [data-cat="pending"]')).toHaveCount(1);
+  // model at all, and these tabs are the only way to reach them now.
+  await expect(page.locator('#mb-cats [data-cat="spam"]')).toHaveCount(1);
+  await expect(page.locator('#mb-cats [data-cat="newsletter"]')).toHaveCount(1);
+  await expect(page.locator('#mb-cats [data-cat="transactional"]')).toHaveCount(1);
 });
 
 test('a reply filter set while AI was on does not strand the user', async ({ page }) => {

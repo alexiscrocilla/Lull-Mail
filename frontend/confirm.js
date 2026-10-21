@@ -82,6 +82,22 @@ export function confirmAsync({
             : `<li><span class="confirm-detail-text">${body(e)}</span></li>`))
           .join('')}</ul>`
       : '';
+    // A checklist of forty is not a choice anyone can make one box at a
+    // time: say how many are ticked, offer all-or-none, and past a screenful
+    // let the user find the one they mean by typing it.
+    const FILTER_FROM = 8;
+    const tools = checkable && entries.length > 1
+      ? `<div class="confirm-tools">
+           ${entries.length > FILTER_FROM
+             ? `<input type="search" class="confirm-filter" autocomplete="off"
+                       placeholder="${escapeHtml(_t('confirm.filter_ph'))}"
+                       aria-label="${escapeHtml(_t('confirm.filter_ph'))}">`
+             : ''}
+           <span class="confirm-count" aria-hidden="true"></span>
+           <button type="button" class="confirm-toggle-all"></button>
+         </div>
+         <p class="confirm-nomatch" hidden>${escapeHtml(_t('confirm.filter_none'))}</p>`
+      : '';
     backdrop.innerHTML = `
       <div class="confirm-card${wide ? ' is-wide' : ''}" role="alertdialog" aria-modal="true"
            aria-labelledby="confirm-title" aria-describedby="confirm-msg"
@@ -94,6 +110,7 @@ export function confirmAsync({
         </div>
         <p class="confirm-msg" id="confirm-msg">${escapeHtml(message)}</p>
         ${note ? `<p class="confirm-note">${escapeHtml(note)}</p>` : ''}
+        ${tools}
         ${list}
         <p class="confirm-live" aria-live="polite"></p>
         <div class="confirm-actions">
@@ -104,9 +121,11 @@ export function confirmAsync({
 
     const card = backdrop.querySelector('.confirm-card');
     // Not just buttons. With a checkable list the trap would otherwise yank
-    // focus off every checkbox the moment the user Tabbed onto one.
+    // focus off every checkbox the moment the user Tabbed onto one. Rows the
+    // filter hid are skipped: focus() on them does nothing, so a trap that
+    // wrapped onto one would let Tab walk out of the dialog.
     const focusables = () => [...card.querySelectorAll('button, input:not([disabled])')]
-      .filter((el) => !el.disabled);
+      .filter((el) => !el.disabled && !el.closest('[hidden]'));
 
     // The previous version only removed the Escape handler when Escape was
     // the thing that closed the dialog — clicking Cancel or OK left a live
@@ -115,6 +134,17 @@ export function confirmAsync({
       // The node was removed by something other than close(). Settle and
       // unhook rather than trapping Tab against a detached card forever.
       if (!backdrop.isConnected) { close(false); return; }
+      // While a filter is typed, the first Escape clears it, wherever focus
+      // is (it is usually on a checkbox by then). Closing instead would
+      // throw away every box the user had just unticked.
+      const filterEl = card.querySelector('.confirm-filter');
+      if (e.key === 'Escape' && filterEl?.value) {
+        e.preventDefault();
+        filterEl.value = '';
+        filterEl.dispatchEvent(new Event('input'));
+        filterEl.focus();
+        return;
+      }
       if (e.key === 'Escape') { close(false); return; }
       if (e.key !== 'Tab') return;
       // Trap: without this, Tab walks the page behind the modal.
@@ -144,9 +174,12 @@ export function confirmAsync({
     const okBtn = backdrop.querySelector('.confirm-btn-ok');
     if (checkable) {
       const live = card.querySelector('.confirm-live');
+      const boxes = () => [...card.querySelectorAll('.confirm-details input')];
+      const shown = () => boxes().filter((el) => !el.closest('li').hidden);
+      const countEl = card.querySelector('.confirm-count');
+      const toggleBtn = card.querySelector('.confirm-toggle-all');
       const sync = () => {
-        const checked = [...card.querySelectorAll('.confirm-details input:checked')]
-          .map((el) => el.value);
+        const checked = boxes().filter((el) => el.checked).map((el) => el.value);
         // The button carries the live count, so the number the user presses
         // is the number they are about to act on and not the one the card
         // showed a moment ago. The caller does the counting: a row can stand
@@ -156,9 +189,40 @@ export function confirmAsync({
           if (text) { okBtn.textContent = text; live.textContent = text; }
         }
         okBtn.disabled = checked.length === 0;
+        if (countEl) {
+          countEl.textContent = _t('confirm.selected',
+            { n: checked.length, total: entries.length });
+        }
+        if (toggleBtn) {
+          // Acts on the rows on screen: with a filter typed, "tout décocher"
+          // means the ones that matched, not the ones hidden from view.
+          const vis = shown();
+          const allOn = vis.length > 0 && vis.every((el) => el.checked);
+          toggleBtn.textContent = _t(allOn ? 'confirm.select_none' : 'confirm.select_all');
+          toggleBtn.dataset.next = allOn ? 'off' : 'on';
+          toggleBtn.disabled = vis.length === 0;
+        }
       };
       card.addEventListener('change', (e) => {
         if (e.target.matches('.confirm-details input')) sync();
+      });
+      toggleBtn?.addEventListener('click', () => {
+        const on = toggleBtn.dataset.next === 'on';
+        for (const el of shown()) el.checked = on;
+        sync();
+      });
+      const filter = card.querySelector('.confirm-filter');
+      const fold = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+      filter?.addEventListener('input', () => {
+        const needle = fold(filter.value.trim());
+        let any = false;
+        for (const li of card.querySelectorAll('.confirm-details li')) {
+          const hit = !needle || fold(li.textContent || '').includes(needle);
+          li.hidden = !hit;
+          any = any || hit;
+        }
+        card.querySelector('.confirm-nomatch').hidden = any;
+        sync();
       });
       sync();
     }

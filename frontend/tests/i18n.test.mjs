@@ -150,6 +150,7 @@ test('no key is defined that nothing renders', () => {
     'cleanup.card.',                // cleanup.js — `cleanup.card.${id}.…`
     'cleanup.job.',                 // cleanup.js — `cleanup.job.${state}`
     'cmdk.tool.',                   // command-palette.js — `cmdk.tool.${name}`
+    'mb.cats.',                     // mailbox.js — `mb.cats.${id || 'all'}`
     'provider.',                    // settings.js / onboarding.js — `provider.${type}.…`
     'set.llm.tier_',                // settings.js — `set.llm.tier_${tier}`
     'set.llm.role_',                // settings.js — 'set.llm.role_' + role

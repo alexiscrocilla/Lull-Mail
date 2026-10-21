@@ -139,6 +139,56 @@ def unhide_all() -> int:
     return n
 
 
+# Subscriptions the user unticked in the unsubscribe sheet: "keep this one".
+# Without a memory of that answer the card came straight back after the
+# press, now titled with exactly the lists the user had just said they
+# wanted -- and the only way to stop it was to hide the whole card, new
+# subscriptions included. One (sender, mailbox) pair per entry, because the
+# same newsletter can be wanted at work and not at home. No expiry: unlike a
+# dismissed card, "I read this one" does not go stale in a month.
+KEPT_KV_KEY = "cleanup.kept_subs"
+
+
+def kept_subscriptions() -> List[Dict[str, str]]:
+    import json
+    raw = db.get_kv(KEPT_KV_KEY)
+    if not raw:
+        return []
+    try:
+        stored = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    out = []
+    for e in stored if isinstance(stored, list) else []:
+        if isinstance(e, dict) and e.get("sender"):
+            out.append({"sender": str(e["sender"]).strip().lower(),
+                        "account": str(e.get("account") or "")})
+    return out
+
+
+def keep_subscriptions(entries: List[Dict]) -> int:
+    """Remember these (sender, mailbox) pairs as wanted. Returns how many
+    are kept in total. Capped at KEEP_MAX, newest kept, because that is all
+    the exclusion clause honours."""
+    import json
+    current = kept_subscriptions()
+    seen = {(e["sender"], e["account"]) for e in current}
+    for e in entries or []:
+        pair = (str(e.get("sender") or "").strip().lower(), str(e.get("account") or ""))
+        if pair[0] and pair not in seen:
+            seen.add(pair)
+            current.append({"sender": pair[0], "account": pair[1]})
+    current = current[-KEEP_MAX:]
+    db.set_kv(KEPT_KV_KEY, json.dumps(current))
+    return len(current)
+
+
+def unkeep_all() -> int:
+    n = len(kept_subscriptions())
+    db.set_kv(KEPT_KV_KEY, "[]")
+    return n
+
+
 def _live(extra: str = "") -> str:
     return db._CLEANUP_LIVE + (f" AND {extra}" if extra else "")
 
@@ -400,6 +450,9 @@ def _unsub_senders(con, account: Optional[str]) -> List[Dict]:
                   " AND sender_addr <> ''")
     params: list = []
     where = _acct(where, account, params)
+    # In SQL rather than after the fact: the LIMIT below would otherwise
+    # spend its slots on lists the user already said they keep.
+    where += _keep_clause(kept_subscriptions(), params)
     rows = [dict(r) for r in con.execute(f"""
         SELECT sender_addr,
                account_email,
@@ -597,6 +650,9 @@ def compute(account: Optional[str] = None) -> Dict[str, Any]:
         "cards": kept[:MAX_CARDS],
         "more": max(len(kept) - MAX_CARDS, 0),
         "hidden": sum(1 for c in cards if c["id"] in dismissed),
+        # Lists the user chose to keep from the unsubscribe sheet, so the
+        # footer can offer them back.
+        "kept_subs": len(kept_subscriptions()),
         # Only ever grows, and only through the flagship card: the one forward
         # commitment this app can actually honour.
         "unsubscribed_total": db.count_unsubscribed_senders(),

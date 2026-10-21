@@ -9,6 +9,18 @@ oversight: a retry button scoped to the senders whose unsubscribe was refused
 (the card returns on the next load and says so, which covers it), and the
 `unsub_one` "Pas encore" branch hides the card for 30 days rather than
 tracking a separate state.
+
+Revised after user feedback (October 2026): "too binary". Nobody wants to
+leave every list or empty every pile at once, so two decisions below are
+reversed. §5.3 called a checklist in the unsubscribe sheet "configuration in
+a costume"; it is a checklist now, and the lists left unticked are kept
+(`cleanup.kept_subs` in kv, one (sender, mailbox) pair each, no expiry,
+offered back by a footer link) so the card does not return titled with
+exactly the lists the user just said they wanted. And every card standing for
+several things has « Choisir… » beside its one button, opening the per-sender
+preview at any size rather than only past CONFIRM_ABOVE. The one button still
+does it all in one click below the gate. Exclusions on trash and mark-read
+cards remain per press, for the reason §7.5 gives.
 -->
 
 # NETTOYAGE — IMPLEMENTATION BRIEF

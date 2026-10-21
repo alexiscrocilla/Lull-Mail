@@ -14,7 +14,10 @@
 //     the user just emptied;
 //   * a card is a sentence, a number, one button and a quiet link — the
 //     inspection list lives in the inbox, which already has search, selection
-//     and its own undo;
+//     and its own undo. The one button does it all; « Choisir… » beside it
+//     opens the same set as a checklist, because "all of it or nothing" was
+//     the page's most-reported failing: nobody wants to leave every list or
+//     empty every pile at once;
 //   * the undo lives in the card, not in the rail toast: railToast is
 //     single-slot and a background sync pass destroys the live toast within
 //     seconds.
@@ -31,6 +34,9 @@ const UNDO_SECONDS = 20;
 // hand-selected, so the gate sits ten times higher than the inbox's 20.
 const CONFIRM_ABOVE = 200;
 const TRASH_CARDS = new Set(['spam', 'old_news', 'after_unsub']);
+// Every card that stands for several things a user may want to split.
+// unsub_one is a single sender, so there is nothing to choose between.
+const PICKABLE = new Set([...TRASH_CARDS, 'old_unread', 'unsub_bulk']);
 
 export async function mountCleanup(host, opts = {}) {
   const t = window.t || ((k, v) => k);
@@ -74,6 +80,7 @@ export async function mountCleanup(host, opts = {}) {
       <footer class="cln-foot">
         <button type="button" class="cln-more" id="cln-more" hidden></button>
         <button type="button" class="cln-unhide" id="cln-unhide" hidden></button>
+        <button type="button" class="cln-unhide" id="cln-unkeep" hidden></button>
         <span class="cln-stamp" id="cln-stamp"></span>
         <span class="cln-guard">${escapeHtml(t('cleanup.guard'))}</span>
       </footer>
@@ -145,6 +152,10 @@ export async function mountCleanup(host, opts = {}) {
       <p class="cln-card-gain">${escapeHtml(cardGain(card))}</p>
       <div class="cln-card-foot">
         <button type="button" class="cln-card-go">${escapeHtml(t(`cleanup.card.${card.id}.btn`, card.vars))}</button>
+        ${PICKABLE.has(card.id) && (card.vars.n || 0) > 1
+          ? `<button type="button" class="cln-card-pick"
+                     aria-label="${escapeHtml(t('cleanup.card.pick_aria'))}">${escapeHtml(t('cleanup.card.pick'))}</button>`
+          : ''}
         ${peek}
         <button type="button" class="cln-card-hide"
                 aria-label="${escapeHtml(t('cleanup.hide_aria'))}">${escapeHtml(t('cleanup.hide'))}</button>
@@ -157,6 +168,8 @@ export async function mountCleanup(host, opts = {}) {
       <p class="cln-card-err" hidden></p>`;
 
     li.querySelector('.cln-card-go').addEventListener('click', () => runCard(card, li));
+    li.querySelector('.cln-card-pick')?.addEventListener('click',
+      () => runCard(card, li, { pick: true }));
     li.querySelector('.cln-card-hide').addEventListener('click', () => hideCard(card, li));
     return li;
   }
@@ -248,7 +261,18 @@ export async function mountCleanup(host, opts = {}) {
     if (payload.hidden) {
       unhide.textContent = t('cleanup.unhide', { n: payload.hidden });
       unhide.onclick = async () => {
-        try { render((await api.unhideCleanupCards()).suggestions); }
+        try { render((await api.unhideCleanupCards(account || undefined)).suggestions); }
+        catch (_) { /* the next mount will pick it up */ }
+      };
+    }
+    // The lists kept from the unsubscribe sheet never come back on their
+    // own, so the way to change one's mind has to stay on the page.
+    const unkeep = $('#cln-unkeep');
+    unkeep.hidden = !payload.kept_subs;
+    if (payload.kept_subs) {
+      unkeep.textContent = t('cleanup.unkeep', { n: payload.kept_subs });
+      unkeep.onclick = async () => {
+        try { render((await api.unkeepSubscriptions(account || undefined)).suggestions); }
         catch (_) { /* the next mount will pick it up */ }
       };
     }
@@ -304,6 +328,7 @@ export async function mountCleanup(host, opts = {}) {
   }
 
   async function askWithPreview(card) {
+    const isRead = card.verb === 'mark_read';
     let view = null;
     try {
       view = await api.getCleanupPreview(card.id, account || undefined);
@@ -334,11 +359,12 @@ export async function mountCleanup(host, opts = {}) {
     const messagesLeft = (checked) =>
       checked.reduce((n, v) => n + (weight.get(v) || 0), 0);
     const res = await confirmAsync({
-      title: t('cleanup.preview.title', { n: total }),
+      // Marking read moves nothing, and the sheet must not say otherwise.
+      title: t(isRead ? 'cleanup.preview.title_read' : 'cleanup.preview.title', { n: total }),
       message: t(`cleanup.card.${card.id}.gain`, card.vars),
       // Per press, and said so: a persistent per-sender exclusion is the
       // rules engine this page exists without.
-      note: t('cleanup.preview.note'),
+      note: t(isRead ? 'cleanup.preview.note_read' : 'cleanup.preview.note'),
       confirmLabel: t(`cleanup.card.${card.id}.btn`, { ...card.vars, n: total }),
       danger: TRASH_CARDS.has(card.id),
       checkable: true,
@@ -378,7 +404,7 @@ export async function mountCleanup(host, opts = {}) {
     li.querySelector('.cln-card-go').disabled = false;
   }
 
-  async function runCard(card, li) {
+  async function runCard(card, li, { pick = false } = {}) {
     if (li.dataset.state !== 'idle') return;
     if (card.id === 'unsub_bulk') return runBulkUnsubscribe(card, li);
     if (card.id === 'unsub_one') return runManualUnsubscribe(card, li);
@@ -386,8 +412,9 @@ export async function mountCleanup(host, opts = {}) {
     // Below the gate a card stays one click and a twenty-second undo: at
     // three spams a dialog is the friction, not the safety, and a dialog
     // shown every time is the one that gets dismissed without reading.
+    // « Choisir… » asks for the checklist at any size.
     let choice = {};
-    if (card.confirm) {
+    if (card.confirm || pick) {
       choice = await askWithPreview(card);
       if (!choice || destroyed) return;
     }
@@ -479,15 +506,23 @@ export async function mountCleanup(host, opts = {}) {
   const JOB_KEY = (cardId) => `cleanup.job.${cardId}`;
 
   async function runBulkUnsubscribe(card, li) {
-    // Every subscription, by name, with the mailbox it belongs to. This is
-    // the page's only action with no undo, and the sheet used to name three
-    // senders and say "+ 6" about the rest.
+    // Every subscription, by name, with the mailbox it belongs to, and a
+    // box to untick each one. "Se désabonner des 9" used to be the only
+    // answer the sheet accepted -- all nine or none -- and nobody wants to
+    // leave every list they ever joined.
     const detail = card.detail || (card.vars.names || []).map((name) => ({ name }));
-    const ok = await confirmAsync({
+    // Without the sender address a row cannot be told apart from the rest,
+    // so the sheet stays read-only rather than offering a choice it could
+    // not honour.
+    const canPick = detail.length > 1 && detail.every((d) => d.sender);
+    const keyOf = (d) => JSON.stringify([d.sender || '', d.account || null]);
+    const res = await confirmAsync({
       title: t('cleanup.unsub.sheet.title', { n: card.vars.n }),
       message: t('cleanup.unsub.sheet.body'),
+      note: canPick ? t('cleanup.unsub.sheet.note') : '',
       confirmLabel: t('cleanup.unsub.sheet.confirm', { n: card.vars.n }),
       danger: false,
+      checkable: canPick,
       wide: detail.length > 6,
       details: detail.map((d) => ({
         label: d.name || d.sender || '',
@@ -495,34 +530,49 @@ export async function mountCleanup(host, opts = {}) {
           multiAccount() && d.account ? d.account : '',
           d.total != null ? t('cleanup.unsub.sheet.row', { n: d.total, read: d.read ?? 0 }) : '',
         ].filter(Boolean).join(' · '),
-        value: JSON.stringify([d.sender || '', d.account || null]),
+        value: keyOf(d),
       })),
+      onChange: (checked) => t('cleanup.unsub.sheet.confirm', { n: checked.length }),
     });
-    if (!ok || destroyed) return;
+    if (!res || destroyed) return;
+
+    // One entry per (sender, mailbox): the link is a per-subscription
+    // token, and the personal account's token does not unsubscribe the
+    // work account.
+    let entries = card.entries || card.senders.map((sender) => ({ sender, account: account || null }));
+    let kept = [];
+    if (canPick && res.unchecked?.length) {
+      const off = new Set(res.unchecked);
+      kept = detail.filter((d) => off.has(keyOf(d)))
+        .map((d) => ({ sender: d.sender, account: d.account || null }));
+      const on = detail.filter((d) => !off.has(keyOf(d)));
+      entries = on.map((d) => ({ sender: d.sender, account: d.account || null }));
+    }
+    const chosen = detail.filter((d) => entries.some(
+      (e) => e.sender === d.sender && (e.account || null) === (d.account || null)));
 
     li.dataset.state = 'running';
     li.querySelector('.cln-card-foot').hidden = true;
-    let res;
+    // The kept lists first, and not fatal: if remembering them fails they
+    // simply come back next visit, which is today's behaviour.
+    if (kept.length) {
+      try { await api.keepSubscriptions(kept, account || undefined); } catch (_) {}
+    }
+    let out;
     try {
-      // One entry per (sender, mailbox): the link is a per-subscription
-      // token, and the personal account's token does not unsubscribe the
-      // work account.
-      res = await api.unsubscribeBulk({
-        entries: card.entries || card.senders.map((sender) => ({ sender, account: account || null })),
-        account: account || undefined,
-        purge: false,
-      });
+      out = await api.unsubscribeBulk({ entries, account: account || undefined, purge: false });
     } catch (err) { showError(li, err); return; }
 
-    if (!res.job_id) {
-      finishUnsub(card, li, { done: 0, failed: 0, skipped: res.skipped || [] });
+    const ctx = { chosen, kept: kept.length };
+    if (!out.job_id) {
+      finishUnsub(card, li, { done: 0, failed: 0, skipped: out.skipped || [], ...ctx });
       return;
     }
-    try { sessionStorage.setItem(JOB_KEY(card.id), res.job_id); } catch (_) {}
-    pollUnsubJob(card, li, res.job_id, res.total, res.skipped || []);
+    try { sessionStorage.setItem(JOB_KEY(card.id), out.job_id); } catch (_) {}
+    pollUnsubJob(card, li, out.job_id, out.total, out.skipped || [], ctx);
   }
 
-  function pollUnsubJob(card, li, jobId, total, skipped) {
+  function pollUnsubJob(card, li, jobId, total, skipped, ctx = {}) {
     const run = li.querySelector('.cln-card-run');
     const bar = li.querySelector('.cln-bar-fill');
     const text = li.querySelector('.cln-card-run-text');
@@ -546,25 +596,39 @@ export async function mountCleanup(host, opts = {}) {
       text.textContent = t('cleanup.unsub.running', { done: seen, total: snap.total });
       if (!snap.finished) { later(tick, 700); return; }
       try { sessionStorage.removeItem(JOB_KEY(card.id)); } catch (_) {}
-      finishUnsub(card, li, { done: snap.done, failed: snap.failed, skipped });
+      finishUnsub(card, li, {
+        done: snap.done, failed: snap.failed, skipped,
+        failedItems: snap.failed_items || [], ...ctx,
+      });
     };
     tick();
   }
 
-  function finishUnsub(card, li, { done, failed, skipped }) {
+  function finishUnsub(card, li, { done, failed, skipped, failedItems = [], chosen = null, kept = 0 }) {
     li.dataset.state = 'done';
     li.querySelector('.cln-card-run').hidden = true;
     const box = li.querySelector('.cln-card-done');
     box.hidden = false;
+    // Names, not addresses, for the lists that refused -- and only those.
+    // The sentence used to read out every list on the card, the nine that
+    // went through included.
+    const pool = chosen || card.detail || [];
+    const nameOf = (addr) => pool.find((d) => d.sender === addr)?.name || addr;
+    const refused = failedItems.length
+      ? [...new Set(failedItems.map(nameOf))]
+      : (chosen ? chosen.map((d) => d.name || d.sender) : (card.vars.names || []));
     let html = '';
     if (failed) {
       html += `<p class="cln-card-done-msg">${escapeHtml(t('cleanup.unsub.partial.title', { done, failed }))}</p>`;
-      html += `<p class="cln-card-after">${escapeHtml(t('cleanup.unsub.partial.body', { names: (card.vars.names || []).join(', ') }))}</p>`;
+      html += `<p class="cln-card-after">${escapeHtml(t('cleanup.unsub.partial.body', { names: refused.join(', ') }))}</p>`;
     } else {
       html += `<p class="cln-card-done-msg">${escapeHtml(t('cleanup.unsub.done', { n: done }))}</p>`;
     }
     if (skipped && skipped.length) {
-      html += `<p class="cln-card-after">${escapeHtml(t('cleanup.unsub.skipped', { names: skipped.join(', ') }))}</p>`;
+      html += `<p class="cln-card-after">${escapeHtml(t('cleanup.unsub.skipped', { names: skipped.map(nameOf).join(', ') }))}</p>`;
+    }
+    if (kept) {
+      html += `<p class="cln-card-after">${escapeHtml(t('cleanup.unsub.kept', { n: kept }))}</p>`;
     }
     box.innerHTML = html;
     announce(box.textContent);

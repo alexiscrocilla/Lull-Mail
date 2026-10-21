@@ -287,11 +287,14 @@ def main() -> None:
 
     @app.post("/__test__/cleanup")
     def _seed_cleanup(kind: str = "spam", n: int = 260, senders: int = 5,
-                      account: str = PRIMARY, pipe: int = 0, solo: int = 0):
+                      account: str = PRIMARY, pipe: int = 0, solo: int = 0,
+                      unsub: int = 0):
         """Seed a pile big enough for a card to reach its confirm gate.
 
         The default mailbox is 18 well-behaved messages, which is by design:
         the cards the preview exists for only appear past a few hundred.
+        `unsub` gives every sender a one-click List-Unsubscribe, which is
+        what puts them on the bulk unsubscribe card.
         Test-harness only.
         """
         from datetime import datetime as _dt, timedelta as _td, timezone as _tz
@@ -320,6 +323,8 @@ def main() -> None:
                 when.strftime("%a, %d %b %Y %H:%M:%S +0000"), when.isoformat(),
                 "corps", "<p>corps</p>", 1 if i % 2 == 0 else 0,
                 "inbox", kind, 0,
+                f"https://bulk.example/unsub/{i % senders}" if unsub else None,
+                "List-Unsubscribe=One-Click" if unsub else None,
             ))
         # One statement, one commit. Row-by-row insert_email commits per
         # message, and a few hundred commits on WAL took long enough that the
@@ -329,8 +334,9 @@ def main() -> None:
                 "INSERT INTO emails (message_id, account_email, uid, subject,"
                 " sender, recipient, date_received, date_received_iso, body_text,"
                 " body_html, is_read, folder, category, local_classified,"
+                " unsubscribe_url, list_unsubscribe_post,"
                 " is_favourite, needs_reply)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0)", rows)
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0)", rows)
         return {"ok": True, "seeded": n}
 
     @app.post("/__test__/reset")

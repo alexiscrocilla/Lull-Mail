@@ -147,6 +147,9 @@ automatique, désactivée par défaut. Deux décisions, deux champs saisis, troi
 - **Le clavier dans les fenêtres surgissantes restantes** (déplacer, étiqueter,
   trier) : pas de déplacement du focus, pas d'Échap, pas de flèches.
 - **Les quatre en-têtes de section de la barre latérale**, qui écoutent le clic
-  sur un `<div>` sans `tabindex` ni `role`.
+  sur un `<div>` sans `tabindex` ni `role`. *Fait depuis : leur libellé est un
+  bouton (Entrée, Espace, `aria-expanded`), et une section repliée sort de
+  l'ordre de tabulation. Les catégories, elles, ont quitté la barre latérale
+  pour des onglets au-dessus de la liste.*
 - **Les quatre aides dupliquées** entre le formulaire de l'assistant et celui
   des Paramètres.

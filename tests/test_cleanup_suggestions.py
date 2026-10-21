@@ -173,6 +173,87 @@ def test_an_already_unsubscribed_sender_drops_off_the_card(fresh_app):
     assert "unsub_bulk" not in _cards(sug.compute())
 
 
+def test_a_list_the_user_kept_is_not_offered_again(fresh_app):
+    """Unticked in the unsubscribe sheet means "I want this one". Without a
+    memory of it the card came back after the press, titled with exactly
+    the lists the user had just said they wanted."""
+    from src import cleanup_suggestions as sug, database as db
+
+    _insert(db, _newsletter("alpha", 12, one_click=True))
+    _insert(db, _newsletter("beta", 8, one_click=True))
+    sug.keep_subscriptions([{"sender": "Alpha@Shop.fr", "account": "u@x.fr"}])
+
+    payload = sug.compute()
+    card = _cards(payload)["unsub_bulk"]
+    assert card["senders"] == ["beta@shop.fr"]
+    assert payload["kept_subs"] == 1
+
+    # And it comes back when the user asks for it.
+    assert sug.unkeep_all() == 1
+    assert set(_cards(sug.compute())["unsub_bulk"]["senders"]) == {
+        "alpha@shop.fr", "beta@shop.fr"}
+
+
+def test_keeping_a_list_in_one_mailbox_keeps_it_there_only(fresh_app):
+    """The same newsletter at work and at home is two subscriptions, and
+    wanting it at work says nothing about home."""
+    from src import cleanup_suggestions as sug, database as db
+
+    for acct in ("home@x.fr", "work@x.fr"):
+        _insert(db, [dict(r, account=acct, message_id=f"{r['message_id']}-{acct}")
+                     for r in _newsletter("alpha", 12, one_click=True)])
+    sug.keep_subscriptions([{"sender": "alpha@shop.fr", "account": "work@x.fr"}])
+
+    card = _cards(sug.compute())["unsub_bulk"]
+    assert card["entries"] == [{"sender": "alpha@shop.fr", "account": "home@x.fr"}]
+
+
+def test_keeping_twice_does_not_duplicate(fresh_app):
+    from src import cleanup_suggestions as sug
+
+    entry = {"sender": "alpha@shop.fr", "account": "u@x.fr"}
+    sug.keep_subscriptions([entry])
+    assert sug.keep_subscriptions([entry, dict(entry, sender=" ALPHA@shop.fr ")]) == 1
+
+
+def test_the_keep_routes_return_the_recomputed_page(client, fresh_app):
+    from src import database as db
+
+    _insert(db, _newsletter("alpha", 12, one_click=True))
+    _insert(db, _newsletter("beta", 8, one_click=True))
+    r = client.post("/api/cleanup/unsubscribe/keep", json={
+        "entries": [{"sender": "alpha@shop.fr", "account": "u@x.fr"}]})
+    assert r.status_code == 200
+    assert _cards(r.json()["suggestions"])["unsub_bulk"]["senders"] == ["beta@shop.fr"]
+
+    r = client.post("/api/cleanup/unsubscribe/unkeep")
+    assert r.status_code == 200 and r.json()["restored"] == 1
+    assert r.json()["suggestions"]["kept_subs"] == 0
+
+
+def test_unhide_answers_for_the_mailbox_on_screen(client, fresh_app):
+    """Unscoped, a page filtered to one account repainted with every
+    account's cards while its picker still named the one."""
+    r = client.post("/api/cleanup/unhide?account=work@x.fr")
+    assert r.status_code == 200
+    assert r.json()["suggestions"]["account"] == "work@x.fr"
+
+
+def test_a_failed_unsubscribe_says_which_list_refused(fresh_app, monkeypatch):
+    from src import api, email_fetcher
+
+    monkeypatch.setattr(email_fetcher, "unsubscribe_http",
+                        lambda url, timeout_s=5.0: (url.endswith("/ok"), 500, "nope"))
+    job = api._make_job("unsubscribe", "unsubscribe:bulk", 2)
+    api._run_unsubscribe_job(job, [
+        {"kind": "http_post", "sender": "good@shop.fr", "url": "https://a.example/ok"},
+        {"kind": "http_post", "sender": "bad@shop.fr", "url": "https://a.example/ko"},
+    ])
+    snap = api._jobs[job]
+    assert snap["finished"] and snap["failed"] == 1
+    assert snap["failed_items"] == ["bad@shop.fr"]
+
+
 def test_a_sender_without_one_click_gets_the_manual_card_instead(fresh_app):
     from src import cleanup_suggestions as sug, database as db
 

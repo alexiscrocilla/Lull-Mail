@@ -1790,8 +1790,12 @@ def _make_job(action: str, sender: str, total: int) -> str:
     return job_id
 
 
-def _bump_job(job_id: str, ok: bool):
-    """Increment the done/failed counters and mark finished when complete."""
+def _bump_job(job_id: str, ok: bool, failed_item: Optional[str] = None):
+    """Increment the done/failed counters and mark finished when complete.
+
+    `failed_item` names what failed (an unsubscribe's sender), so the page
+    can say which lists refused instead of reading out every name it sent.
+    """
     with _jobs_lock:
         j = _jobs.get(job_id)
         if not j:
@@ -1800,6 +1804,8 @@ def _bump_job(job_id: str, ok: bool):
             j["done"] += 1
         else:
             j["failed"] += 1
+            if failed_item:
+                j.setdefault("failed_items", []).append(failed_item)
         if j["done"] + j["failed"] >= j["total"]:
             j["finished"] = True
             j["finished_at"] = _now_iso()
@@ -1833,10 +1839,39 @@ def cleanup_hide(request: Request, req: CleanupHideReq):
 
 @app.post("/api/cleanup/unhide")
 @limiter.limit("60/minute")
-def cleanup_unhide(request: Request):
+def cleanup_unhide(request: Request, account: Optional[str] = None):
+    # Recomputed for the mailbox the page is showing. Unscoped, a page
+    # filtered to one account repainted with every account's cards while
+    # its picker still named the one.
     from src import cleanup_suggestions as sug
     n = sug.unhide_all()
-    return {"ok": True, "restored": n, "suggestions": sug.compute()}
+    return {"ok": True, "restored": n, "suggestions": sug.compute(account)}
+
+
+class UnsubscribeKeepReq(BaseModel):
+    entries: List[UnsubscribeEntry]
+    account: Optional[str] = None
+
+
+@app.post("/api/cleanup/unsubscribe/keep")
+@limiter.limit("60/minute")
+def cleanup_unsubscribe_keep(request: Request, req: UnsubscribeKeepReq):
+    """Remember subscriptions the user wants to keep.
+
+    They are the lists unticked in the unsubscribe sheet. Without this, the
+    card came straight back after the press, titled with exactly those.
+    """
+    from src import cleanup_suggestions as sug
+    n = sug.keep_subscriptions([e.model_dump() for e in req.entries])
+    return {"ok": True, "kept": n, "suggestions": sug.compute(req.account)}
+
+
+@app.post("/api/cleanup/unsubscribe/unkeep")
+@limiter.limit("60/minute")
+def cleanup_unsubscribe_unkeep(request: Request, account: Optional[str] = None):
+    from src import cleanup_suggestions as sug
+    n = sug.unkeep_all()
+    return {"ok": True, "restored": n, "suggestions": sug.compute(account)}
 
 
 class CleanupWindowEdge(BaseModel):
@@ -2097,7 +2132,7 @@ def _run_unsubscribe_job(job_id: str, plan: List[Dict]):
                     ok = False
             elif not ok:
                 logger.info(f"unsubscribe POST {sender}: status={status} err={err}")
-            _bump_job(job_id, ok)
+            _bump_job(job_id, ok, None if ok else sender)
 @app.post("/api/cleanup/unsubscribe/backfill")
 def cleanup_unsubscribe_backfill(account: Optional[str] = None, bg: BackgroundTasks = None):
     rows = db.find_uids_missing_headers(account)

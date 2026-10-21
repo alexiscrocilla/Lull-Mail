@@ -447,8 +447,25 @@ export const api = {
     });
   },
 
-  unhideCleanupCards() {
-    return j('/api/cleanup/unhide', { method: 'POST' });
+  // Recomputed for `account`, the mailbox the page is scoped to.
+  unhideCleanupCards(account) {
+    const qs = account ? `?account=${encodeURIComponent(account)}` : '';
+    return j(`/api/cleanup/unhide${qs}`, { method: 'POST' });
+  },
+
+  // Subscriptions the user unticked in the unsubscribe sheet: "I keep this
+  // one". `entries` are (sender, mailbox) pairs, like unsubscribeBulk's.
+  keepSubscriptions(entries, account) {
+    return j('/api/cleanup/unsubscribe/keep', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entries, account }),
+    });
+  },
+
+  unkeepSubscriptions(account) {
+    const qs = account ? `?account=${encodeURIComponent(account)}` : '';
+    return j(`/api/cleanup/unsubscribe/unkeep${qs}`, { method: 'POST' });
   },
 
   // Put back what a cleanup action just did. `undo` is the payload the action

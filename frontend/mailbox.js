@@ -677,17 +677,11 @@ export async function mountMailbox(host, _opts) {
           </div>
         </div>
 
-        <div class="mb-side-section" data-section="labels">
-          <div class="mb-section-title" id="title-labels">
-            <span>${t('mb.sidebar.categories')}</span>
-            <svg class="mb-collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-          </div>
-          <div class="mb-collapsible" id="wrap-labels">
-            <div class="mb-collapsible-inner">
-              <div class="mb-section" id="mb-labels"></div>
-            </div>
-          </div>
-        </div>
+        <!-- The categories are not here any more. In the sidebar they were
+             styled exactly like the folders above them, so with "Boîte de
+             réception" and "Toutes" both highlighted nobody could tell a
+             place from a filter. They are tabs over the list now (#mb-cats),
+             which is where Apple Mail and Proton Mail put them. -->
 
         <div class="mb-side-section" data-section="userlabels">
           <div class="mb-section-title" id="title-userlabels">
@@ -774,9 +768,17 @@ export async function mountMailbox(host, _opts) {
             <div class="sort-select" id="sort-select-wrap"></div>
           </div>
         </div>
-        <!-- The selection bar sits DIRECTLY under the search row — it used
-             to come after the filter bar, which read as a stray band in the
-             middle of the header stack. -->
+        <!-- Category tabs: a view of the inbox, not a place. One row, one
+             choice, underlined like the tabs of every mail client people
+             already know. Inbox only -- a "Newsletters" tab over the Trash
+             answers a question nobody asks. -->
+        <div class="mb-cats-wrap" id="mb-cats-wrap" hidden>
+          <div class="mb-cats" id="mb-cats" role="tablist"
+               aria-label="${t('mb.cats.group')}"></div>
+        </div>
+        <!-- The selection bar sits directly above the list it acts on — it
+             used to come after the filter bar, which read as a stray band in
+             the middle of the header stack. -->
         <div class="mb-sel-bar" id="sel-bar" hidden>
           <div class="sel-left">
             <button class="sel-btn" data-act="clear" title="${t('mb.sel.clear')}" aria-label="${t('mb.sel.clear')}">
@@ -877,6 +879,20 @@ export async function mountMailbox(host, _opts) {
    * The flag lives on the element, so it survives re-renders of the pane and
    * is released even if the handler throws.
    */
+  /*
+   * Ask before deleting something, in the app's own dialog. window.confirm
+   * opened a system box titled with the local server's address
+   * ("127.0.0.1:8000 indique…"), with no focus trap and OK under the
+   * cursor. The strings were written for it -- a question, then the
+   * consequence in parentheses on a second line -- so each half goes to
+   * its own slot.
+   */
+  function _askDelete(text) {
+    const [question, ...rest] = String(text).split('\n');
+    const message = rest.join(' ').trim().replace(/^\((.*)\)$/, '$1');
+    return confirmAsync({ title: question, message, confirmLabel: t('mb.delete'), danger: true });
+  }
+
   const _once = (fn) => async (ev) => {
     const btn = ev.currentTarget;
     if (btn.dataset.busy) return;
@@ -921,15 +937,38 @@ export async function mountMailbox(host, _opts) {
     // '0' / '1' takes over regardless of the default.
     const stored = localStorage.getItem(storageKey);
     const collapsed = stored === null ? defaultCollapsed : stored === '1';
-    if (collapsed) {
-      wrapEl.classList.add('is-collapsed');
-      titleEl.classList.add('is-collapsed');
+    // The header is a <div> listening for clicks, which no keyboard can
+    // reach. Its text label becomes the control -- a sibling of the "+"
+    // button, not its parent, so no button ends up nested in another.
+    const label = titleEl.querySelector(':scope > span');
+    if (label) {
+      label.setAttribute('role', 'button');
+      label.tabIndex = 0;
+      if (wrapEl.id) label.setAttribute('aria-controls', wrapEl.id);
     }
+    const paint = (isCollapsed) => {
+      wrapEl.classList.toggle('is-collapsed', isCollapsed);
+      titleEl.classList.toggle('is-collapsed', isCollapsed);
+      label?.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+      // A folded section is only faded and squeezed to zero height, so its
+      // buttons stayed in the Tab order: a keyboard user walked through
+      // folders they could not see. inert takes them out with it.
+      wrapEl.inert = isCollapsed;
+    };
+    paint(collapsed);
+    const toggle = () => {
+      const now = !wrapEl.classList.contains('is-collapsed');
+      paint(now);
+      localStorage.setItem(storageKey, now ? '1' : '0');
+    };
     titleEl.addEventListener('click', (e) => {
       if (e.target.closest('button')) return; // don't collapse on icon-btn clicks
-      const now = wrapEl.classList.toggle('is-collapsed');
-      titleEl.classList.toggle('is-collapsed', now);
-      localStorage.setItem(storageKey, now ? '1' : '0');
+      toggle();
+    });
+    label?.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      toggle();
     });
   }
 
@@ -996,6 +1035,7 @@ export async function mountMailbox(host, _opts) {
         renderEmpty();
         clearSelection();
         renderFolders();
+        renderCategories();   // the tabs belong to the inbox alone
         loadEmails();
       });
     });
@@ -1028,57 +1068,109 @@ export async function mountMailbox(host, _opts) {
     renderFolders();
   }
 
-  let _labelsFingerprint = '';
+  // ── Category tabs ─────────────────────────────────────────
+  //
+  // Categories sort the inbox and nothing else, as in Apple Mail and Proton
+  // Mail. The choice is kept while the user visits another folder rather
+  // than cleared, so coming back lands on the tab they left -- but it never
+  // filters anything outside the inbox, where no tab says it is on.
+  const _catApplies = () => state.folder === 'inbox';
+  const _activeCategory = () => (_catApplies() ? state.category : '');
 
-  function renderLabels() {
-    const cont = $('#mb-labels');
-    // Compute category unread counts from loaded emails
-    const catCounts = {};
+  // Display order. `pending` is last and only shown while it holds mail: it
+  // is a transit state (fresh mail the analysis has not reached), not a
+  // place anyone files things, and an always-empty "Non triés" tab is noise.
+  const CAT_TABS = ['', 'important', 'transactional', 'newsletter', 'other', 'spam', 'pending'];
+  const CAT_ICON = { '': 'mails', ...Object.fromEntries(LABELS.map((l) => [l.id, l.icon])) };
+  const CAT_COLOR = { '': 'var(--accent)', ...Object.fromEntries(LABELS.map((l) => [l.id, l.color])) };
+
+  let _catsFingerprint = '';
+
+  function _selectCategory(cat, { focus = false } = {}) {
+    if (cat === state.category) return;
+    state.category = cat;
+    _filterDidChange = true;
+    renderCategories();
+    if (focus) $(`#mb-cats [data-cat="${cat}"]`)?.focus();
+    applyFilter(true); // skip chips re-render, applyFilter will call it
+  }
+
+  function renderCategories() {
+    const wrap = $('#mb-cats-wrap');
+    const cont = $('#mb-cats');
+    if (!wrap || !cont) return;
+    wrap.hidden = !_catApplies();
+    if (wrap.hidden) return;
+
+    // Unread per category, over the mail loaded for the inbox.
+    const unread = {};
+    const present = {};
     for (const em of state.emails || []) {
       const c = em.category || 'other';
-      if (!em.is_read) catCounts[c] = (catCounts[c] || 0) + 1;
+      present[c] = true;
+      if (!em.is_read) unread[c] = (unread[c] || 0) + 1;
     }
-    const totalUnread = state.emails?.filter((e) => !e.is_read).length || 0;
     // With no model nothing can be classified `important` any more -- but
-    // rows classified while the AI was on keep the category, so hide the row
-    // only when it would also be empty. `pending` stays either way: it is
-    // the default category of every freshly ingested message, and with the
-    // row's category glyph gone this list is the only route to spam and
-    // newsletters.
-    const hideImportant = !window.aiEnabled && !(catCounts.important || 0);
-    const LABELS_V = LABELS.filter((l) => !(hideImportant && l.id === 'important'));
-    const fp = state.category + '|' + totalUnread + '|' + LABELS_V.map((l) => l.id + ':' + (catCounts[l.id] || 0)).join(',');
-    if (fp === _labelsFingerprint && cont.firstElementChild) {
-      // Only active class sync when counts unchanged
-      cont.querySelectorAll('.mb-label').forEach((b) => {
-        b.classList.toggle('active', b.dataset.cat === state.category);
-      });
-      return;
-    }
-    _labelsFingerprint = fp;
-    cont.innerHTML = `
-      <button class="mb-label ${state.category === '' ? 'active' : ''}" data-cat="">
-        <i data-lucide="inbox" class="cat-icon" style="color:var(--muted-2)"></i>
-        <span class="lab">${t('mb.category.all')}</span>
-        ${totalUnread > 0 ? `<span class="mb-label-count">${totalUnread}</span>` : ''}
-      </button>
-    ` + LABELS_V.map((l) => {
-      const cnt = catCounts[l.id] || 0;
+    // rows classified while the AI was on keep the category, so drop the
+    // tab only when it would also be empty. Spam and newsletters stay
+    // either way: they come from rules that run with no model at all, and
+    // these tabs are the only route to them.
+    const tabs = CAT_TABS.filter((id) => {
+      if (id === 'important') return window.aiEnabled || present.important || state.category === id;
+      if (id === 'pending') return present.pending || state.category === id;
+      return true;
+    });
+    const fp = state.category + '|' + tabs.map((id) => id + ':' + (unread[id] || 0)).join(',');
+    if (fp === _catsFingerprint && cont.firstElementChild) return;
+    _catsFingerprint = fp;
+
+    cont.innerHTML = tabs.map((id) => {
+      const on = state.category === id;
+      const name = t(`mb.cats.${id || 'all'}`);
+      // No count on "Tous": the inbox badge in the sidebar already says it.
+      const n = id ? (unread[id] || 0) : 0;
+      const tip = n ? `${name} · ${t('mb.cats.unread', { n })}` : name;
       return `
-      <button class="mb-label ${state.category === l.id ? 'active' : ''}" data-cat="${l.id}">
-        <i data-lucide="${l.icon}" class="cat-icon" style="color:${l.color}"></i>
-        <span class="lab">${CATEGORY_LABEL[l.id] || l.label}</span>
-        ${cnt > 0 ? `<span class="mb-label-count">${cnt}</span>` : ''}
-      </button>
-    `}).join('');
+        <button type="button" class="mb-cat" role="tab" data-cat="${id}"
+                aria-selected="${on ? 'true' : 'false'}" aria-controls="email-list"
+                tabindex="${on ? '0' : '-1'}" title="${escapeHtml(tip)}"
+                aria-label="${escapeHtml(tip)}" style="--cat-c:${CAT_COLOR[id]}">
+          <i data-lucide="${CAT_ICON[id]}" aria-hidden="true"></i>
+          <span class="mb-cat-lab">${escapeHtml(name)}</span>
+          ${n ? `<span class="mb-cat-count" aria-hidden="true">${n}</span>` : ''}
+        </button>`;
+    }).join('');
     window.lucide?.createIcons({ el: cont });
-    cont.querySelectorAll('.mb-label').forEach((b) => {
-      b.addEventListener('click', () => {
-        state.category = b.dataset.cat;
-        _filterDidChange = true;
-        renderLabels();
-        applyFilter(true); // skip chips re-render, applyFilter will call it
-      });
+    const active = cont.querySelector('[aria-selected="true"]');
+    // Bring the chosen tab into view when the row scrolls (narrow list).
+    active?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }
+
+  // One listener for the row, attached once: the buttons are rebuilt on
+  // every count change. Arrow keys move between tabs and select as they go,
+  // like any tab strip -- filtering is instant, so there is nothing to
+  // confirm with Enter.
+  function _wireCategoryTabs() {
+    const cont = $('#mb-cats');
+    if (!cont) return;
+    cont.addEventListener('click', (e) => {
+      const b = e.target.closest('.mb-cat');
+      // Enter/Space on a focused tab arrives here too, and the rebuild
+      // would otherwise drop keyboard focus to <body>.
+      if (b) _selectCategory(b.dataset.cat, { focus: cont.contains(document.activeElement) });
+    });
+    cont.addEventListener('keydown', (e) => {
+      const tabs = [...cont.querySelectorAll('.mb-cat')];
+      const i = tabs.indexOf(document.activeElement);
+      if (i < 0) return;
+      let next = null;
+      if (e.key === 'ArrowRight') next = tabs[(i + 1) % tabs.length];
+      else if (e.key === 'ArrowLeft') next = tabs[(i - 1 + tabs.length) % tabs.length];
+      else if (e.key === 'Home') next = tabs[0];
+      else if (e.key === 'End') next = tabs[tabs.length - 1];
+      if (!next) return;
+      e.preventDefault();
+      _selectCategory(next.dataset.cat, { focus: true });
     });
   }
 
@@ -1282,7 +1374,7 @@ export async function mountMailbox(host, _opts) {
 
     if (isEdit) {
       backdrop.querySelector('#mb-label-modal-delete').addEventListener('click', async () => {
-        if (!confirm(t('mb.label.confirm.delete', { name: existing.name }))) return;
+        if (!(await _askDelete(t('mb.label.confirm.delete', { name: existing.name })))) return;
         try {
           await api.deleteLabel(existing.id);
           window.toast(t('mb.label.toast.deleted'));
@@ -1384,7 +1476,7 @@ export async function mountMailbox(host, _opts) {
 
     if (isEdit) {
       backdrop.querySelector('#mb-folder-modal-delete').addEventListener('click', async () => {
-        if (!confirm(t('mb.folder.confirm.delete', { name: existing.name }))) return;
+        if (!(await _askDelete(t('mb.folder.confirm.delete', { name: existing.name })))) return;
         try {
           await api.deleteFolder(existing.id);
           window.toast(t('mb.folder.toast.deleted'));
@@ -1900,15 +1992,17 @@ export async function mountMailbox(host, _opts) {
     _sortDropCleanup = () => document.removeEventListener('click', onSortOutside);
   }
 
+  // The category tab is not counted: it is a view of the inbox with its own
+  // always-visible control, like a folder, and "Réinitialiser" appearing the
+  // moment someone opens the Spam tab would call a choice a filter.
   function _anyFilterActive() {
-    return state.onlyUnread || state.onlyReply || state.category !== '' || state.query.trim() !== '' || state.accountFilters.size > 0 || state.labelFilter != null;
+    return state.onlyUnread || state.onlyReply || state.query.trim() !== '' || state.accountFilters.size > 0 || state.labelFilter != null;
   }
 
   function _clearAllFilters() {
     state.searchError = false;
     state.onlyUnread = false;
     state.onlyReply = false;
-    state.category = '';
     state.query = '';
     state.accountFilters.clear();
     state.labelFilter = null;
@@ -1918,7 +2012,7 @@ export async function mountMailbox(host, _opts) {
     if (inp) inp.value = '';
     _filterDidChange = true;
     renderChips();
-    renderLabels();
+    renderCategories();
     renderUserLabels();             // drop the active label highlight
     renderAccounts();               // drop the active account highlight
     // account/label are server-side filters, so state.emails only holds the
@@ -1986,8 +2080,8 @@ export async function mountMailbox(host, _opts) {
   }
 
   // Filters that live outside the query string: the sidebar's account
-  // selection, its label row, its category row. Nothing in the header said
-  // any of them was on.
+  // selection and its label row. Nothing in the header said either was on.
+  // The category has no chip: its tab, right above the list, already says it.
   function _stateChips() {
     const out = [];
     if (state.accounts.length > 1 && state.accountFilters.size) {
@@ -2005,13 +2099,6 @@ export async function mountMailbox(host, _opts) {
       out.push({
         label: t('mb.filter.label', { v: lab?.name || state.labelFilter }),
         drop: 'label',
-      });
-    }
-    if (state.category) {
-      const meta = LABELS.find((l) => l.id === state.category);
-      out.push({
-        label: t('mb.filter.category', { v: meta?.label || state.category }),
-        drop: 'category',
       });
     }
     return out;
@@ -2036,14 +2123,6 @@ export async function mountMailbox(host, _opts) {
       renderChips();
       renderUserLabels();
       loadEmails();
-      return;
-    }
-    if (chip.drop === 'category') {
-      state.category = '';
-      _filterDidChange = true;
-      renderChips();
-      renderLabels();
-      applyFilter();
       return;
     }
     _setQuery(dropOperator(state.query, chip.op, chip.family));
@@ -2247,7 +2326,7 @@ export async function mountMailbox(host, _opts) {
     // here (and emails from removed accounts are excluded either way).
     if (q && state.searchResults) {
       const activeAccts = new Set(state.accounts.map((a) => a.email));
-      const cat0 = state.category || '';
+      const cat0 = _activeCategory();
       // Compose the quick chips (Unread / Reply) + category + account scope
       // ON TOP of the server search hits, so every filter intersects rather
       // than one silently overriding the others.
@@ -2265,11 +2344,11 @@ export async function mountMailbox(host, _opts) {
       renderList(items);
       refreshGlobalSelectAll();
       updateBadge();
-      renderLabels();  // keep category unread counters live
+      renderCategories();  // keep category unread counters live
       return;
     }
     const activeEmails = new Set(state.accounts.map((a) => a.email));
-    const cat = state.category || '';
+    const cat = _activeCategory();
     const filtered = state.emails.filter((em) => {
       // Exclude emails from accounts that have been removed from config
       if (activeEmails.size > 0 && !activeEmails.has(em.account_email)) return false;
@@ -2292,7 +2371,7 @@ export async function mountMailbox(host, _opts) {
     renderList(items);
     refreshGlobalSelectAll();
     updateBadge();
-    renderLabels();  // keep category unread counters live
+    renderCategories();  // keep category unread counters live
   }
 
   function updateBadge() {
@@ -2747,6 +2826,13 @@ export async function mountMailbox(host, _opts) {
       return { icon: 'filter-x', title: t('mb.empty.filter_title'),
                desc: t('mb.list.empty_filter'), action: 'clear-filters' };
     }
+    // An empty tab is not an empty inbox. Say which, and offer the way back.
+    const cat = _activeCategory();
+    if (cat) {
+      return { icon: CAT_ICON[cat] || 'mails',
+               title: t('mb.cats.empty_title', { name: t(`mb.cats.${cat}`) }),
+               desc: t('mb.cats.empty_desc'), action: 'all-categories' };
+    }
     if (state.folder === 'deleted') {
       return { icon: 'trash-2', title: t('mb.empty.trash_title'), desc: t('mb.empty.trash_desc') };
     }
@@ -2800,6 +2886,7 @@ export async function mountMailbox(host, _opts) {
     const label = s.action === 'retry-search' ? t('mb.empty.retry')
                 : s.action === 'clear-search' ? t('mb.empty.clear_search')
                 : s.action === 'clear-filters' ? t('mb.empty.clear_filters')
+                : s.action === 'all-categories' ? t('mb.cats.show_all')
                 : '';
     const btn = label
       ? `<button type="button" class="mb-empty-cta" data-empty-act="${s.action}">${escapeHtml(label)}</button>`
@@ -2836,6 +2923,10 @@ export async function mountMailbox(host, _opts) {
       if (act === 'retry-search') {
         state.searchError = false;
         runServerSearch();
+        return;
+      }
+      if (act === 'all-categories') {
+        _selectCategory('', { focus: true });
         return;
       }
       if (act === 'clear-search') {
@@ -4324,6 +4415,9 @@ export async function mountMailbox(host, _opts) {
         const btn = $('#btn-read-toggle');
         if (btn) {
           btn.title = read ? t('mb.action.mark_unread') : t('mb.action.mark_read');
+          // The accessible name too: it kept announcing the action the
+          // button had just performed.
+          btn.setAttribute('aria-label', btn.title);
           btn.innerHTML = `<i data-lucide="${read ? 'mail' : 'mail-open'}" class="w-4 h-4"></i>`;
           window.lucide?.createIcons();
         }
@@ -4971,7 +5065,7 @@ export async function mountMailbox(host, _opts) {
       const confirmMsg = sourceWasUser
         ? t('mb.draft.confirm.delete_draft')
         : t('mb.draft.confirm.delete_suggestion');
-      if (!confirm(confirmMsg)) return;
+      if (!(await _askDelete(confirmMsg))) return;
       const ta = $('#mb-composer textarea');
       if (ta) ta.value = '';
       const ok = await deleteReplyDraft({ alsoClearAi: true });
@@ -5316,6 +5410,11 @@ export async function mountMailbox(host, _opts) {
       // A newer openEmail started while this fetch was in flight — drop the
       // stale response so it can't paint over the email the user is now on.
       if (myTok !== _openEmailToken) return;
+      // Opening marks the message read, so draw it read. Drawn from the
+      // pre-open fetch, the pane offered « Marquer comme lu » on a message
+      // that already was, until some later event happened to repaint it.
+      const wasUnread = !em.is_read;
+      if (wasUnread) em.is_read = 1;
       renderEmail(em);
       if (pane) setTimeout(() => pane.classList.remove('mb-read-swap'), 280);
       // Pull in the rest of the conversation (non-blocking): the opened
@@ -5324,7 +5423,7 @@ export async function mountMailbox(host, _opts) {
       loadThreadInto(em);
       const idx = state.emails.findIndex((e) => e.int_id === intId);
       // Mark read locally + remotely
-      if (!em.is_read) {
+      if (wasUnread) {
         if (idx >= 0) {
           state.emails[idx].is_read = 1;
           host.querySelectorAll(`.mb-card[data-id="${intId}"]`).forEach((c) => c.classList.remove('unread'));
@@ -5339,6 +5438,15 @@ export async function mountMailbox(host, _opts) {
           if (i >= 0) state.emails[i].is_read = 0;
           host.querySelectorAll(`.mb-card[data-id="${intId}"]`).forEach((c) => c.classList.add('unread'));
           updateBadge();
+          // And the pane's toggle, which was drawn read above.
+          em.is_read = 0;
+          const btn = state.selectedId === intId ? $('#btn-read-toggle') : null;
+          if (btn) {
+            btn.title = t('mb.action.mark_read');
+            btn.setAttribute('aria-label', btn.title);
+            btn.innerHTML = '<i data-lucide="mail-open" class="w-4 h-4"></i>';
+            window.lucide?.createIcons({ nodes: [btn] });
+          }
         });
       }
       // Sync attachment summary into the list card.
@@ -6104,6 +6212,20 @@ export async function mountMailbox(host, _opts) {
       state.onlyReply = true;
       renderChips();
     }
+    // `#/inbox?folder=deleted` — the cleanup page's « Ouvrir la corbeille ».
+    // Nothing read the parameter, so that link landed on the inbox.
+    const folderM = hash.match(/[?&]folder=([^&]+)/);
+    if (folderM && FOLDERS.some((f) => f.id === folderM[1])) {
+      state.folder = folderM[1];
+      renderFolders();
+    }
+    // A link that carries its own search describes the whole view. A
+    // category tab left on from an earlier visit would intersect with it
+    // and land the user on an empty list that the link promised was full.
+    if (hash.match(/[?&]q=/) && state.category) {
+      state.category = '';
+    }
+    renderCategories();
     // Consume them, the way ?focus= already is. Left in the hash, these
     // re-applied their filter on every later remount — clicking "Toutes"
     // cleared the chip but the next re-render silently put it back.
@@ -6111,10 +6233,10 @@ export async function mountMailbox(host, _opts) {
     // the parameter in the hash, so a user who followed a link from the
     // cleanup page, cleared the search box, then triggered any remount got
     // the query silently reapplied.
-    if (sortM || unreadM || hash.match(/[?&]reply=1/) || hash.match(/[?&]q=/)) {
+    if (sortM || unreadM || folderM || hash.match(/[?&]reply=1/) || hash.match(/[?&]q=/)) {
       try {
         let h = location.hash;
-        for (const k of ['sort', 'unread', 'reply', 'q']) h = _stripHashParam(k, h);
+        for (const k of ['sort', 'unread', 'reply', 'q', 'folder']) h = _stripHashParam(k, h);
         if (h !== location.hash) history.replaceState(null, '', h);
       } catch (_) {}
     }
@@ -6346,7 +6468,7 @@ export async function mountMailbox(host, _opts) {
 
     pane.querySelector('#btn-delete-draft')?.addEventListener('click', async () => {
       if (draftId == null) { renderEmpty(); return; }
-      if (!confirm(t('mb.draft.confirm.delete_draft'))) return;
+      if (!(await _askDelete(t('mb.draft.confirm.delete_draft')))) return;
       pendingDelete = true;
       if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
       try {
@@ -6596,12 +6718,13 @@ export async function mountMailbox(host, _opts) {
     const d = e.detail || {};
     const row = state.emails.find((x) => x.int_id === d.int_id);
     if (!row) return;
-    const wasIn = !state.category || row.category === state.category;
+    const cat = _activeCategory();
+    const wasIn = !cat || row.category === cat;
     row.category = d.category || row.category;
     row.needs_reply = d.needs_reply ? 1 : 0;
     if (d.has_draft) row.draft_response = row.draft_response || ' ';
-    renderLabels();
-    const isIn = !state.category || row.category === state.category;
+    renderCategories();
+    const isIn = !cat || row.category === cat;
     if (wasIn !== isIn) applyFilter();
   };
   window.addEventListener('lull:verdict', onVerdict);
@@ -6692,7 +6815,7 @@ export async function mountMailbox(host, _opts) {
     if (_si) _si.value = state.query;
   }
   renderFolders();
-  renderLabels();
+  renderCategories();
   renderUserLabels();
   loadUserLabels();
   loadCustomFolders();
@@ -6732,7 +6855,7 @@ export async function mountMailbox(host, _opts) {
     localStorage.setItem('mb-retired-v1', '1');
   }
   initCollapsible($('#title-folders'),     $('#wrap-folders'),     'sb-folders');
-  initCollapsible($('#title-labels'),      $('#wrap-labels'),      'sb-labels');
+  _wireCategoryTabs();
   // ÉTIQUETTES (personal labels) is rarely populated on first run and
   // adds noise to the sidebar when empty. Start it folded; once the
   // user opens it the choice is remembered.

@@ -834,6 +834,121 @@ button { font: inherit; }
   color: var(--accent-ink);
   border-color: color-mix(in oklab, var(--accent) 40%, transparent);
 }
+
+/* ── Category tabs ────────────────────────────────────────────────
+   Tabs over the list, the way Apple Mail and Proton Mail show their
+   categories. In the sidebar they wore the exact styling of the folders
+   above them, so nobody read them as a filter of the list.
+   Underlined rather than pill-shaped on purpose: the pills just above are
+   filters that switch a state, and the two must not look alike.
+   The wrapper is the size container, so the row can drop to icons when
+   the read pane squeezes the list. */
+.mb-cats-wrap {
+  flex-shrink: 0;
+  container-type: inline-size;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.mb-cats {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.mb-cats::-webkit-scrollbar { display: none; }
+.mb-cat {
+  /* --cat-c is the category's pastel, set inline. Pastel on white is under
+     2:1, so the icon and the underline use a deepened mix of it: the hue
+     still says which category, and the mark is visible on both themes. */
+  --cat-ink: color-mix(in oklab, var(--cat-c) 62%, var(--text));
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 10px 10px 11px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  border-radius: 8px 8px 0 0;
+  transition: color 140ms ease, background 140ms ease;
+}
+.mb-cat:hover { color: var(--text); background: var(--surface-2); }
+.mb-cat[aria-selected="true"] { color: var(--text); font-weight: 600; }
+.mb-cat::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--cat-ink);
+  transform: scaleX(0);
+  transition: transform 180ms cubic-bezier(.4, 0, .2, 1);
+}
+.mb-cat[aria-selected="true"]::after { transform: scaleX(1); }
+.mb-cat:focus-visible { outline-offset: -2px; }
+.mb-cat svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--cat-ink);
+}
+.mb-cat-count {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 17px;
+  text-align: center;
+}
+.mb-cat[aria-selected="true"] .mb-cat-count {
+  background: color-mix(in oklab, var(--cat-c) 30%, var(--surface));
+}
+/* A narrower list (the smallest window, or the read pane open): the icons
+   go first. The names are what tells a user these are categories at all,
+   which is the complaint this row exists to answer. */
+@container (max-width: 680px) {
+  .mb-cats { gap: 0; }
+  .mb-cat { padding-left: 7px; padding-right: 7px; }
+  .mb-cat svg { display: none; }
+}
+/* Too narrow for six names: the other tabs keep their icon and count, the
+   chosen one keeps its name -- Apple Mail's answer to the same squeeze. The
+   names stay in the accessibility tree. */
+@container (max-width: 440px) {
+  .mb-cat svg { display: block; }
+  .mb-cat:not([aria-selected="true"]) .mb-cat-lab {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+/* Narrower still: counts on the other tabs become a dot. */
+@container (max-width: 360px) {
+  .mb-cat:not([aria-selected="true"]) .mb-cat-count {
+    min-width: 0;
+    width: 6px;
+    height: 6px;
+    padding: 0;
+    font-size: 0;
+    background: var(--cat-ink);
+  }
+}
+
 /* Account avatar in sidebar */
 .mb-acc-av {
   width: 20px;
@@ -4206,6 +4321,21 @@ kbd {
 }
 .cln-card-go:hover { filter: brightness(1.06); }
 .cln-card-go:disabled { opacity: .55; cursor: default; filter: none; }
+/* The same set as a checklist. A real button beside the primary, not a
+   link: "only some of them" is the answer most people came with. */
+.cln-card-pick {
+  margin-left: -6px;
+  padding: 9px 14px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+.cln-card-pick:hover { border-color: var(--accent); color: var(--accent); }
 
 .cln-card-peek {
   font-size: 13px;
@@ -4220,7 +4350,9 @@ kbd {
   padding: 4px 8px;
   border: 0;
   background: none;
-  color: var(--muted-2, var(--muted));
+  /* --muted, not --muted-2: the latter measures 2.4:1 and is reserved for
+     decoration, and this is a button label. */
+  color: var(--muted);
   font-size: 12.5px;
   cursor: pointer;
   border-radius: 6px;
@@ -4315,8 +4447,10 @@ kbd {
 }
 .cln-guard { margin-left: auto; text-align: right; }
 
-/* Read-only list of names inside the unsubscribe sheet. Read-only on
-   purpose: checkboxes here would be configuration in a costume. */
+/* The list of what a dialog is about to touch. Read-only by default; the
+   cleanup previews and the unsubscribe sheet make it a checklist
+   (.is-checkable), because "all of them or none" was the answer users
+   refused. */
 .confirm-details {
   margin: 0 0 4px;
   padding: 10px 12px;
@@ -4486,7 +4620,11 @@ kbd {
    height for more than three of them. */
 .confirm-card.is-wide { max-width: min(680px, 92vw); }
 .is-wide .confirm-details { max-height: min(50vh, 360px); }
-.confirm-note { margin: -2px 0 10px; font-size: 12px; color: var(--muted); }
+/* Inset like .confirm-msg above them. With no side margin the note and the
+   list ran flush to the card's edges, out of line with everything else. */
+.confirm-note { margin: -6px 20px 12px; font-size: 12px; color: var(--muted); }
+.confirm-card .confirm-details { margin: 0 20px 14px; }
+.confirm-detail-label { color: var(--text); }
 .confirm-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .confirm-details.is-checkable li { padding: 0; }
 .confirm-details.is-checkable label {
@@ -4503,6 +4641,42 @@ kbd {
 .confirm-detail-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .confirm-detail-sub { font-size: 11.5px; color: var(--muted); }
 .confirm-btn-ok:disabled { opacity: .5; cursor: not-allowed; }
+/* Above a checklist: how many are ticked, all-or-none, and a filter once
+   the list outgrows a screenful. */
+.confirm-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 20px 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.confirm-filter {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.confirm-filter:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+.confirm-count { margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.confirm-toggle-all {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.confirm-toggle-all:hover { border-color: var(--accent); color: var(--accent); }
+.confirm-toggle-all:disabled { opacity: .5; cursor: default; }
+.confirm-nomatch { margin: 0 20px 8px; font-size: 12.5px; color: var(--muted); }
 
 .confirm-card {
   background: var(--surface);
