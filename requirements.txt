@@ -49,7 +49,9 @@ Pillow==12.3.0
 # Optional — only for the local MCP server (src/mcp_server.py), which lets
 # the user's own Claude/Cursor query their triaged inbox over stdio without
 # data leaving the machine. The core app never imports it.
-mcp>=1.2.0
+# Below 2: mcp 2.x removed mcp.server.fastmcp, which src/mcp_server.py
+# imports, so an unpinned install broke the server and skipped its tests.
+mcp>=1.2.0,<2
 
 # --- Optional: local LLM backend ---
 # Installed separately via `pip install -r requirements-local.txt
