@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Prove the browser Playwright will launch is actually on disk.
+// Prove the browsers Playwright will launch are actually on disk: Chromium
+// for the whole suite, WebKit for the remote-content spec.
 //
 // CI's install step once ended without running `playwright install` at all —
 // `pnpm` is a .cmd shim on Windows, and a batch script that calls one without
@@ -12,9 +13,11 @@
 // `playwright install --dry-run` does not help: it prints what WOULD be
 // downloaded whether or not anything is there. Launching is the only check
 // that answers the question the tests are about to ask.
-import { chromium } from '@playwright/test';
+import { chromium, webkit } from '@playwright/test';
 
-const browser = await chromium.launch();
-const version = browser.version();
-await browser.close();
-console.log(`Chromium ${version} launches from this install.`);
+for (const [label, type] of [['Chromium', chromium], ['WebKit', webkit]]) {
+  const browser = await type.launch();
+  const version = browser.version();
+  await browser.close();
+  console.log(`${label} ${version} launches from this install.`);
+}

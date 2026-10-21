@@ -129,7 +129,7 @@ jobs:
           pip install -r requirements-dev.txt
           cd frontend
           pnpm install --frozen-lockfile
-          pnpm exec playwright install chromium
+          pnpm exec playwright install chromium webkit
 
       # A missing browser must never again look like a successful install.
       # --dry-run would not do: it prints what WOULD be downloaded whether or

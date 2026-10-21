@@ -32,6 +32,19 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure',
   },
+  projects: [
+    // Unnamed on purpose: a project's name goes into every screenshot file
+    // name, and this one owns all the baselines.
+    { name: '' },
+    // The app also ships on WKWebView and WebKitGTK. What a message frame
+    // fetches is where engines differ, so that spec runs on WebKit too; the
+    // screenshots stay pinned to Chromium's rasteriser.
+    {
+      name: 'webkit',
+      use: { browserName: 'webkit' },
+      testMatch: /remote-content\.spec\.mjs$/,
+    },
+  ],
   webServer: {
     // CI installs the dependencies into the interpreter on PATH; a local
     // checkout usually keeps them in .venv. PYTHON overrides the choice
