@@ -1063,6 +1063,11 @@ export async function mountMailbox(host, _opts) {
       if (!Array.isArray(state.customFolders)) state.customFolders = [];
     }
     renderFolders();
+    // renderFolders() rebuilds every badge empty. The other call sites
+    // repaint them right after; this one answers whenever /api/folders does,
+    // and when that is after the list, the inbox count stayed at 0 until
+    // something else redrew it.
+    updateBadge();
   }
 
   // ── Category tabs ─────────────────────────────────────────
