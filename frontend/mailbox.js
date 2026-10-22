@@ -6,8 +6,7 @@ import {
   shortDate, shortDateHtml, longDate, escapeHtml, linkify, isHomographUrl, safeLinkUrl,
   CATEGORY_LABEL, scoreClass,
 } from '/static/api.js';
-import { dropOutsidePolicy, rewriteRemoteImages, senderDomain, withRemoteContentPolicy }
-  from '/static/image-blocker.js';
+import { prepareMessage, senderDomain } from '/static/image-blocker.js';
 import { confirmAsync, dismissOpenConfirms } from '/static/confirm.js';
 import { openAttachmentPreview, dismissAttachmentPreview }
   from '/static/attachment-preview.js';
@@ -90,30 +89,26 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
     }
   </style>`;
 
-  // 1. Anti-phishing link rewriting.
-  let safeHtml = markSuspiciousLinksInHtml(em.body_html);
-
-  // 2. Remote-image blocker. Skipped when the user previously trusted
-  //    the sender or just clicked "Charger pour ce mail".
-  let blockedCount = 0;
+  // One parse for everything: the anti-phishing link marking, the
+  // remote-image blocker (skipped when the user trusted the sender or just
+  // clicked "Charger pour ce mail"), and the policy, with our <base target>
+  // and reset CSS ahead of the email. Whatever precedes the email's first
+  // tag lands in the implied <head>, so nothing searches the email's text
+  // for a <head> that may not be one.
   const showRemote = !!em.sender_images_trusted || forceShowImages;
-  if (!showRemote) {
-    const out = rewriteRemoteImages(safeHtml);
-    safeHtml = out.html;
-    blockedCount = out.blockedCount;
-  } else {
-    safeHtml = dropOutsidePolicy(safeHtml);
+  const prepared = prepareMessage(em.body_html, {
+    allowRemote: showRemote, head: INJECT, decorate: markSuspiciousLinks,
+  });
+  // Too heavy to render in reasonable time, or a serialisation that will
+  // not settle: the plain text, said as much.
+  if (!prepared.srcdoc) {
+    const text = em.body_text && em.body_text.trim()
+      ? `<div class="mb-body-text">${linkify(em.body_text)}</div>` : '';
+    return `<div class="mb-body-notice" role="note" style="color:var(--muted);font-style:italic;margin-bottom:12px">`
+      + `${escapeHtml(_t(text ? 'mb.read.too_complex_text' : 'mb.read.too_complex'))}</div>${text}`;
   }
-
-  // 3. Our <base target> and reset CSS go ahead of the email, and the
-  //    policy that makes step 2 hold ahead of those: the rewrite only knows
-  //    the vectors it enumerates, the browser refuses every remote fetch.
-  //    Whatever precedes the email's first tag lands in the implied <head>,
-  //    so there is no searching the email's text for a <head> that may not
-  //    be one (a <header>, a comment, an attribute value) and no pattern a
-  //    run of unclosed "<head" or "<html" can drive quadratic. Still ahead
-  //    of the email's own head content, as the anchored insert used to be.
-  const finalHtml = withRemoteContentPolicy(INJECT + safeHtml, showRemote);
+  const finalHtml = prepared.srcdoc;
+  const { blockedCount } = prepared;
 
   // SECURITY: no `allow-scripts`. Email JavaScript never runs, which is
   // what makes `allow-same-origin` safe to add here: the dangerous combo
@@ -352,27 +347,18 @@ function authBadgeHtml(authJson, domain) {
 }
 
 
-// Walk every <a> in the email HTML and tag it visually when its href looks
+// Walk every <a> of the parsed email and tag it visually when its href looks
 // like a homograph spoof (Cyrillic/Greek in the host) or already arrived in
 // punycode form (xn--…). The iframe is sandboxed without `allow-scripts`,
 // so external CSS would never apply — we set inline style + a title for the
-// hover tooltip. Same heuristic as on plain-text bodies via linkify.
-function markSuspiciousLinksInHtml(html) {
+// hover tooltip. Same heuristic as on plain-text bodies via linkify. Runs on
+// the document prepareMessage parsed, so the message is parsed only once.
+function markSuspiciousLinks(doc) {
   const _t = window.t || ((k) => k);
-  if (!html) return html;
-  let doc;
-  try {
-    doc = new DOMParser().parseFromString(html, 'text/html');
-  } catch (_) {
-    return html;
-  }
-  const anchors = doc.querySelectorAll('a[href]');
-  let flagged = 0;
-  anchors.forEach((a) => {
+  doc.querySelectorAll('a[href]').forEach((a) => {
     const href = a.getAttribute('href') || '';
     if (!/^https?:\/\//i.test(href)) return;
     if (!isHomographUrl(href)) return;
-    flagged += 1;
 
     // Click target is the server-rendered interstitial. The browser will
     // open it in the same way the original link wanted (target=_blank
@@ -398,7 +384,6 @@ function markSuspiciousLinksInHtml(html) {
       a.setAttribute('title', _t('mb.link.suspicious_title'));
     }
   });
-  return flagged > 0 ? doc.documentElement.outerHTML : html;
 }
 
 const FOLDERS = [
@@ -4168,9 +4153,9 @@ export async function mountMailbox(host, _opts) {
     // (notifications GitHub anciennes, alertes CLI, etc.) — rare.
     //
     // L'image-blocker honore `em.sender_images_trusted`. Quand le sender
-    // est trusted, l'iframe rend le HTML original. Sinon rewriteRemoteImages
-    // strippe + banner avec deux boutons (one-shot ou toujours pour ce
-    // domaine).
+    // est trusted, l'iframe charge les images distantes. Sinon
+    // prepareMessage les remplace + banner avec deux boutons (one-shot ou
+    // toujours pour ce domaine). Un message trop lourd s'affiche en texte.
     // Four states, not two. `body_failed` is between attempts and will be
     // retried; `failed` has exhausted them. Both used to fall through to
     // "(corps du mail vide)", which told the user their message was empty

@@ -19,7 +19,7 @@ import {
   avatarColor, initials, avatarImgHtml, senderName, senderEmail,
   shortDateHtml, scoreClass,
 } from '/static/api.js';
-import { rewriteRemoteImages, withRemoteContentPolicy } from '/static/image-blocker.js';
+import { prepareMessage } from '/static/image-blocker.js';
 
 const t = (k, v) => (window.t ? window.t(k, v) : k);
 
@@ -599,15 +599,18 @@ export async function mountAI(host, opts = {}) {
       // Sandboxed (no scripts), remote images stripped — same blocker the
       // inbox uses, minus the trust/one-shot buttons: this is a preview,
       // so the policy never lets anything remote in.
-      const blocked = rewriteRemoteImages(em.body_html).html;
-      const doc = withRemoteContentPolicy('<base target="_blank"><style>'
-        + 'html,body{margin:0;padding:12px;overflow-x:hidden;word-break:break-word;'
-        + 'font-family:system-ui,sans-serif;font-size:14px}'
-        + 'img,video{max-width:100%!important;height:auto!important}'
-        + 'table{max-width:100%!important;table-layout:fixed!important}'
-        + '</style>' + blocked);
-      bodyHtml = `<iframe class="aiw-reader-iframe" sandbox="allow-popups allow-popups-to-escape-sandbox"`
-        + ` srcdoc="${escapeHtml(doc)}" title="${escapeHtml(em.subject || t('aiw.no_subject'))}"></iframe>`;
+      const prepared = prepareMessage(em.body_html, {
+        head: '<base target="_blank"><style>'
+          + 'html,body{margin:0;padding:12px;overflow-x:hidden;word-break:break-word;'
+          + 'font-family:system-ui,sans-serif;font-size:14px}'
+          + 'img,video{max-width:100%!important;height:auto!important}'
+          + 'table{max-width:100%!important;table-layout:fixed!important}'
+          + '</style>',
+      });
+      bodyHtml = prepared.srcdoc
+        ? `<iframe class="aiw-reader-iframe" sandbox="allow-popups allow-popups-to-escape-sandbox"`
+          + ` srcdoc="${escapeHtml(prepared.srcdoc)}" title="${escapeHtml(em.subject || t('aiw.no_subject'))}"></iframe>`
+        : `<div class="aiw-reader-text aiw-reader-empty">${t('aiw.reader.too_complex')}</div>`;
     } else {
       bodyHtml = `<div class="aiw-reader-text aiw-reader-empty">${t('aiw.reader.empty')}</div>`;
     }

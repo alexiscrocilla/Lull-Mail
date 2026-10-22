@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
-  countRemoteCssUrls, dropOutsidePolicy, remoteContentPolicy, withRemoteContentPolicy,
-} from '../image-blocker.js';
+import { countRemoteCssUrls, remoteContentPolicy, withRemoteContentPolicy } from '../image-blocker.js';
 
 const directives = (policy) => Object.fromEntries(policy.split('; ')
   .map((d) => { const [name, ...sources] = d.split(' '); return [name, sources]; }));
@@ -75,84 +73,103 @@ test('local CSS references are not counted, relative ones only under a remote ba
   assert.equal(countRemoteCssUrls(css, 'https://cdn.example/nl/'), 2);
 });
 
+
 test('CSS is read the way CSS reads it', () => {
   const remote = (css, base) => countRemoteCssUrls(css, base);
   const sheet = (css) => `data:text/css;base64,${Buffer.from(css).toString('base64')}`;
+  const BS = String.fromCharCode(92);
 
   // Counted: any case, any quoting, whitespace around, parentheses inside
   // quotes, an escaped parenthesis in a bare URL, a data: sheet's own URLs.
   assert.equal(remote('.a{background:URL(https://x.example/u.gif)}'), 1);
   assert.equal(remote('.a{background:url("https://x.example/a(b).gif")}'), 1);
   assert.equal(remote('.a{background:url(\t"https://x.example/q.gif"\n)}'), 1);
-  assert.equal(remote('.a{background:url(https://x.example/a\\)b.gif)}'), 1);
+  assert.equal(remote(`.a{background:url(https://x.example/a${BS})b.gif)}`), 1);
   assert.equal(remote('@import url("data:text/css,.h%7Bbackground:url(https://x.example/d.gif)%7D");'), 1);
-  // Unquoted, the "(" inside makes it a bad url: CSS imports nothing.
-  assert.equal(remote('@import url(data:text/css,.h%7Bbackground:url(https://x.example/d.gif)%7D);'), 0);
   assert.equal(remote(`@import "${sheet('.h{background:url(https://x.example/e.gif)}')}";`), 1);
-  // Not references: a comment, a string that is not an @import, another
-  // function, a bad url, a fragment into the document even under a base,
-  // and a relative URL inside a data: sheet, which resolves to nothing.
+  // What both engines fetch and the scanner used to miss: a url( closed by
+  // the end of the input, strings in image-set(), escapes in the function
+  // name, the at-keyword or the URL itself.
+  assert.equal(remote('background-image:url(https://x.example/eof.gif'), 1);
+  assert.equal(remote('.e{background:url("https://x.example/eof2.gif'), 1);
+  assert.equal(remote("background-image:image-set('https://x.example/i.gif' 1x, \"https://x.example/j.gif\" 2x)"), 2);
+  assert.equal(remote('background-image:-webkit-image-set(url(https://x.example/k.gif) 1x)'), 1);
+  assert.equal(remote(`@${BS}69mport "https://x.example/c.css";`), 1);
+  assert.equal(remote(`background:u${BS}72l(https://x.example/u.gif)`), 1);
+  assert.equal(remote(`background:url('ht${BS}74ps://x.example/s.gif')`), 1);
+  // Not references: a comment, a string outside @import and image-set(),
+  // another function, bad urls, @namespace (it fetches nothing), and a
+  // reference into the document from a property that takes an element.
   assert.equal(remote('/* url(https://x.example/c.gif) */'), 0);
   assert.equal(remote('.a::before{content:"url(https://x.example/s.gif)"}'), 0);
   assert.equal(remote('.a{background:myurl(https://x.example/m.gif)}'), 0);
   assert.equal(remote('.a{background:url(https://x.example/a b)}'), 0);
   assert.equal(remote('.a{background:url("https://x.example/a" b)}'), 0);
-  assert.equal(remote('.a{fill:url(#g)} .b{clip-path:url( #c)}', 'https://cdn.example/nl/'), 0);
-  assert.equal(remote(`@import "${sheet('.h{background:url(rel.gif)}')}";`), 0);
+  assert.equal(remote('@import url(data:text/css,.h%7Bbackground:url(https://x.example/d.gif)%7D);'), 0);
+  assert.equal(remote('@namespace svg url(https://x.example/ns);'), 0);
+  assert.equal(remote('.a{fill:url(#g)} .b{clip-path:url( #c)} .c{marker-end:url(#m)}', 'https://cdn.example/nl/'), 0);
 });
 
-test('no hostile run of CSS can make the scan quadratic', () => {
-  // Each of these drove a pattern quadratic: the first one swallowed "(",
-  // the next let a url( be followed by a long run of whitespace (13 to
-  // 19 s for 200 KB in the pane, over 90 s at 2 MB).
+test('a fragment-only URL is local only where it names an element', () => {
+  // Chromium resolves background-image:url(#x) against the <base> and
+  // fetches it; fill:url(#g) points at a gradient and fetches nothing.
+  const base = 'https://cdn.example/nl/';
+  assert.equal(countRemoteCssUrls("div{background:url('#x')}", base), 1);
+  assert.equal(countRemoteCssUrls('rect{fill:url(#g);stroke:url(#s)}', base), 0);
+  // Without a remote base it resolves to the app itself: nothing remote.
+  assert.equal(countRemoteCssUrls("div{background:url('#x')}"), 0);
+});
+
+test('data: stylesheets are decoded the way the browser decodes them', () => {
+  const remote = (css, base) => countRemoteCssUrls(css, base);
+  const css = '.k{background:url(https://x.example/k.gif)}';
+  const pct = (bytes) => [...bytes].map((b) => `%${b.toString(16).padStart(2, '0')}`).join('');
+  const b64 = Buffer.from(css).toString('base64');
+
+  // base64 whose padding is percent-encoded: percent-decode first.
+  assert.equal(remote(`@import "data:text/css;base64,${b64.replace(/=/g, '%3D')}";`), 1);
+  // UTF-16, by charset and by byte-order mark.
+  assert.equal(remote(`@import "data:text/css;charset=utf-16le,${pct(Buffer.from(css, 'utf16le'))}";`), 1);
+  assert.equal(remote(`@import "data:text/css,${pct(Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(css, 'utf16le')]))}";`), 1);
+  // A tab inside the scheme, which the URL parser drops.
+  assert.equal(remote(`@import "da\tta:text/css,${encodeURIComponent(css)}";`), 1);
+  // Four levels deep.
+  let nested = css;
+  for (let i = 0; i < 4; i += 1) nested = `@import "data:text/css;base64,${Buffer.from(nested).toString('base64')}";`;
+  assert.equal(remote(nested), 1);
+  // "#" starts the URL's fragment: what follows is not part of the sheet.
+  assert.equal(remote('@import "data:text/css,.k{color:#fff}.k{background:url(https://x.example/after-hash.gif)}";'), 0);
+  // Not a stylesheet: data: of another type never applies.
+  assert.equal(remote(`@import "data:text/plain,${encodeURIComponent(css)}";`), 0);
+  // A relative URL inside resolves against the document, as Chromium does.
+  const rel = `@import "data:text/css,${encodeURIComponent('.k{background:url(rel.gif)}')}";`;
+  assert.equal(remote(rel), 0);
+  assert.equal(remote(rel, 'https://cdn.example/nl/'), 1);
+});
+
+test('no hostile CSS can make the count quadratic', () => {
+  // Each of these drove an earlier version quadratic: a pattern that
+  // swallowed "(", whitespace after url(, a URL resolved against a 100 KB
+  // base or data: URL once per reference (7 to 16 s at 200 KB).
+  const BS = String.fromCharCode(92);
   const units = ['url(//', 'url("//', "url('//", 'url( ', '@import "', 'url("url(\'',
-    'url("\\"', '/*', 'url(((', 'u\\72l('];
-  const inputs = units.map((u) => [JSON.stringify(u), u.repeat(Math.floor(200_000 / u.length))]);
-  for (const ch of [' ', '\t', '\n']) {
-    inputs.push([`url( then ${JSON.stringify(ch)} x 2 MB`, `url(${ch.repeat(2_000_000)}x`]);
+    `url("${BS}"`, '/*', 'url(((', `u${BS}72l(`, `${BS}`, '@', 'image-set(', 'image-set("'];
+  const inputs = [];
+  for (const size of [200_000, 2_000_000]) {
+    for (const u of units) inputs.push([`${JSON.stringify(u)} x ${size}`, u.repeat(Math.floor(size / u.length))]);
+    for (const ch of [' ', '\t', '\n']) inputs.push([`url( then ${JSON.stringify(ch)} x ${size}`, `url(${ch.repeat(size)}x`]);
+    inputs.push([`data: @import of url(a), ${size}`, `@import "data:text/css,${'url(a)'.repeat(size / 6)}";`]);
+    inputs.push([`data: @import, base64, ${size}`,
+      `@import "data:text/css;base64,${Buffer.from('url(a)'.repeat(size / 8)).toString('base64')}";`]);
+    inputs.push([`nested data: @imports, ${size}`, `@import "data:text/css,${'@import %22data:text/css,'.repeat(size / 26)}";`]);
   }
-  inputs.push(['url(" then 2 MB with no closing quote', `url("${'a'.repeat(2_000_000)}`]);
+  const longBase = `http://example.invalid/${'a'.repeat(100_000)}`;
   for (const [label, css] of inputs) {
-    const started = performance.now();
-    countRemoteCssUrls(css);
-    const elapsed = performance.now() - started;
-    assert.ok(elapsed < 250, `${label}: ${elapsed.toFixed(0)} ms`);
-  }
-});
-
-test('dropping hints edits only the hint tags', () => {
-  const page = '<html><head><title>A <link rel="prefetch" href="t"> title</title>\n'
-    + '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n'
-    + '<LINK REL="PreFetch dns-prefetch" HREF="https://x.example/p">\n'
-    + '<link rel="preload" as="fetch" href="https://x.example/f" crossorigin>\n'
-    + '<link rel="preload" href="https://x.example/q?a=1>2" as="image">\n'
-    + '<link rel="stylesheet" href="https://x.example/s.css">\n'
-    + '<style>/* <link rel=prefetch href=x> */</style>\n'
-    + '</head><body><!-- <link rel="prefetch" href="c"> -->\n'
-    + '<pre id="t">\n\nline after one blank line</pre>\n'
-    + '<noscript><link rel=prerender href="https://x.example/n"></noscript>\n'
-    + '<iframe title="x" srcdoc="&lt;img src=x&gt;" SRCDOC="y"></iframe>\n'
-    + '<textarea><link rel="prefetch" href="ta"></textarea>\n'
-    + '<plaintext><link rel="prefetch" href="pt">';
-  const expected = page
-    .replace('<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>', '')
-    .replace('<LINK REL="PreFetch dns-prefetch" HREF="https://x.example/p">', '')
-    .replace('<link rel="preload" as="fetch" href="https://x.example/f" crossorigin>', '')
-    .replace('<link rel=prerender href="https://x.example/n">', '')
-    .replace('srcdoc="&lt;img src=x&gt;" SRCDOC="y"', 'data-blocked-srcdoc="&lt;img src=x&gt;" data-blocked-srcdoc="y"');
-
-  assert.equal(dropOutsidePolicy(page), expected);
-  // Nothing to drop: the very same string back, not a re-serialised one.
-  const plain = '<pre>\n\nx</pre><link rel="stylesheet" href="s.css">';
-  assert.equal(dropOutsidePolicy(plain), plain);
-});
-
-test('no hostile markup can make the hint scan quadratic', () => {
-  for (const unit of ['<link', '<link rel="', '<!--', '<style>', '</', '<a b=\'', '<x ', '<link =']) {
-    const html = unit.repeat(Math.floor(2_000_000 / unit.length));
-    const started = performance.now();
-    dropOutsidePolicy(html);
-    const elapsed = performance.now() - started;
-    assert.ok(elapsed < 250, `${JSON.stringify(unit)}: ${elapsed.toFixed(0)} ms`);
+    for (const base of [undefined, longBase]) {
+      const started = performance.now();
+      countRemoteCssUrls(css, base);
+      const elapsed = performance.now() - started;
+      assert.ok(elapsed < 500, `${label}${base ? ', long base' : ''}: ${elapsed.toFixed(0)} ms`);
+    }
   }
 });

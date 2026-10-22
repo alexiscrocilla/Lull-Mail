@@ -1,20 +1,30 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Email-body remote-image blocker.
+ * What an email frame may load, and the HTML it gets.
  *
- * Two layers, and only the second one is a guarantee.
+ * `prepareMessage` is the one way into a message frame:
  *
- * 1. `rewriteRemoteImages` walks the HTML body and replaces every
- *    <img src="https://…"> (and the other attributes that fetch on their
- *    own) with an inert placeholder, parking the original URL on a
- *    `data-blocked-*` attribute. That is presentation: the grey slots and
- *    the count on the "N images blocked" banner.
- * 2. `withRemoteContentPolicy` puts a Content-Security-Policy at the top of
- *    the frame document. That is enforcement: the browser refuses the
- *    request itself, whatever markup, CSS or URL spelling asked for it.
- *    A rewriter can only enumerate the vectors it knows about; <style>
- *    url() and @import, `background=`, SVG <image>, `image-set()`, a
- *    srcset with no src, or `ht&#9;tps://` all went around this one.
+ * 1. A message the reading pane could not render in reasonable time is
+ *    refused before any parser sees it (see LIMITS); the caller shows its
+ *    plain text instead.
+ * 2. It is parsed once, into an inert document: no browsing context, so
+ *    nothing in it is fetched or run. Every later decision is taken on that
+ *    tree, never on the text: the scanners that read markup by hand kept
+ *    reading it differently from the browser.
+ * 3. The caller marks what it wants on that tree (suspicious links).
+ * 4. What no policy can hold is removed: resource hints and srcdoc frames.
+ * 5. With remote content blocked, each remote picture becomes a
+ *    placeholder, and what was held back is counted for the banner.
+ * 6. The tree is serialised behind the Content-Security-Policy and the
+ *    caller's head, and that exact string is parsed again. A serialisation
+ *    is not always read back as it was written (namespace tricks can bring
+ *    a <link> back to life), so the frame only ever gets HTML whose own
+ *    parse holds nothing forbidden; otherwise the message is refused.
+ *
+ * The policy is the enforcement: the browser refuses each request itself,
+ * whatever markup, CSS or URL spelling asked for it. The rest is
+ * presentation (placeholders and the count) and the two things a policy
+ * cannot hold.
  *
  * Why client-side?
  * The HTML body lives in the SQLite DB exactly as it arrived. Re-writing
@@ -29,13 +39,9 @@
  *   • data:   inline base64-encoded images
  *   • cid:    Content-ID inline parts (already swapped server-side)
  *   • blob:   anything constructed by the parent JS context
- * Anything else is the tracking surface: the rewriter reads URLs the way
- * the browser's parser does (see isRemoteUrl), the policy refuses all of
- * it whatever the spelling.
- *
- * Runs purely with `DOMParser` + `querySelectorAll` — no innerHTML
- * round-trip. Regex-only would have been smaller but choke on
- * legitimate markup like `<img src="https://…" srcset="…, …">`.
+ * Anything else is the tracking surface: the count resolves URLs with the
+ * engine's own URL parser (see isRemoteUrl), the policy refuses all of it
+ * whatever the spelling.
  */
 
 // 1x1 transparent GIF — keeps the placeholder dimensions implicit
@@ -44,6 +50,8 @@
 const TRANSPARENT_PIXEL =
   'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
 
+const XHTML_NS = 'http://www.w3.org/1999/xhtml';
+const XLINK_NS = 'http://www.w3.org/1999/xlink';
 
 // Where a URL with no <base> of its own resolves: the app page, because a
 // srcdoc frame borrows its parent's base URL. Node, in the unit tests, has
@@ -57,48 +65,134 @@ const BLANK_RE = /^[\x00-\x20]*$/;
 
 
 /**
- * Whether the frame would fetch `url` from another server, resolved against
- * `base` (the document's base URL) by the engine's own URL parser rather
- * than judged by its spelling. The parser drops tabs and newlines, takes
- * `https:host` without slashes, honours only an HTML <base> (an SVG one
- * matches a selector but never reaches `baseURI`), and keeps its platform
- * quirks: Chromium on Windows reads `\\host` as a UNC path it will not
- * load, WebKit as `//host`. Patterns kept getting each of these wrong. The
- * app's own origin is not another server: the policy refuses it all the
- * same, there is just nothing there to offer.
+ * Above these a message is not handed to any parser, nor to the frame.
+ * `bytes`, `tags`, `imports` and `bases` are read off the raw text and can
+ * only over-count (a "<" followed by a letter counts as a tag even inside a
+ * comment), so a message that passes is really under them. `depth` is read
+ * on the parsed tree. Measured on Chromium, the engine that struggles: a
+ * frame holding 128 nested tables or 256 nested blocks had not finished
+ * loading after 15 s, while half those depths loaded in about 20 ms; the
+ * parse itself grows with the square of the nesting, about half a second
+ * for 20,000 nested blocks, and each <base> costs it a URL update (0.3 s
+ * for 6,000 of them). An email has one <base> at most.
  */
-function isRemoteUrl(url, base = APP_URL) {
+export const LIMITS = Object.freeze({ bytes: 5_000_000, tags: 20_000, imports: 256, bases: 16, depth: 128 });
+
+// The most a message's data: stylesheets may cost the count, decoded,
+// before any further one counts as a single blocked item unread.
+const DATA_SHEET_BUDGET = Object.freeze({ sheets: 32, bytes: 1_000_000 });
+
+
+/**
+ * A stand-in for `base` that resolves any URL to the same protocol and
+ * origin, which is all isRemoteUrl reads: the base's origin and a slash.
+ * Resolving against the base itself parsed it again for every reference,
+ * and a hostile <base> or data: stylesheet runs to 200 KB.
+ */
+function resolverFor(base) {
+  try {
+    const u = new URL(base);
+    return u.host ? `${u.protocol}//${u.host}/` : u.protocol;
+  } catch (_) {
+    return APP_URL;
+  }
+}
+
+
+/**
+ * The scheme of `url` as the URL parser reads it (leading spaces and C0
+ * controls skipped, tabs and newlines ignored), lower-cased, or '' for a
+ * relative reference. Reads no further than the scheme.
+ */
+function schemeOf(url) {
+  let i = 0;
+  while (i < url.length && url.charCodeAt(i) <= 32) i += 1;
+  let scheme = '';
+  for (; i < url.length; i += 1) {
+    const c = url.charCodeAt(i);
+    if (c === 9 || c === 10 || c === 13) continue;
+    if (c === 58) return scheme.toLowerCase();
+    const letter = (c | 32) >= 97 && (c | 32) <= 122;
+    if (!letter && !(scheme && ((c >= 48 && c <= 57) || c === 43 || c === 45 || c === 46))) return '';
+    scheme += url[i];
+  }
+  return '';
+}
+
+
+/** Whether `url` starts with two slashes or backslashes, as the parser reads it. */
+function startsWithTwoSlashes(url) {
+  let i = 0;
+  while (i < url.length && url.charCodeAt(i) <= 32) i += 1;
+  let seen = 0;
+  for (; i < url.length && seen < 2; i += 1) {
+    const c = url.charCodeAt(i);
+    if (c === 9 || c === 10 || c === 13) continue;
+    if (c !== 47 && c !== BACKSLASH) return false;
+    seen += 1;
+  }
+  return seen === 2;
+}
+
+
+// Whether the origin of the last resolver asked about is another server's.
+let lastResolver = '';
+let lastResolverRemote = false;
+
+
+/**
+ * Whether the frame would fetch `url` from another server, resolved against
+ * `resolver` (see resolverFor) by the engine's own URL parser rather than
+ * judged by its spelling. The parser drops tabs and newlines, takes
+ * `https:host` without slashes, and keeps its platform quirks: Chromium on
+ * Windows reads `\\host` as a UNC path it will not load, WebKit as
+ * `//host`. The app's own origin is not another server: the policy refuses
+ * it all the same, there is just nothing there to offer.
+ */
+function isRemoteUrl(url, resolver = APP_URL) {
   if (url == null || BLANK_RE.test(url)) return false;
+  // A relative reference that cannot change host (a path, a query, a
+  // fragment) lands on the resolver's own origin: no need to parse it, and
+  // a message can hold hundreds of thousands of them.
+  if (!schemeOf(url) && !startsWithTwoSlashes(url)) {
+    if (resolver !== lastResolver) {
+      lastResolver = resolver;
+      lastResolverRemote = remoteOrigin(resolver);
+    }
+    return lastResolverRemote;
+  }
   let u;
   try {
-    u = new URL(url, base);
+    u = new URL(url, resolver);
   } catch (_) {
     return false;
   }
   return (u.protocol === 'http:' || u.protocol === 'https:') && u.origin !== APP_ORIGIN;
 }
 
-
-/**
- * The same for a URL written in CSS, where `url(#id)` is a reference into
- * the document itself (an SVG gradient, clip-path or filter) and is never
- * resolved against a <base>.
- */
-function isRemoteCssUrl(url, base) {
-  return !/^[\x00-\x20]*#/.test(url) && isRemoteUrl(url, base);
+function remoteOrigin(resolver) {
+  try {
+    const u = new URL(resolver);
+    return (u.protocol === 'http:' || u.protocol === 'https:') && u.origin !== APP_ORIGIN;
+  } catch (_) {
+    return false;
+  }
 }
 
 
 const isSpace = (c) => c === 32 || c === 9 || c === 10 || c === 12 || c === 13;
+const isNewline = (c) => c === 10 || c === 12 || c === 13;
+const isHex = (c) => (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102);
+const isNameChar = (c) => (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57)
+  || c === 45 || c === 95 || c >= 128;
+const BACKSLASH = 92;
 
 
 /**
  * The URLs of a srcset, split by the HTML algorithm: a URL runs to the next
  * whitespace, trailing commas end its candidate, and otherwise its
- * descriptors run to the next comma that is not inside parentheses.
- * Splitting on the first comma read the xmlns of an inline SVG as a remote
- * host and missed the candidate after "1x(,b)"; trimming commas with a
- * pattern was quadratic on a long run of them. One forward pass.
+ * descriptors run to the next comma that is not inside parentheses. One
+ * forward pass.
  */
 function srcsetUrls(srcset) {
   const s = String(srcset || '');
@@ -132,71 +226,157 @@ function srcsetUrls(srcset) {
 
 
 /**
- * A CSS string starting at the quote at `i`: its raw text and where it
- * ends. A backslash escapes the next character; an unescaped newline makes
- * it a bad string (value null), as in CSS.
+ * The CSS escape whose backslash sits just before `i`: [code point, index
+ * after it], decoded as CSS Syntax decodes one.
+ */
+function readEscape(s, i) {
+  if (i >= s.length) return [0xfffd, i];
+  let j = i;
+  while (j < s.length && j - i < 6 && isHex(s.charCodeAt(j))) j += 1;
+  if (j === i) {
+    const cp = s.codePointAt(i);
+    return [cp, i + (cp > 0xffff ? 2 : 1)];
+  }
+  const cp = parseInt(s.slice(i, j), 16);
+  if (j < s.length && isSpace(s.charCodeAt(j))) j += 1;
+  return [cp === 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) ? 0xfffd : cp, j];
+}
+
+
+/** An identifier starting at `i`, escapes decoded: [name, index after it]. */
+function readName(s, i) {
+  let out = '';
+  let from = i;
+  let j = i;
+  while (j < s.length) {
+    const c = s.charCodeAt(j);
+    if (isNameChar(c)) {
+      j += 1;
+    } else if (c === BACKSLASH && j + 1 < s.length && !isNewline(s.charCodeAt(j + 1))) {
+      const [cp, next] = readEscape(s, j + 1);
+      out += s.slice(from, j) + String.fromCodePoint(cp);
+      j = next;
+      from = j;
+    } else {
+      break;
+    }
+  }
+  return [out + s.slice(from, j), j];
+}
+
+
+/**
+ * A CSS string starting at the quote at `i`: its value, escapes decoded,
+ * and where it ends. An unescaped newline makes it a bad string (value
+ * null); the end of the input closes it, as in CSS.
  */
 function readCssString(s, i) {
   const quote = s.charCodeAt(i);
-  let j = i + 1;
+  let out = '';
+  let from = i + 1;
+  let j = from;
   while (j < s.length) {
     const c = s.charCodeAt(j);
-    if (c === quote) return { value: s.slice(i + 1, j), end: j + 1 };
-    if (c === 10 || c === 12 || c === 13) return { value: null, end: j };
-    j += c === 92 ? 2 : 1;
+    if (c === quote) return { value: out + s.slice(from, j), end: j + 1 };
+    if (isNewline(c)) return { value: null, end: j };
+    if (c === BACKSLASH) {
+      out += s.slice(from, j);
+      const d = s.charCodeAt(j + 1);
+      if (Number.isNaN(d) || isNewline(d)) {
+        j += 2;
+      } else {
+        const [cp, next] = readEscape(s, j + 1);
+        out += String.fromCodePoint(cp);
+        j = next;
+      }
+      from = j;
+      continue;
+    }
+    j += 1;
   }
-  return { value: s.slice(i + 1), end: s.length };
+  return { value: out + s.slice(from), end: s.length };
+}
+
+
+/** The rest of a bad url, which CSS consumes up to ")" or the end. */
+function skipBadUrl(s, j) {
+  while (j < s.length) {
+    const c = s.charCodeAt(j);
+    if (c === 41) return { value: null, end: j + 1 };
+    j += c === BACKSLASH ? 2 : 1;
+  }
+  return { value: null, end: s.length };
 }
 
 
 /**
- * The url( token starting at `i`, read the way CSS reads one: quoted or
- * bare, whitespace allowed around the value. A token that does not close
- * is a bad url (value null) and, as in CSS, runs to the next ")".
+ * The value of a url( whose "(" ends just before `i`, read the way CSS
+ * reads it: quoted or bare, whitespace around it, escapes decoded, and
+ * closed by ")" or by the end of the input. Anything else is a bad url
+ * (value null).
  */
-function readUrlToken(s, i) {
+function readUrlValue(s, i) {
   const n = s.length;
-  let j = i + 4;
+  let j = i;
   while (j < n && isSpace(s.charCodeAt(j))) j += 1;
-  let value;
   const c = s.charCodeAt(j);
   if (c === 34 || c === 39) {
     const str = readCssString(s, j);
-    ({ value } = str);
     j = str.end;
-  } else {
-    const from = j;
-    while (j < n) {
-      const d = s.charCodeAt(j);
-      if (isSpace(d) || d === 34 || d === 39 || d === 40 || d === 41) break;
-      j += d === 92 ? 2 : 1;
+    while (j < n && isSpace(s.charCodeAt(j))) j += 1;
+    if (str.value !== null && (j >= n || s.charCodeAt(j) === 41)) {
+      return { value: str.value, end: Math.min(j + 1, n) };
     }
-    j = Math.min(j, n);
-    value = s.slice(from, j);
+    return skipBadUrl(s, j);
   }
-  while (j < n && isSpace(s.charCodeAt(j))) j += 1;
-  if (value !== null && s.charCodeAt(j) === 41) return { value, end: j + 1 };
-  const close = s.indexOf(')', j);
-  return { value: null, end: close < 0 ? n : close + 1 };
+  let out = '';
+  let from = j;
+  while (j < n) {
+    const d = s.charCodeAt(j);
+    if (d === 41) return { value: out + s.slice(from, j), end: j + 1 };
+    if (isSpace(d)) {
+      const value = out + s.slice(from, j);
+      while (j < n && isSpace(s.charCodeAt(j))) j += 1;
+      if (j >= n) return { value, end: n };
+      if (s.charCodeAt(j) === 41) return { value, end: j + 1 };
+      return skipBadUrl(s, j);
+    }
+    if (d === 34 || d === 39 || d === 40) return skipBadUrl(s, j);
+    if (d === BACKSLASH) {
+      if (j + 1 < n && isNewline(s.charCodeAt(j + 1))) return skipBadUrl(s, j);
+      const [cp, next] = readEscape(s, j + 1);
+      out += s.slice(from, j) + String.fromCodePoint(cp);
+      j = next;
+      from = j;
+      continue;
+    }
+    j += 1;
+  }
+  return { value: out + s.slice(from), end: n };
 }
 
 
 /**
- * Every URL a stylesheet or a style attribute refers to: `{ value, start,
- * end, isImport }` for each url(…) and @import "…". A forward-only
- * tokenizer, not a pattern: two patterns in a row could be driven
- * quadratic (a bare url( that swallowed "(", then a url( followed by a long
- * run of whitespace), while here the position never moves back. Comments
- * and strings are skipped the way CSS skips them, so a url( inside one is
- * not a reference. Escapes such as `u\72l(` are not decoded; that only
- * costs a banner count, since the policy refuses those fetches regardless.
+ * Every URL a stylesheet or a style attribute refers to: `{ kind, value,
+ * start, end, isImport, property }` for each url(…), each string inside
+ * image-set(…), and each @import. A forward-only tokenizer, not a pattern:
+ * patterns could be driven quadratic, while here the position never moves
+ * back. It follows CSS where the count depends on it: comments and strings
+ * are not references, escapes are decoded (`u\72l(`, `@\69mport`, an
+ * escaped scheme), a url( left open at the end still counts, and
+ * @namespace fetches nothing. `property` is the declaration a url( sits in,
+ * for url(#id).
  */
 function cssUrls(css) {
   const s = String(css || '');
   const n = s.length;
   const refs = [];
   let i = 0;
-  let afterImport = false;
+  let property = '';
+  let lastName = '';
+  let atRule = '';
+  let parens = 0;
+  let imageSet = 0;
   while (i < n) {
     const c = s.charCodeAt(i);
     if (c === 47 && s.charCodeAt(i + 1) === 42) {
@@ -204,24 +384,52 @@ function cssUrls(css) {
       i = close < 0 ? n : close + 2;
     } else if (c === 34 || c === 39) {
       const str = readCssString(s, i);
-      if (afterImport && str.value !== null) {
-        refs.push({ value: str.value, start: i, end: str.end, isImport: true });
+      if (str.value !== null && (atRule === 'import' || (imageSet && parens >= imageSet))) {
+        refs.push({
+          kind: 'string', value: str.value, start: i, end: str.end, isImport: atRule === 'import', property,
+        });
       }
-      afterImport = false;
+      if (atRule === 'import') atRule = 'import-done';
       i = str.end;
-    } else if (c === 64 && s.slice(i + 1, i + 7).toLowerCase() === 'import') {
-      afterImport = true;
-      i += 7;
-    } else if ((c === 117 || c === 85) && s.slice(i, i + 4).toLowerCase() === 'url('
-               && !/[\w-]/.test(s[i - 1] || ' ')) {
-      const tok = readUrlToken(s, i);
-      if (tok.value !== null) {
-        refs.push({ value: tok.value, start: i, end: tok.end, isImport: afterImport });
+    } else if (c === 64) {
+      const [name, next] = readName(s, i + 1);
+      atRule = name.toLowerCase();
+      i = Math.max(next, i + 1);
+    } else if (isNameChar(c) || (c === BACKSLASH && i + 1 < n && !isNewline(s.charCodeAt(i + 1)))) {
+      const [name, next] = readName(s, i);
+      const lower = name.toLowerCase();
+      if (s.charCodeAt(next) === 40) {
+        if (lower === 'url') {
+          const tok = readUrlValue(s, next + 1);
+          if (tok.value !== null && atRule !== 'namespace') {
+            refs.push({
+              kind: 'url', value: tok.value, start: i, end: tok.end, isImport: atRule === 'import', property,
+            });
+          }
+          if (atRule === 'import') atRule = 'import-done';
+          i = tok.end;
+          continue;
+        }
+        parens += 1;
+        if (!imageSet && (lower === 'image-set' || lower === '-webkit-image-set')) imageSet = parens;
+        i = next + 1;
+        continue;
       }
-      afterImport = false;
-      i = tok.end;
+      lastName = lower;
+      i = Math.max(next, i + 1);
     } else {
-      if (!isSpace(c)) afterImport = false;
+      if (c === 40) {
+        parens += 1;
+      } else if (c === 41) {
+        if (imageSet && parens === imageSet) imageSet = 0;
+        if (parens) parens -= 1;
+      } else if (c === 58) {
+        property = lastName;
+      } else if (c === 59 || c === 123 || c === 125) {
+        property = '';
+        lastName = '';
+        atRule = '';
+      }
       i += 1;
     }
   }
@@ -229,59 +437,245 @@ function cssUrls(css) {
 }
 
 
+// Declarations where url(#id) names an element of the document (a gradient,
+// a clip path, a filter) and is never fetched. Anywhere else, Chromium
+// resolves a fragment-only URL against the <base> like any other, so a
+// background-image of url(#x) under a remote base is a remote picture.
+const ELEMENT_REFERENCES = new Set([
+  'fill', 'stroke', 'clip-path', 'mask', 'filter', 'marker', 'marker-start', 'marker-mid', 'marker-end',
+]);
+
+function isRemoteCssRef(ref, resolver) {
+  if (ELEMENT_REFERENCES.has(ref.property) && /^[\x00-\x20]*#/.test(ref.value)) return false;
+  return isRemoteUrl(ref.value, resolver);
+}
+
+
+/** Bytes of `text` with its percent escapes decoded, as fetch decodes a data: URL. */
+function percentDecode(text) {
+  const raw = new TextEncoder().encode(text);
+  const out = new Uint8Array(raw.length);
+  let n = 0;
+  for (let i = 0; i < raw.length; i += 1) {
+    if (raw[i] === 37 && i + 2 < raw.length && isHex(raw[i + 1]) && isHex(raw[i + 2])) {
+      out[n] = parseInt(String.fromCharCode(raw[i + 1], raw[i + 2]), 16);
+      n += 1;
+      i += 2;
+    } else {
+      out[n] = raw[i];
+      n += 1;
+    }
+  }
+  return out.subarray(0, n);
+}
+
+
 /**
- * The text of a `data:text/css,…` URL, or null for anything else. Percent
- * escapes are decoded byte by byte, which is all a search for URLs needs.
+ * The text of a data: stylesheet URL, null when `url` is not one, false
+ * when it is too large to read. Read
+ * the way the browser reads it: tabs and newlines dropped, the fragment
+ * cut, percent escapes decoded, then base64, then the text decoded by its
+ * byte-order mark or else its charset.
  */
 function dataStylesheet(url) {
-  const m = /^[\x00-\x20]*data:([^,]*),/i.exec(url || '');
-  if (!m || !/^\s*text\/css\b/i.test(m[1])) return null;
-  const body = url.slice(m[0].length);
-  if (/;\s*base64\s*$/i.test(m[1])) {
+  let s = String(url || '').replace(/^[\x00-\x20]+/, '').replace(/[\t\n\r]/g, '');
+  if (!/^data:/i.test(s)) return null;
+  s = s.slice(5);
+  const hash = s.indexOf('#');
+  if (hash >= 0) s = s.slice(0, hash);
+  const comma = s.indexOf(',');
+  if (comma < 0) return null;
+  const params = s.slice(0, comma).split(';').map((p) => p.trim().toLowerCase());
+  if (params[0] !== 'text/css') return null;
+  // A sheet's encoded text is at most a few times its decoded size, so the
+  // budget is checked before decoding as well as after.
+  if (s.length - comma > 4 * DATA_SHEET_BUDGET.bytes) return false;
+  let bytes = percentDecode(s.slice(comma + 1));
+  if (params[params.length - 1] === 'base64') {
     try {
-      return atob(body.replace(/\s+/g, ''));
+      const text = atob(new TextDecoder('latin1').decode(bytes).replace(/[\t\n\f\r ]+/g, ''));
+      bytes = Uint8Array.from(text, (ch) => ch.charCodeAt(0));
     } catch (_) {
       return null;
     }
   }
-  return body.replace(/%([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+  let label = params.find((p) => p.startsWith('charset='))?.slice(8) || 'utf-8';
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) label = 'utf-16be';
+  else if (bytes[0] === 0xff && bytes[1] === 0xfe) label = 'utf-16le';
+  else if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) label = 'utf-8';
+  try {
+    return new TextDecoder(label).decode(bytes);
+  } catch (_) {
+    return new TextDecoder().decode(bytes);
+  }
+}
+
+
+/**
+ * How many references in `css` the frame would fetch from another server.
+ * A data: stylesheet it imports is decoded and read too, within `budget`;
+ * past it, each further one counts as a single held-back item. Relative
+ * URLs inside a data: sheet resolve against the document, as Chromium
+ * resolves them (WebKit fetches none of them, so there it over-counts).
+ */
+function countCss(css, resolver, budget) {
+  let n = 0;
+  for (const ref of cssUrls(css)) {
+    if (ref.isImport && isDataUrl(ref.value)) {
+      n += countDataSheet(ref.value, resolver, budget);
+    } else if (isRemoteCssRef(ref, resolver)) {
+      n += 1;
+    }
+  }
+  return n;
+}
+
+// "data:" as the URL parser reads it, tabs and newlines anywhere.
+const isDataUrl = (url) => /^[\x00-\x20]*d[\t\n\r]*a[\t\n\r]*t[\t\n\r]*a[\t\n\r]*:/i.test(url);
+
+function countDataSheet(url, resolver, budget) {
+  if (!isDataUrl(url)) return 0;
+  if (budget.sheets <= 0 || budget.bytes <= 0) return 1;
+  budget.sheets -= 1;
+  const sheet = dataStylesheet(url);
+  if (sheet === null) return 0;
+  if (sheet === false) return 1;
+  budget.bytes -= sheet.length;
+  if (budget.bytes < 0) return 1;
+  return countCss(sheet, resolver, budget);
 }
 
 
 /**
  * How many references in `css` the frame would fetch from another server,
- * url(…) and @import alike, resolved against `base`. A data: stylesheet it
- * imports is read too: its absolute URLs are live once data: sheets apply,
- * and without counting them a blocked message showed no banner while a
- * trusted sender loaded them. Exported for its unit test.
+ * resolved against `base`. For the unit tests; the rewriter counts with
+ * the document's own resolver and budget.
  */
-export function countRemoteCssUrls(css, base = APP_URL, depth = 0) {
-  let n = 0;
-  for (const { value, isImport } of cssUrls(css)) {
-    const sheet = isImport && depth < 3 ? dataStylesheet(value) : null;
-    if (sheet !== null) n += countRemoteCssUrls(sheet, value, depth + 1);
-    else if (isRemoteCssUrl(value, base)) n += 1;
-  }
-  return n;
+export function countRemoteCssUrls(css, base = APP_URL) {
+  return countCss(css, resolverFor(base), { ...DATA_SHEET_BUDGET });
 }
 
 
 /**
  * `css` with every remote url(…) replaced by `replacement`, and how many
  * were. For style attributes, where the placeholder takes the picture's
- * place.
+ * place. Strings inside image-set() are counted but left in place: the
+ * policy refuses them, and cutting one would leave image-set() invalid.
  */
-function replaceRemoteCssUrls(css, base, replacement) {
-  const refs = cssUrls(css).filter((r) => isRemoteCssUrl(r.value, base));
-  if (!refs.length) return { css, count: 0 };
+function replaceRemoteCssUrls(css, resolver, replacement) {
+  const refs = cssUrls(css).filter((r) => isRemoteCssRef(r, resolver));
+  const urls = refs.filter((r) => r.kind === 'url');
   let out = '';
   let at = 0;
-  for (const r of refs) {
+  for (const r of urls) {
     out += css.slice(at, r.start) + replacement;
     at = r.end;
   }
-  return { css: out + css.slice(at), count: refs.length };
+  return { css: urls.length ? out + css.slice(at) : css, count: refs.length, replaced: urls.length };
 }
+
+
+/**
+ * Whether `html` is too much for the parser or the frame, read off the raw
+ * text in one pass. Each count can only overshoot, so it fails safe: an
+ * honest message is at worst shown as text.
+ */
+function tooComplexToParse(html) {
+  if (html.length > LIMITS.bytes) return 'size';
+  let tags = 0;
+  for (let i = html.indexOf('<'); i >= 0; i = html.indexOf('<', i + 1)) {
+    const c = html.charCodeAt(i + 1) | 32;
+    if (c >= 97 && c <= 122 && (tags += 1) > LIMITS.tags) return 'tags';
+  }
+  let imports = 0;
+  const atImport = /@import/gi;
+  while (atImport.exec(html)) {
+    if ((imports += 1) > LIMITS.imports) return 'imports';
+  }
+  let bases = 0;
+  const baseTag = /<base/gi;
+  while (baseTag.exec(html)) {
+    if ((bases += 1) > LIMITS.bases) return 'bases';
+  }
+  return null;
+}
+
+
+/** Whether some element of `root` sits more than `limit` levels below it. */
+function deeperThan(root, limit) {
+  if (!root) return false;
+  let el = root;
+  let depth = 0;
+  for (;;) {
+    if (el.firstElementChild) {
+      el = el.firstElementChild;
+      depth += 1;
+      if (depth > limit) return true;
+      continue;
+    }
+    while (el !== root && !el.nextElementSibling) {
+      el = el.parentElement;
+      depth -= 1;
+    }
+    if (el === root) return false;
+    el = el.nextElementSibling;
+  }
+}
+
+
+/**
+ * `html` parsed into an inert document: built by the engine's full HTML
+ * parser, with no browsing context, so nothing in it is fetched or run.
+ * Faster than DOMParser where it matters: Chromium's DOMParser took a
+ * second on 200 KB of @import rules that this parses in 10 ms. The doctype
+ * gives the no-quirks tree a srcdoc frame builds (in quirks mode a <table>
+ * stays inside an open <p>); a doctype of the email's own after it is
+ * ignored, as in the frame.
+ */
+function parseInert(html) {
+  const doc = document.implementation.createHTMLDocument('');
+  doc.open();
+  doc.write(`<!DOCTYPE html>${html}`);
+  doc.close();
+  return doc;
+}
+
+
+/**
+ * The URL relative references in the message resolve against: its first
+ * HTML <base href> (an SVG or MathML one plays no part), resolved against
+ * the app page, which is what the frame falls back to. An inert document's
+ * own base URL is about:blank, so it cannot answer this.
+ */
+function documentBase(doc) {
+  for (const el of doc.querySelectorAll('base[href]')) {
+    if (el.namespaceURI !== XHTML_NS) continue;
+    try {
+      return new URL(el.getAttribute('href'), APP_URL).href;
+    } catch (_) {
+      return APP_URL;
+    }
+  }
+  return APP_URL;
+}
+
+
+// What the policy cannot hold, in either mode. A srcdoc frame is never
+// fetched, so frame-src does not see it; it inherits the message's policy
+// and loads whatever the message may. Resource hints escape it too:
+// Chromium sends a prefetch as soon as any fetch directive admits its URL,
+// and WebKit sends a preload as=fetch under default-src 'none', even with
+// connect-src 'none' (measured). None of them has a use in an email, so
+// every preload goes, whatever its `as`.
+const HINT_RELS = new Set(['prefetch', 'prerender', 'preconnect', 'dns-prefetch', 'preload', 'modulepreload']);
+
+const isHint = (el) => (el.getAttribute('rel') || '').toLowerCase().split(/[\t\n\f\r ]+/)
+  .some((rel) => HINT_RELS.has(rel));
+
+function outsidePolicy(doc) {
+  return [...doc.querySelectorAll('iframe[srcdoc]'), ...[...doc.querySelectorAll('link[rel]')].filter(isHint)];
+}
+
 
 // Attributes outside img[src] that fetch on their own. The frame's policy
 // refuses them all anyway; parking them here is what lets the banner count
@@ -294,233 +688,21 @@ const FETCHING_ATTRS = [
   ['video[src], audio[src], source[src], track[src]', 'src'],
 ];
 
-const XLINK_NS = 'http://www.w3.org/1999/xlink';
-
-// What the policy cannot hold once images are allowed. A srcdoc frame is
-// never fetched, so frame-src does not see it; it inherits the message's
-// policy and may load whatever the message may. Resource hints escape it
-// too: Chromium sends a prefetch as soon as any fetch directive admits its
-// URL, and WebKit sends a preload as=fetch despite default-src 'none'.
-// None of them has a use in an email. A preload of something the policy
-// does govern (an image, a stylesheet, a font) stays.
-const HINT_RELS = new Set(['prefetch', 'prerender', 'preconnect', 'dns-prefetch', 'modulepreload']);
-const GOVERNED_PRELOADS = new Set(['image', 'style', 'font']);
-
-function isHintOutsidePolicy(rel, as) {
-  const rels = String(rel || '').toLowerCase().split(/[\t\n\f\r ]+/);
-  if (rels.some((r) => HINT_RELS.has(r))) return true;
-  return rels.includes('preload') && !GOVERNED_PRELOADS.has(String(as || '').trim().toLowerCase());
-}
-
-// Elements whose content the HTML tokenizer reads as text, so a "<link"
-// inside them is no tag. <noscript> is not one here: a frame that runs no
-// script parses its content as markup.
-const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title', 'xmp', 'iframe', 'noembed', 'noframes']);
-
 
 /**
- * Where the raw text of a `name` element that starts at `from` ends: at its
- * end tag, or at the end of the input.
+ * Swap every remote picture of `doc` for a placeholder and count what was
+ * held back: <img>, <source>, the attributes that fetch on their own, SVG
+ * <image> and <feImage>, inline-style url(…), stylesheet links, and the
+ * references in <style> blocks and data: stylesheets (counted; the policy
+ * refuses them). `rewritten` is what was changed in place, which a settled
+ * document has none of left.
  */
-function rawTextEnd(lower, name, from) {
-  const close = `</${name}`;
-  let p = lower.indexOf(close, from);
-  while (p >= 0) {
-    const c = lower.charCodeAt(p + close.length);
-    if (Number.isNaN(c) || isSpace(c) || c === 47 || c === 62) return p;
-    p = lower.indexOf(close, p + close.length);
-  }
-  return lower.length;
-}
-
-
-/**
- * Call `visit(name, attrs, start, end)` for each start tag of `html`, read
- * the way the HTML tokenizer reads it: `attrs` holds `[name, value,
- * nameStart, nameEnd]` in source order, a quoted value may contain ">",
- * comments and end tags are skipped, and so is the text of raw-text
- * elements. One forward pass; offsets index `html` itself.
- */
-function scanStartTags(html, visit) {
-  // ASCII-only lowercasing keeps every offset where it was.
-  const lower = html.replace(/[A-Z]+/g, (m) => m.toLowerCase());
-  const n = html.length;
-  let i = 0;
-  while (i < n) {
-    const lt = lower.indexOf('<', i);
-    if (lt < 0) return;
-    const c = lower.charCodeAt(lt + 1);
-    if (lower.startsWith('!--', lt + 1)) {
-      const close = lower.indexOf('-->', lt + 4);
-      i = close < 0 ? n : close + 3;
-      continue;
-    }
-    if (c === 33 || c === 47 || c === 63) {
-      // <!doctype …>, </end …>, <?…>
-      const close = lower.indexOf('>', lt + 2);
-      i = close < 0 ? n : close + 1;
-      continue;
-    }
-    if (!(c >= 97 && c <= 122)) {
-      i = lt + 1;
-      continue;
-    }
-    let k = lt + 1;
-    while (k < n && !isSpace(lower.charCodeAt(k)) && lower[k] !== '/' && lower[k] !== '>') k += 1;
-    const name = lower.slice(lt + 1, k);
-    const attrs = [];
-    let end = -1;
-    while (k < n) {
-      while (k < n && (isSpace(html.charCodeAt(k)) || html[k] === '/')) k += 1;
-      if (k >= n) break;
-      if (html[k] === '>') {
-        end = k + 1;
-        break;
-      }
-      const nameStart = k;
-      k += 1;
-      while (k < n && !isSpace(html.charCodeAt(k)) && html[k] !== '/' && html[k] !== '>'
-             && html[k] !== '=') k += 1;
-      const nameEnd = k;
-      while (k < n && isSpace(html.charCodeAt(k))) k += 1;
-      let value = '';
-      if (html[k] === '=') {
-        k += 1;
-        while (k < n && isSpace(html.charCodeAt(k))) k += 1;
-        const quote = html[k];
-        if (quote === '"' || quote === "'") {
-          const close = html.indexOf(quote, k + 1);
-          if (close < 0) break;
-          value = html.slice(k + 1, close);
-          k = close + 1;
-        } else {
-          const from = k;
-          while (k < n && !isSpace(html.charCodeAt(k)) && html[k] !== '>') k += 1;
-          value = html.slice(from, k);
-        }
-      }
-      attrs.push([lower.slice(nameStart, nameEnd), value, nameStart, nameEnd]);
-    }
-    // A tag cut off by the end of the input is dropped by the tokenizer.
-    if (end < 0) return;
-    visit(name, attrs, lt, end);
-    i = end;
-    if (name === 'plaintext') return;
-    if (RAW_TEXT.has(name)) i = rawTextEnd(lower, name, end);
-  }
-}
-
-
-/**
- * The Content-Security-Policy an email frame is rendered under.
- *
- * `default-src 'none'` covers everything not listed: nested frames,
- * <object>/<embed>, connections (including <a ping>), workers. Inline
- * styles stay allowed, they are how email is laid out. `data:`, `blob:` and
- * `cid:` are local by construction (the fetcher inlines cid parts as data:
- * URIs); a data: stylesheet can only reach further through img-src and
- * font-src. `allowRemote` is the user's "show images" choice, for this
- * message or for the sender; it lets in what the sender's design is made
- * of (images, stylesheets, fonts, media) and still no frames, objects or
- * connections. `dropOutsidePolicy` covers what a policy cannot.
- */
-export function remoteContentPolicy(allowRemote = false) {
-  const remote = allowRemote ? ' http: https:' : '';
-  return [
-    "default-src 'none'",
-    `img-src data: blob: cid:${remote}`,
-    `media-src data: blob:${remote}`,
-    `font-src data:${remote}`,
-    `style-src data: 'unsafe-inline'${remote}`,
-  ].join('; ');
-}
-
-
-/**
- * Prefix `html` with the policy's <meta>, so it is the first thing the
- * frame's parser sees. A policy only governs what is parsed after it, and a
- * <meta> policy outside <head> is ignored: leading the document lands it in
- * the implied <head> ahead of any email markup, which the first `<head`
- * the email itself contains cannot promise.
- *
- * Always first, even ahead of a doctype. Splicing it in after one meant
- * deciding where the doctype ends, and a no-break space before it (HTML
- * whitespace is narrower than a regex's `\s`) had already opened <body>,
- * where the policy was ignored. Nothing is lost: a srcdoc document renders
- * in no-quirks mode with or without a doctype, and a doctype after the
- * <meta> is simply skipped.
- */
-export function withRemoteContentPolicy(html, allowRemote = false) {
-  return '<meta http-equiv="Content-Security-Policy" content="'
-    + remoteContentPolicy(allowRemote) + '">' + (html || '');
-}
-
-
-/**
- * Remove what the policy cannot hold from a message whose remote content is
- * allowed: the resource hints go, and a srcdoc frame loses its srcdoc (it
- * stays, empty). A text edit of exactly those tags rather than a parse and
- * serialise: a round trip through the DOM changes what the browser reads
- * the second time (a <pre>'s first blank line, everything after
- * <plaintext>). `rewriteRemoteImages` drops the same things on the blocked
- * path, where the message is serialised anyway. Returns `html` untouched
- * when there is nothing to drop.
- */
-export function dropOutsidePolicy(html) {
-  if (!html) return html || '';
-  const edits = [];
-  scanStartTags(html, (name, attrs, start, end) => {
-    const first = (attr) => attrs.find((a) => a[0] === attr);
-    if (name === 'link' && isHintOutsidePolicy(first('rel')?.[1], first('as')?.[1])) {
-      edits.push([start, end, '']);
-    } else if (name === 'iframe') {
-      for (const [attr, , from, to] of attrs) {
-        if (attr === 'srcdoc') edits.push([from, to, 'data-blocked-srcdoc']);
-      }
-    }
-  });
-  if (!edits.length) return html;
-  let out = '';
-  let at = 0;
-  for (const [from, to, text] of edits) {
-    out += html.slice(at, from) + text;
-    at = to;
-  }
-  return out + html.slice(at);
-}
-
-
-/**
- * Swap every remote <img>, <source>, fetching attribute and inline-style
- * `url(…)` in the given HTML for a placeholder, and count the remote
- * references in <style> blocks. Returns the modified HTML and the count
- * of URLs blocked, for the banner. Not a guarantee on its own: the frame
- * must also carry `withRemoteContentPolicy`.
- */
-export function rewriteRemoteImages(html) {
-  if (!html) return { html: html || '', blockedCount: 0 };
-  let doc;
-  try {
-    doc = new DOMParser().parseFromString(html, 'text/html');
-  } catch (_) {
-    return { html, blockedCount: 0 };
-  }
-  let blocked = 0;
-  doc.querySelectorAll('iframe[srcdoc]').forEach((el) => el.remove());
-  doc.querySelectorAll('link[rel]').forEach((el) => {
-    if (isHintOutsidePolicy(el.getAttribute('rel'), el.getAttribute('as'))) el.remove();
-  });
-
-  // Every URL resolves against the document's base URL, which follows the
-  // email's own <base href> when it has one. A remote base sends each
-  // relative reference to its host; the policy refuses those like any
-  // other, so they are counted too, or a newsletter written with relative
-  // paths shows no banner and no way to load its pictures. `baseURI` is the
-  // parser's own answer, so an SVG or MathML <base> plays no part in it,
-  // exactly as in the frame.
-  const base = doc.baseURI;
-  const remote = (url) => isRemoteUrl(url, base);
+function rewriteRemote(doc, budget) {
+  const resolver = resolverFor(documentBase(doc));
+  const remote = (url) => isRemoteUrl(url, resolver);
   const remoteSrcset = (srcset) => srcsetUrls(srcset).some(remote);
+  let count = 0;
+  let rewritten = 0;
 
   // <img src="https://…">
   // Three size buckets so the placeholder isn't visually disruptive:
@@ -536,11 +718,13 @@ export function rewriteRemoteImages(html) {
     const src = img.getAttribute('src') || '';
     const srcset = img.getAttribute('srcset') || '';
     const remoteSrc = remote(src);
-    if (!remoteSrc && !remoteSrcset(srcset)) return;
-    blocked += 1;
+    const remoteSet = remoteSrcset(srcset);
+    if (!remoteSrc && !remoteSet) return;
+    count += 1;
+    rewritten += 1;
     // `srcset` is fetched even when src is a data URL, and on its own
     // when there is no src at all — strip it.
-    if (remoteSrcset(srcset)) {
+    if (remoteSet) {
       img.setAttribute('data-blocked-srcset', srcset);
       img.removeAttribute('srcset');
     }
@@ -580,7 +764,8 @@ export function rewriteRemoteImages(html) {
     if (!remoteSrcset(ss)) return;
     s.setAttribute('data-blocked-srcset', ss);
     s.removeAttribute('srcset');
-    blocked += 1;
+    count += 1;
+    rewritten += 1;
   });
 
   // background="…" on body/table/td, video posters, <input type=image>,
@@ -591,33 +776,37 @@ export function rewriteRemoteImages(html) {
       if (!remote(url)) return;
       el.setAttribute(`data-blocked-${attr}`, url);
       el.removeAttribute(attr);
-      blocked += 1;
+      count += 1;
+      rewritten += 1;
     });
   });
 
-  // SVG <image href> and its older xlink:href spelling.
-  doc.querySelectorAll('image').forEach((el) => {
+  // SVG <image> and <feImage>, by href or the older xlink:href.
+  doc.querySelectorAll('image, feImage').forEach((el) => {
     const url = el.getAttribute('href') || el.getAttributeNS(XLINK_NS, 'href') || '';
     if (!remote(url)) return;
     el.setAttribute('data-blocked-href', url);
     el.removeAttribute('href');
     el.removeAttributeNS(XLINK_NS, 'href');
-    blocked += 1;
+    count += 1;
+    rewritten += 1;
   });
 
-  // <style> blocks: url() and @import. Left as they are, the policy
-  // refuses them; counted so the banner says something was held back.
+  // <style> blocks: url(), image-set() and @import. Left as they are, the
+  // policy refuses them; counted so the banner says something was held
+  // back.
   doc.querySelectorAll('style').forEach((el) => {
-    blocked += countRemoteCssUrls(el.textContent, base);
+    count += countCss(el.textContent, resolver, budget);
   });
 
   // style="background-image: url(https://…)" / "background:…url(…)…"
   doc.querySelectorAll('[style]').forEach((el) => {
     const original = el.getAttribute('style') || '';
-    if (!/url\(/i.test(original)) return;
-    const out = replaceRemoteCssUrls(original, base, `url(${TRANSPARENT_PIXEL})`);
-    if (!out.count) return;
-    blocked += out.count;
+    if (!/url\(|image-set|\\/i.test(original)) return;
+    const out = replaceRemoteCssUrls(original, resolver, `url(${TRANSPARENT_PIXEL})`);
+    count += out.count;
+    if (!out.replaced) return;
+    rewritten += out.replaced;
     el.setAttribute('data-blocked-style', original);
     el.setAttribute('style', out.css);
   });
@@ -625,20 +814,135 @@ export function rewriteRemoteImages(html) {
   // Strip any `<link rel="…stylesheet" href="https://…">` — external
   // CSS in an email is exotic but if present it can pull tracking
   // pixels of its own. Cheap defence. A data: stylesheet stays (it
-  // applies), and the remote URLs inside it are counted.
+  // applies), and the remote URLs inside it are counted; an alternate
+  // one never applies, so it is not.
   doc.querySelectorAll('link[href]').forEach((link) => {
     const href = link.getAttribute('href') || '';
+    const rels = (link.getAttribute('rel') || '').toLowerCase().split(/[\t\n\f\r ]+/);
     if (remote(href)) {
       link.setAttribute('data-blocked-href', href);
       link.removeAttribute('href');
-      blocked += 1;
-    } else if (/(^|\s)stylesheet(\s|$)/i.test(link.getAttribute('rel') || '')) {
-      const sheet = dataStylesheet(href);
-      if (sheet !== null) blocked += countRemoteCssUrls(sheet, href, 1);
+      count += 1;
+      rewritten += 1;
+    } else if (rels.includes('stylesheet') && !rels.includes('alternate')) {
+      count += countDataSheet(href, resolver, budget);
     }
   });
 
-  return { html: doc.documentElement.outerHTML, blockedCount: blocked };
+  return { count, rewritten };
+}
+
+
+/**
+ * Make the serialisation read back as the tree it came from, where the
+ * HTML serialiser does not: the parser drops the newline that opens a
+ * <pre>, <listing> or <textarea>, so one that starts with a newline needs
+ * a second; and <plaintext> has no end tag, so what follows it would come
+ * back as text. Its text moves into a <pre>, which renders the same way.
+ */
+function stabilise(doc) {
+  for (const el of doc.querySelectorAll('plaintext')) {
+    if (el.namespaceURI !== XHTML_NS) continue;
+    const pre = doc.createElement('pre');
+    pre.textContent = el.textContent;
+    el.replaceWith(pre);
+  }
+  for (const el of doc.querySelectorAll('pre, listing, textarea')) {
+    if (el.namespaceURI !== XHTML_NS) continue;
+    const first = el.firstChild;
+    if (first && first.nodeType === 3 && first.data.charCodeAt(0) === 10) first.data = `\n${first.data}`;
+  }
+}
+
+
+/**
+ * The Content-Security-Policy an email frame is rendered under.
+ *
+ * `default-src 'none'` covers everything not listed: nested frames,
+ * <object>/<embed>, connections (including <a ping>), workers. Inline
+ * styles stay allowed, they are how email is laid out. `data:`, `blob:` and
+ * `cid:` are local by construction (the fetcher inlines cid parts as data:
+ * URIs); a data: stylesheet can only reach further through img-src and
+ * font-src. `allowRemote` is the user's "show images" choice, for this
+ * message or for the sender; it lets in what the sender's design is made
+ * of (images, stylesheets, fonts, media) and still no frames, objects or
+ * connections. prepareMessage removes what a policy cannot hold.
+ */
+export function remoteContentPolicy(allowRemote = false) {
+  const remote = allowRemote ? ' http: https:' : '';
+  return [
+    "default-src 'none'",
+    `img-src data: blob: cid:${remote}`,
+    `media-src data: blob:${remote}`,
+    `font-src data:${remote}`,
+    `style-src data: 'unsafe-inline'${remote}`,
+  ].join('; ');
+}
+
+
+/**
+ * Prefix `html` with the policy's <meta>, so it is the first thing the
+ * frame's parser sees. A policy only governs what is parsed after it, and a
+ * <meta> policy outside <head> is ignored: leading the document lands it in
+ * the implied <head> ahead of any email markup, which the first `<head`
+ * the email itself contains cannot promise.
+ *
+ * Always first, even ahead of a doctype. Splicing it in after one meant
+ * deciding where the doctype ends, and a no-break space before it (HTML
+ * whitespace is narrower than a regex's `\s`) had already opened <body>,
+ * where the policy was ignored. Nothing is lost: a srcdoc document renders
+ * in no-quirks mode with or without a doctype, and a doctype after the
+ * <meta> is simply skipped.
+ */
+export function withRemoteContentPolicy(html, allowRemote = false) {
+  return '<meta http-equiv="Content-Security-Policy" content="'
+    + remoteContentPolicy(allowRemote) + '">' + (html || '');
+}
+
+
+/**
+ * The frame document for a message: `{ srcdoc, blockedCount }`, or
+ * `{ refused }` with the reason when it must be shown as text instead
+ * ('size', 'tags', 'imports', 'bases' or 'depth' for one too heavy to render,
+ * 'unstable' for one whose serialisation will not settle).
+ *
+ * `allowRemote` is the user's "show images" choice. `head` goes right after
+ * the policy, ahead of the email (the caller's <base target> and reset
+ * CSS). `decorate(doc)` runs once on the parsed message before anything is
+ * removed (the suspicious-link marking).
+ *
+ * The srcdoc returned is checked by parsing it again, as the frame will: it
+ * holds no resource hint, no srcdoc frame, no nesting past LIMITS.depth,
+ * and, with remote content blocked, nothing left to replace by a
+ * placeholder. A pass that leaves any of those is redone on its own
+ * output, at most three times.
+ */
+export function prepareMessage(html, { allowRemote = false, head = '', decorate = null } = {}) {
+  const source = String(html || '');
+  const tooHeavy = tooComplexToParse(source);
+  if (tooHeavy) return { refused: tooHeavy };
+  let doc = parseInert(source);
+  if (deeperThan(doc.documentElement, LIMITS.depth)) return { refused: 'depth' };
+  decorate?.(doc);
+  const budget = { ...DATA_SHEET_BUDGET };
+  let blockedCount = 0;
+  for (let pass = 0; pass < 3; pass += 1) {
+    outsidePolicy(doc).forEach((el) => el.remove());
+    if (!allowRemote) {
+      const out = rewriteRemote(doc, budget);
+      blockedCount += pass === 0 ? out.count : out.rewritten;
+    }
+    stabilise(doc);
+    const body = doc.documentElement.outerHTML;
+    const srcdoc = withRemoteContentPolicy(head + body, allowRemote);
+    const check = parseInert(srcdoc);
+    const settled = !outsidePolicy(check).length
+      && !deeperThan(check.documentElement, LIMITS.depth)
+      && (allowRemote || !rewriteRemote(check, { sheets: 0, bytes: 0 }).rewritten);
+    if (settled) return { srcdoc, blockedCount };
+    doc = parseInert(body);
+  }
+  return { refused: 'unstable' };
 }
 
 
