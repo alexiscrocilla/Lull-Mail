@@ -109,8 +109,9 @@ const isLocal = (url) => ['127.0.0.1', 'localhost'].includes(new URL(url).hostna
 const names = (urls) => [...new Set(urls.map((u) => new URL(u).pathname.split('/').pop()))].sort();
 
 /**
- * Serve `html` as the body of every message the page opens, with the
- * sender trusted or not, and record what the message asks for: every
+ * Serve `html` (or what `html()` returns at the time) as the body of every
+ * message the page opens, with the sender trusted or not, and record what
+ * the message asks for: every
  * request to another host, and every request a frame other than the app's
  * own makes, the app server included.
  *
@@ -123,9 +124,9 @@ async function hostileMailbox(page, html, { trusted = false, text = '' } = {}) {
   const fetched = [];
   // The hermetic server cannot reach IMAP, so each message the pane opens
   // schedules a hydration that fails and announces a body event, and the
-  // pane rebuilds the frame about every two seconds, back in blocked mode.
-  // Without the event stream the frame under test stays the one the test
-  // put in front of it.
+  // pane rebuilds the frame about every two seconds. Without the event
+  // stream the frame under test stays the one the test put in front of it
+  // (bodyEvent() below sends one on purpose).
   await page.route('**/api/events**', (route) => route.abort());
   await page.route(/\/api\/emails\/\d+$/, async (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
@@ -133,7 +134,12 @@ async function hostileMailbox(page, html, { trusted = false, text = '' } = {}) {
     const em = await response.json();
     await route.fulfill({
       response,
-      json: { ...em, body_html: html, body_text: text, sender_images_trusted: trusted },
+      json: {
+        ...em,
+        body_html: typeof html === 'function' ? html() : html,
+        body_text: text,
+        sender_images_trusted: trusted,
+      },
     });
   });
   // Registered last, so it sees every request before the routes above.
@@ -200,8 +206,8 @@ test('the reading pane fetches nothing remote while images are blocked', async (
   expect(fetched).toEqual([]);
 });
 
-test('the assistant side reader fetches nothing remote', async ({ page }) => {
-  const fetched = await hostileMailbox(page, HOSTILE);
+/** The first message of the inbox, opened from an assistant answer. */
+async function openInSideReader(page) {
   await page.goto('/#/inbox');
   await expect(page.locator('#email-list .mb-card')).toHaveCount(18);
   const id = await page.locator('#email-list .mb-card').first().getAttribute('data-id');
@@ -215,6 +221,11 @@ test('the assistant side reader fetches nothing remote', async ({ page }) => {
   await page.locator('#aiw-input').fill('zzqx message piégé');
   await page.locator('#aiw-input').press('Enter');
   await page.locator(`.aiw-mailcard[data-mail-id="${id}"]`).click();
+}
+
+test('the assistant side reader fetches nothing remote', async ({ page }) => {
+  const fetched = await hostileMailbox(page, HOSTILE);
+  await openInSideReader(page);
 
   await expect(page.frameLocator('#aiw-reader .aiw-reader-iframe').locator('#leak-marker'))
     .toBeVisible();
@@ -605,16 +616,224 @@ test('a trusted message reads the same, flagged links and all', async ({ page })
   expect(text.flagged).not.toBe('https://bit.ly/abc');
 });
 
-test('a message too heavy to render is shown as text, at once', async ({ page }) => {
-  // 150 nested tables kept a Chromium frame busy for more than 15 s.
-  await hostileMailbox(page, `<p>m</p>${'<table><tr><td>'.repeat(150)}deep`, { text: 'Version texte du message.' });
+/*
+ * The shapes of real mail an earlier version refused as too deep or too
+ * long, at the sizes the review corpus had them. Each must render as sent.
+ * `#deepest` is the innermost or last element, the one layout gets to last.
+ */
+function promotion(levels) {
+  let html = `<p id="deepest">Flash sale! ${'Save big today. '.repeat(10)}</p>`
+    + '<img src="https://cdn.example.com/sale.gif" width="600" height="300">';
+  for (let i = 0; i < levels; i += 1) {
+    html = `<div style="padding:2px"><table width="100%"><tr><td>${html}</td></tr></table></div>`;
+  }
+  return `<!DOCTYPE html><html><head></head><body>${html}</body></html>`;
+}
+
+function layoutTables(levels, sections) {
+  let html = '';
+  for (let s = 0; s < sections; s += 1) {
+    html += `<tr><td style="padding:10px"><h2>Section ${s}</h2><p>${'word '.repeat(40)}</p>`
+      + `<img src="https://cdn.example.com/s${s}.gif" width="600" height="200">`
+      + `<a href="https://shop.example.com/${s}">Shop now</a></td></tr>`;
+  }
+  html = `<table width="600" align="center">${html}</table><p id="deepest">Unsubscribe</p>`;
+  for (let i = 0; i < levels; i += 1) {
+    html = `<table width="100%" bgcolor="#f4f4f4"><tr><td align="center">${html}</td></tr></table>`;
+  }
+  return `<!DOCTYPE html><html><head></head><body>${html}</body></html>`;
+}
+
+function quotedReplies(replies) {
+  let html = '<div dir="ltr" id="deepest">The first message of the thread.</div>';
+  for (let i = 0; i < replies; i += 1) {
+    html = `<div class="gmail_quote"><div class="gmail_attr">On Mon, ${i} Jan 2026, A wrote:<br></div>`
+      + '<blockquote class="gmail_quote" style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">'
+      + `<div dir="ltr">Reply ${i}. ${'quoted text '.repeat(20)}</div>${html}</blockquote></div>`;
+  }
+  return `<!DOCTYPE html><html><head></head><body>${html}</body></html>`;
+}
+
+function invoice(lines) {
+  let rows = '';
+  for (let i = 0; i < lines; i += 1) {
+    rows += `<tr><td>${i}</td><td>Item ${i} with some detail</td><td>${i * 3}</td>`
+      + `<td>$${(i * 9.99).toFixed(2)}</td></tr>`;
+  }
+  return '<!DOCTYPE html><html><head><style>td{border:1px solid #ddd;padding:6px}</style></head><body>'
+    + '<h1>Invoice</h1><table><thead><tr><th>#</th><th>Item</th><th>Qty</th><th>Amount</th></tr></thead>'
+    + `<tbody>${rows}</tbody></table><p id="deepest">Total</p></body></html>`;
+}
+
+function newsletter(bytes) {
+  const stories = [];
+  for (let i = 0, size = 0; size < bytes; i += 1) {
+    const story = `<tr><td style="padding:12px"><table width="100%"><tr><td><h3>Story ${i}</h3>`
+      + `<p>${'A reasonably long paragraph of newsletter copy. '.repeat(8)}</p>`
+      + `<img src="https://cdn.example.com/track.gif?i=${i}" width="560" height="240">`
+      + `<p><a href="https://example.com/${i}">Read more</a></p></td></tr></table></td></tr>`;
+    stories.push(story);
+    size += story.length;
+  }
+  return '<!DOCTYPE html><html><head></head><body>'
+    + `<table align="center">${stories.join('')}</table><p id="deepest">Unsubscribe</p></body></html>`;
+}
+
+const REAL_MAIL = {
+  'a promotion 40 div+table levels deep': promotion(40),
+  'a promotion 60 div+table levels deep': promotion(60),
+  'a newsletter in 55 nested layout tables': layoutTables(55, 30),
+  'a thread of 100 quoted Gmail replies': quotedReplies(100),
+  'an invoice of 5,000 lines': invoice(5_000),
+  'a 3 MB newsletter': newsletter(3_000_000),
+  'a 4.5 MB newsletter': newsletter(4_500_000),
+};
+
+/** What prepareMessage makes of each message, and how long it takes. */
+function preparedTimes(page, cases) {
+  return page.evaluate(async (all) => {
+    const { prepareMessage } = await import('/static/image-blocker.js');
+    return Object.fromEntries(Object.entries(all).map(([label, html]) => {
+      const started = performance.now();
+      const out = prepareMessage(html);
+      return [label, { refused: out.refused || null, ms: performance.now() - started }];
+    }));
+  }, cases);
+}
+
+test('real mail renders as sent, however deep or long', async ({ page }) => {
+  await page.goto('/#/inbox');
+  const got = await preparedTimes(page, REAL_MAIL);
+  for (const [label, { refused, ms }] of Object.entries(got)) {
+    expect(refused, label).toBeNull();
+    expect(ms, label).toBeLessThan(2000);
+  }
+});
+
+for (const label of [
+  'a promotion 60 div+table levels deep',
+  'a newsletter in 55 nested layout tables',
+  'a thread of 100 quoted Gmail replies',
+  'a 4.5 MB newsletter',
+]) {
+  test(`${label} opens in the reading pane as sent`, async ({ page }) => {
+    await hostileMailbox(page, REAL_MAIL[label]);
+    await openFirst(page);
+
+    // Laid out to the end: the frame is fitted to its content, and the
+    // deepest element has a box (squeezed to no width in a deep thread,
+    // which is how any reader shows one).
+    await expect.poll(() => page.locator(FRAME).evaluate((frame) => frame.offsetHeight), { timeout: 5_000 })
+      .toBeGreaterThan(300);
+    const bottom = await page.frameLocator(FRAME).locator('#deepest')
+      .evaluate((el) => el.getBoundingClientRect().bottom);
+    expect(bottom).toBeGreaterThan(0);
+    await expect(page.locator('#read-pane .mb-body-notice')).toHaveCount(0);
+  });
+}
+
+// Markup made to stall the reader, and what turns each one away: the
+// estimates read off the raw text, the parse's time budget, or the checks
+// on the parsed tree.
+const BOMBS = {
+  '200,000 nested blocks': ['<div>'.repeat(200_000), ['nesting']],
+  '20,000 nested blocks, each hiding a </div> in an attribute':
+    ['<div title="</div>">'.repeat(20_000), ['slow', 'depth']],
+  '120 nested tables': [`${'<table><tr><td>'.repeat(120)}deep`, ['depth']],
+  '130 quoted Gmail replies': [`${'<div class="gmail_quote"><blockquote>'.repeat(130)}deep`, ['depth']],
+  'a million stray </p>': [`x${'</p>'.repeat(1_000_000)}`, ['elements']],
+  '160,000 line breaks': ['mot<br>'.repeat(160_000), ['elements']],
+  '20,000 @import rules': [`<style>${'@import "x.css";'.repeat(20_000)}</style>`, ['imports']],
+};
+
+test('markup made to stall the reader is turned away within a second', async ({ page }) => {
+  await page.goto('/#/inbox');
+  const got = await preparedTimes(page, Object.fromEntries(
+    Object.entries(BOMBS).map(([label, [html]]) => [label, `<p>m</p>${html}`]),
+  ));
+  for (const [label, [, reasons]] of Object.entries(BOMBS)) {
+    expect(reasons, label).toContain(got[label].refused);
+    expect(got[label].ms, label).toBeLessThan(1000);
+  }
+});
+
+async function openFirst(page) {
   await page.goto('/#/inbox');
   await expect(page.locator('#email-list .mb-card')).toHaveCount(18);
   await page.locator('#email-list .mb-card').first().click();
+  await expect(page.locator('#read-pane .mb-read-subject')).toBeVisible();
+}
 
-  await expect(page.locator('#read-pane .mb-body-notice')).toContainText('trop complexe');
-  await expect(page.locator('#read-pane .mb-body-text')).toHaveText('Version texte du message.');
+/** The open message, rendered again the way a body event renders it. */
+async function bodyEvent(page) {
+  const block = page.locator('#read-pane .mb-body-block');
+  const intId = Number(await block.getAttribute('data-int-id'));
+  await block.evaluate((el) => el.setAttribute('data-before', ''));
+  await Promise.all([
+    page.waitForResponse((r) => /\/api\/emails\/\d+$/.test(new URL(r.url()).pathname)),
+    page.evaluate((id) => window.dispatchEvent(new CustomEvent('lull:body', { detail: { int_id: id } })), intId),
+  ]);
+  await expect(page.locator('#read-pane .mb-body-block[data-before]')).toHaveCount(0);
+}
+
+test('a message too heavy to render shows its text, and can be shown as sent', async ({ page }) => {
+  // Past the element limit, yet cheap to lay out once asked for. No text
+  // part: the text is the HTML's own.
+  await hostileMailbox(page, `<p id="leak-marker">Bonjour Alice,</p>${'mot<br>'.repeat(160_000)}`);
+  await openFirst(page);
+
+  const notice = page.locator('#read-pane .mb-body-notice');
+  await expect(notice).toContainText('affiché en texte');
+  await expect(page.locator('#read-pane .mb-body-text')).toContainText('Bonjour Alice,');
+  // 640,000 characters, more than a refused message gets back.
+  await expect(page.locator('#read-pane .mb-body-cut')).toHaveText('(texte tronqué)');
   await expect(page.locator(FRAME)).toHaveCount(0);
+
+  await notice.locator('[data-act="show-as-sent"]').click();
+  await expect(page.frameLocator(FRAME).locator('#leak-marker')).toBeVisible();
+  await expect(notice).toHaveCount(0);
+
+  await bodyEvent(page);
+  await expect(page.frameLocator(FRAME).locator('#leak-marker')).toBeVisible();
+  await expect(notice).toHaveCount(0);
+});
+
+test('a text part cut at the fetcher\'s cap gives way to the text of the HTML', async ({ page }) => {
+  const words = 'Paragraphe. '.repeat(1_000);
+  await hostileMailbox(page, `<p>${words}</p>${'<br>'.repeat(160_000)}<p>Fin du message.</p>`,
+    { text: words.slice(0, 8_000) });
+  await openFirst(page);
+
+  await expect(page.locator('#read-pane .mb-body-notice')).toBeVisible();
+  await expect(page.locator('#read-pane .mb-body-text')).toContainText('Fin du message.');
+  await expect(page.locator('#read-pane .mb-body-cut')).toHaveCount(0);
+});
+
+test('a text-only message at the fetcher\'s cap is said cut', async ({ page }) => {
+  await hostileMailbox(page, '', { text: 'Paragraphe. '.repeat(1_000).slice(0, 8_000) });
+  await openFirst(page);
+
+  await expect(page.locator('#read-pane .mb-body-text')).toContainText('Paragraphe.');
+  await expect(page.locator('#read-pane .mb-body-cut')).toHaveText('(texte tronqué)');
+});
+
+test('"load for this email" holds when the message is rendered again', async ({ page }) => {
+  await hostileMailbox(page, HOSTILE);
+  await openFirstInInbox(page);
+  await showOnce(page);
+
+  await bodyEvent(page);
+  await expect(page.frameLocator(FRAME).locator('#leak-marker')).toBeVisible();
+  await expect(page.locator(BANNER)).toHaveCount(0);
+});
+
+test('the assistant side reader shows a heavy message as its text', async ({ page }) => {
+  await hostileMailbox(page, `<p>Bonjour Alice,</p>${'<br>'.repeat(160_000)}<p>Fin du message.</p>`);
+  await openInSideReader(page);
+
+  await expect(page.locator('#aiw-reader .aiw-reader-text')).toContainText('affiché ici en texte');
+  await expect(page.locator('#aiw-reader .aiw-reader-text')).toContainText('Fin du message.');
+  await expect(page.locator('#aiw-reader .aiw-reader-iframe')).toHaveCount(0);
 });
 
 /**
@@ -733,5 +952,69 @@ test('no hostile markup freezes the reader', async ({ page }) => {
   for (const [label, ms] of Object.entries(times)) {
     expect(ms, label).toBeLessThan(label.endsWith('2000 KB') ? 2000 : 500);
   }
+});
+
+// The same shapes at 200 KB, the most HTML the fetcher keeps of a message
+// with no inline picture, opened in the reading pane itself.
+const fill = (unit, size) => unit.repeat(Math.floor(size / unit.length));
+const FROZE = {
+  'url(// in <style>': `<style>${fill('url(//', 200_000)}</style>`,
+  'url(// in style=': `<div style="${fill('url(//', 200_000)}">d</div>`,
+  'url( then spaces, in <style>': `<style>.a{background:url(${' '.repeat(200_000)}x}</style>`,
+  'url( then spaces, in style=': `<div style="background:url(${' '.repeat(200_000)}x">d</div>`,
+  'commas inside a srcset URL': `<img srcset="a${','.repeat(200_000)}b 1x">`,
+  'a data: stylesheet of url(a)': `<link rel="stylesheet" href="data:text/css,${fill('url(a)', 200_000)}">`,
+  'a data: @import of url(a)': `<style>@import "data:text/css,${fill('url(a)', 200_000)}";</style>`,
+  'a long <base> and <style> refs': `<base href="http://example.invalid/${'a'.repeat(100_000)}">`
+    + `<style>${fill('url(x)', 100_000)}</style>`,
+  'a long <base> and images': `<base href="http://example.invalid/${'a'.repeat(100_000)}">`
+    + fill('<img src=x>', 100_000),
+  'nested tables': fill('<table><tr><td>', 200_000),
+  'nested blocks': fill('<div>', 200_000),
+  'many @import': `<style>${fill('@import "x.css";', 200_000)}</style>`,
+  'many <base>': fill('<base href="https://x.example/">', 200_000),
+};
+
+test('the reading pane opens every shape that froze it without stalling', async ({ page }) => {
+  // From the click to the frame loaded (or the text shown), then through
+  // the frame's fitting to its content, with the main thread sampled all
+  // along: what the user waits for, not just the blocker's share.
+  let html = '';
+  await hostileMailbox(page, () => html);
+  await page.goto('/#/inbox');
+  const cards = page.locator('#email-list .mb-card');
+  await expect(cards).toHaveCount(18);
+  await page.evaluate(() => {
+    window.zzStall = { last: performance.now(), worst: 0 };
+    setInterval(() => {
+      const now = performance.now();
+      window.zzStall.worst = Math.max(window.zzStall.worst, now - window.zzStall.last);
+      window.zzStall.last = now;
+    }, 20);
+  });
+
+  const slow = [];
+  let nth = 0;
+  for (const [label, body] of Object.entries(FROZE)) {
+    html = `<p id="leak-marker">m</p>${body}`;
+    nth = 1 - nth;
+    const id = await cards.nth(nth).getAttribute('data-id');
+    await page.evaluate(() => { window.zzStall.worst = 0; window.zzStall.last = performance.now(); });
+    const started = Date.now();
+    await cards.nth(nth).click();
+    await expect.poll(() => page.evaluate((intId) => {
+      const block = document.querySelector(`#read-pane .mb-body-block[data-int-id="${intId}"]`);
+      if (!block) return false;
+      if (block.querySelector('.mb-body-notice')) return true;
+      const doc = block.querySelector('.mb-body-iframe')?.contentDocument;
+      return !!doc && doc.readyState === 'complete' && !!doc.getElementById('leak-marker');
+    }, id), { timeout: 10_000 }).toBe(true);
+    const opened = Date.now() - started;
+    // The frame is fitted again 120 and 400 ms after it loads.
+    await page.waitForTimeout(600);
+    const stall = await page.evaluate(() => window.zzStall.worst);
+    if (opened > 5000 || stall > 2000) slow.push(`${label}: opened in ${opened} ms, stalled ${Math.round(stall)} ms`);
+  }
+  expect(slow).toEqual([]);
 });
 

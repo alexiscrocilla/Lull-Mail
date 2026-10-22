@@ -14,15 +14,28 @@ import { LatestRequest } from '/static/request-latest.js';
 import { dropOperator, freeText, isExpressible, readOperator, setOperator, tokens }
   from '/static/search-query.js';
 
+// Per-message choices for this session, by int_id: "Charger pour ce mail"
+// (images shown once, without trusting the sender) and "Afficher tel quel"
+// (a message too heavy for the pane, rendered anyway). Kept here rather
+// than on the render, so a later render of the same message (a body event,
+// a refresh) does not quietly undo them.
+const _imagesShownFor = new Set();
+const _shownAsSentFor = new Set();
+
+// The fetcher keeps the first 8,000 characters of the text/plain part
+// (src/email_fetcher.py), so a text that long may have been cut.
+const BODY_TEXT_CAP = 8000;
+
 // Build the HTML <body> block for an email — sandboxed iframe with the
 // remote-image blocker applied unless the sender is trusted. Includes a
-// banner above the iframe when images were stripped.
+// banner above the iframe when images were stripped. A message too heavy
+// for the pane gets its text instead, with a button to render it anyway.
+// Wrapped in a box-less .mb-body-block, which wireBodyBlock() wires up and
+// re-renders in place.
 //
 // `em` must carry `body_html`, `sender`, `sender_domain` and
 // `sender_images_trusted` (the last three are emitted by /api/emails/{id}).
-// `forceShowImages` skips the blocker just for this render — used by the
-// "Charger pour ce mail" button without touching the DB.
-function buildHtmlBodyBlock(em, forceShowImages = false) {
+function buildHtmlBodyBlock(em) {
   const _t = window.t || ((k) => k);
   // The image-blocker styles render any <img data-blocked-src=…> as a
   // soft grey rectangle with a tiny "image" icon in the centre. The
@@ -95,18 +108,14 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
   // and reset CSS ahead of the email. Whatever precedes the email's first
   // tag lands in the implied <head>, so nothing searches the email's text
   // for a <head> that may not be one.
-  const showRemote = !!em.sender_images_trusted || forceShowImages;
+  const showRemote = !!em.sender_images_trusted || _imagesShownFor.has(em.int_id);
   const prepared = prepareMessage(em.body_html, {
     allowRemote: showRemote, head: INJECT, decorate: markSuspiciousLinks,
+    force: _shownAsSentFor.has(em.int_id),
   });
-  // Too heavy to render in reasonable time, or a serialisation that will
-  // not settle: the plain text, said as much.
-  if (!prepared.srcdoc) {
-    const text = em.body_text && em.body_text.trim()
-      ? `<div class="mb-body-text">${linkify(em.body_text)}</div>` : '';
-    return `<div class="mb-body-notice" role="note" style="color:var(--muted);font-style:italic;margin-bottom:12px">`
-      + `${escapeHtml(_t(text ? 'mb.read.too_complex_text' : 'mb.read.too_complex'))}</div>${text}`;
-  }
+  const wrap = (inner) => `<div class="mb-body-block" style="display:contents"`
+    + ` data-int-id="${escapeHtml(String(em.int_id))}">${inner}</div>`;
+  if (!prepared.srcdoc) return wrap(textFallbackBlock(em, prepared));
   const finalHtml = prepared.srcdoc;
   const { blockedCount } = prepared;
 
@@ -128,9 +137,9 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
   const iframe = `<iframe sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin" srcdoc="${escapeHtml(finalHtml)}" class="mb-body-iframe" title="${escapeHtml(em.subject || _t('mb.no_subject'))}"></iframe>`;
 
   // Banner only when we actually blocked something. The two buttons
-  // are wired up by attachImageBlockerHandlers() right after the
-  // iframe is injected into the DOM.
-  if (!blockedCount) return iframe;
+  // are wired up by wireBodyBlock() right after the block is injected
+  // into the DOM.
+  if (!blockedCount) return wrap(iframe);
 
   const domain = em.sender_domain || senderDomain(em.sender) || '';
   const label = _t('mb.img.blocked_count', { n: blockedCount });
@@ -146,7 +155,64 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
         ${domain ? _t('mb.img.always_for', { domain: escapeHtml(domain) }) : _t('mb.img.always_for_sender')}
       </button>
     </div>`;
-  return banner + iframe;
+  return wrap(banner + iframe);
+}
+
+
+/**
+ * The text a message falls back to when its HTML is not rendered: the
+ * text/plain part when there is one in full; otherwise the text of the
+ * HTML itself, which prepareMessage read off the parsed tree. `cut` says
+ * either one stops short.
+ */
+function fallbackText(em, prepared) {
+  const own = em.body_text || '';
+  const ownCut = own.length >= BODY_TEXT_CAP;
+  if (own.trim() && !ownCut) return { text: own, cut: false };
+  if (prepared.text && prepared.text.length > own.trim().length) {
+    return { text: prepared.text, cut: prepared.textCut };
+  }
+  return { text: own.trim() ? own : '', cut: ownCut };
+}
+
+
+/**
+ * A message whose HTML is not rendered: a note saying why, its text, and
+ * for one that is merely heavy, a button to render it as sent anyway. One
+ * whose serialisation would not settle gets no button: rendering it is not
+ * safe.
+ */
+function textFallbackBlock(em, prepared) {
+  const _t = window.t || ((k) => k);
+  const unsafe = prepared.refused === 'unstable';
+  const { text, cut } = fallbackText(em, prepared);
+  const note = `
+    <div class="mb-img-banner mb-body-notice" role="note">
+      <i data-lucide="${unsafe ? 'shield-alert' : 'file-text'}" class="w-4 h-4"></i>
+      <span class="mb-img-banner-label">${escapeHtml(_t(unsafe ? 'mb.read.unsafe' : 'mb.read.heavy'))}</span>
+      <span class="mb-img-banner-spacer"></span>
+      ${unsafe ? '' : `<button class="mb-img-banner-btn" data-act="show-as-sent" type="button">
+        ${escapeHtml(_t('mb.read.show_as_sent'))}
+      </button>`}
+    </div>`;
+  const body = text
+    ? `<div class="mb-body-text">${linkify(text)}</div>`
+    : `<div style="color:var(--muted);font-style:italic">${escapeHtml(_t('mb.read.no_text'))}</div>`;
+  return note + body + (cut && text ? cutNote() : '');
+}
+
+
+/** A text part as it is, said cut when it is as long as the fetcher keeps. */
+function textPartBlock(text) {
+  return `<div class="mb-body-text">${linkify(text)}</div>`
+    + (text.length >= BODY_TEXT_CAP ? cutNote() : '');
+}
+
+
+function cutNote() {
+  const _t = window.t || ((k) => k);
+  return `<div class="mb-body-cut" style="color:var(--muted);font-style:italic;margin-top:12px">`
+    + `${escapeHtml(_t('mb.read.text_cut'))}</div>`;
 }
 
 // Grow a message-body iframe to its content height so the reading pane
@@ -241,44 +307,40 @@ function autoSizeBodyIframe(iframe) {
 }
 
 
-// Wire up the banner buttons after the iframe has been mounted. Called
-// from the same place that mounts the read pane. The closure keeps a
-// reference to `em` so we can re-render on demand.
-function attachImageBlockerHandlers(em) {
+// Wire up the buttons of a body block (see buildHtmlBodyBlock) once it is
+// in the DOM: "Charger pour ce mail", "Toujours pour …" and "Afficher tel
+// quel". Each records the choice, then renders the block again in place.
+// Works on any block, the open message's or a thread row's, which is why
+// it is handed the block rather than looking one up.
+function wireBodyBlock(block, em) {
+  // Spelled out: Tailwind reads the negated name as a utility class.
+  if (block === null) return;
   const _t = window.t || ((k) => k);
-  const banner = document.querySelector('#read-pane .mb-img-banner');
-  if (!banner) return;
 
-  const reRender = (forceShow) => {
-    // The body block currently consists of the banner + the iframe
-    // immediately after it. Insert the freshly-built block before the
-    // banner, then drop both old elements. Same DOM position, no
-    // visible reflow.
-    const oldIframe = banner.nextElementSibling;
-    banner.insertAdjacentHTML('beforebegin', buildHtmlBodyBlock(em, forceShow));
-    // The block was inserted directly before the banner, so the new iframe
-    // is the banner's previous sibling (targeting it directly avoids
-    // grabbing a thread-accordion iframe by a broad query).
-    const newIframe = banner.previousElementSibling;
-    if (oldIframe) oldIframe.remove();
-    banner.remove();
-    const pane = document.querySelector('#read-pane');
-    if (pane) window.lucide?.createIcons({ el: pane });
-    // The freshly built iframe (now showing images) has a new content
-    // height — re-fit it to avoid a stale scroll box.
-    if (newIframe && newIframe.classList.contains('mb-body-iframe')) {
-      autoSizeBodyIframe(newIframe);
-    }
-    // Re-attach handlers on the new banner (if any). When forceShow
-    // is true the new build has no banner, so this no-ops.
-    attachImageBlockerHandlers(em);
+  const reRender = () => {
+    const holder = document.createElement('div');
+    holder.innerHTML = buildHtmlBodyBlock(em);
+    const fresh = holder.firstElementChild;
+    block.replaceWith(fresh);
+    window.lucide?.createIcons({ el: fresh });
+    // The new frame (now showing images, or now rendered at all) has a new
+    // content height: fit it rather than keep a stale scroll box.
+    autoSizeBodyIframe(fresh.querySelector('.mb-body-iframe'));
+    wireBodyBlock(fresh, em);
   };
 
-  banner.querySelector('[data-act="show-once"]')?.addEventListener('click', () => {
-    reRender(true);
+  block.querySelector('[data-act="show-once"]')?.addEventListener('click', () => {
+    _imagesShownFor.add(em.int_id);
+    reRender();
   });
 
-  banner.querySelector('[data-act="trust-sender"]')?.addEventListener('click', async () => {
+  block.querySelector('[data-act="show-as-sent"]')?.addEventListener('click', () => {
+    _shownAsSentFor.add(em.int_id);
+    reRender();
+  });
+
+  const banner = block.querySelector('.mb-img-banner[data-sender-domain]');
+  banner?.querySelector('[data-act="trust-sender"]')?.addEventListener('click', async () => {
     const domain = banner.dataset.senderDomain || '';
     if (!domain) return;
     try {
@@ -296,7 +358,7 @@ function attachImageBlockerHandlers(em) {
       );
       if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
       em.sender_images_trusted = true;
-      reRender(false);  // forceShow=false but trusted=true → blocker skipped
+      reRender();  // trusted now → blocker skipped
       window.toast?.(_t('mb.img.trusted', { domain }), 2500);
     } catch (e) {
       window.toast?.(_t('mb.toast.error', { msg: e.message }), 3500);
@@ -4184,7 +4246,7 @@ export async function mountMailbox(host, _opts) {
       : (hasHtml
          ? buildHtmlBodyBlock(em)
          : (hasText
-            ? `<div class="mb-body-text">${linkify(em.body_text)}</div>`
+            ? textPartBlock(em.body_text)
             : `<div style="color:var(--muted);font-style:italic">${t('mb.read.empty_body')}</div>`));
 
     // No retry here. There used to be exactly one, at 1200 ms, which against
@@ -4334,10 +4396,10 @@ export async function mountMailbox(host, _opts) {
       renderEmpty();
     });
 
-    // Wire up the "Charger pour ce mail" / "Toujours pour cet expéditeur"
-    // banner buttons after the iframe has been mounted. No-op when the
-    // sender is already trusted (no banner present).
-    attachImageBlockerHandlers(em);
+    // Wire up the "Charger pour ce mail" / "Toujours pour cet expéditeur" /
+    // "Afficher tel quel" buttons of this message's body block. No-op when
+    // there is no button (sender trusted, nothing blocked).
+    wireBodyBlock($(`#read-pane .mb-body-block[data-int-id="${CSS.escape(String(em.int_id))}"]`), em);
 
     // Grow the HTML body to its full height so the reading pane scrolls the
     // whole message instead of trapping it in a cramped internal scrollbar.
@@ -5338,15 +5400,19 @@ export async function mountMailbox(host, _opts) {
         if (!bodyEl || bodyEl.dataset.lazy !== '1') return;
         const m = byId.get(parseInt(d.dataset.intId, 10));
         if (!m) return;
-        const hasText = m.body_text && m.body_text.trim().length;
         const hasHtml = m.body_html && m.body_html.trim().length;
+        // A text part at the fetcher's cap may be cut: the HTML is whole.
+        const hasText = m.body_text && m.body_text.trim().length
+          && !(hasHtml && m.body_text.length >= BODY_TEXT_CAP);
         bodyEl.innerHTML = hasText
-          ? `<div class="mb-body-text">${linkify(m.body_text)}</div>`
+          ? textPartBlock(m.body_text)
           : (hasHtml
               ? buildHtmlBodyBlock(m)
               : `<div style="color:var(--muted);font-style:italic">${t('mb.read.empty_body')}</div>`);
         bodyEl.dataset.lazy = '0';
         window.lucide?.createIcons({ el: bodyEl });
+        // This row's own banner buttons, wired to this row's message.
+        wireBodyBlock(bodyEl.querySelector('.mb-body-block'), m);
         // Fit the (rare) HTML thread message to its content so it isn't a
         // tiny scroll box inside the expanded accordion row.
         autoSizeBodyIframe(bodyEl.querySelector('.mb-body-iframe'));

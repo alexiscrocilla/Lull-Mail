@@ -592,9 +592,14 @@ export async function mountAI(host, opts = {}) {
     const sEmail = senderEmail(em.sender);
     const hasText = em.body_text && em.body_text.trim().length;
     const hasHtml = em.body_html && em.body_html.trim().length;
+    // The fetcher keeps the first 8,000 characters of the text part; one
+    // that long may be cut, so the HTML (whole) is shown instead, or with
+    // no HTML, the text said cut.
+    const textCut = hasText && em.body_text.length >= 8000;
     let bodyHtml;
-    if (hasText) {
-      bodyHtml = `<div class="aiw-reader-text">${linkify(em.body_text)}</div>`;
+    if (hasText && !(textCut && hasHtml)) {
+      bodyHtml = `<div class="aiw-reader-text">${linkify(em.body_text)}`
+        + `${textCut ? `<p class="aiw-reader-empty">${escapeHtml(t('mb.read.text_cut'))}</p>` : ''}</div>`;
     } else if (hasHtml) {
       // Sandboxed (no scripts), remote images stripped — same blocker the
       // inbox uses, minus the trust/one-shot buttons: this is a preview,
@@ -607,10 +612,19 @@ export async function mountAI(host, opts = {}) {
           + 'table{max-width:100%!important;table-layout:fixed!important}'
           + '</style>',
       });
+      // Too heavy for the preview: the longer of its cut text part and the
+      // text read off the parsed message, said as much.
+      const own = hasText ? em.body_text : '';
+      const fromTree = (prepared.text || '').length > own.trim().length;
+      const text = fromTree ? prepared.text : own;
+      const cut = fromTree ? prepared.textCut : textCut;
       bodyHtml = prepared.srcdoc
         ? `<iframe class="aiw-reader-iframe" sandbox="allow-popups allow-popups-to-escape-sandbox"`
           + ` srcdoc="${escapeHtml(prepared.srcdoc)}" title="${escapeHtml(em.subject || t('aiw.no_subject'))}"></iframe>`
-        : `<div class="aiw-reader-text aiw-reader-empty">${t('aiw.reader.too_complex')}</div>`;
+        : `<div class="aiw-reader-text"><p class="aiw-reader-empty">`
+          + `${escapeHtml(t(prepared.refused === 'unstable' ? 'mb.read.unsafe' : 'aiw.reader.too_complex'))}</p>`
+          + `${linkify(text)}`
+          + `${cut && text ? `<p class="aiw-reader-empty">${escapeHtml(t('mb.read.text_cut'))}</p>` : ''}</div>`;
     } else {
       bodyHtml = `<div class="aiw-reader-text aiw-reader-empty">${t('aiw.reader.empty')}</div>`;
     }
