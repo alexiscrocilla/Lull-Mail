@@ -17,7 +17,7 @@
 import {
   api, escapeHtml, linkify,
   avatarColor, initials, avatarImgHtml, senderName, senderEmail,
-  shortDate, scoreClass,
+  shortDateHtml, scoreClass,
 } from '/static/api.js';
 import { rewriteRemoteImages, withRemoteContentPolicy } from '/static/image-blocker.js';
 
@@ -230,7 +230,7 @@ export async function mountAI(host, opts = {}) {
           </span>
           <span class="aiw-row-col">
             <span class="aiw-row-label">${escapeHtml(e.h.title || '')}</span>
-            <span class="aiw-row-desc">${escapeHtml(shortDate(e.h.ts))} · ${t('aiw.hist.exchanges', { n })}</span>
+            <span class="aiw-row-desc">${shortDateHtml(e.h.ts)} · ${t('aiw.hist.exchanges', { n })}</span>
           </span>
           <button type="button" class="aiw-hist-del" data-del="${escapeHtml(e.h.id)}"
                   title="${t('aiw.hist.delete')}" aria-label="${t('aiw.hist.delete')}">
@@ -400,7 +400,7 @@ export async function mountAI(host, opts = {}) {
               <span class="aiw-mc-from">${escapeHtml(sName || sEmail)}</span>
             </span>
             ${score > 0 ? `<span class="score-pill ${scoreClass(score)}">${score}</span>` : ''}
-            <span class="aiw-mc-date">${escapeHtml(shortDate(em.date_received))}</span>
+            ${shortDateHtml(em.date_received, 'aiw-mc-date')}
             <i data-lucide="chevron-right" class="w-4 h-4 aiw-mc-chev"></i>`;
         } else {
           const span = el.querySelector('span');
@@ -619,7 +619,7 @@ export async function mountAI(host, opts = {}) {
         </span>
         <div class="aiw-reader-titles">
           <div class="aiw-reader-subj">${escapeHtml(em.subject || t('aiw.no_subject'))}</div>
-          <div class="aiw-reader-meta">${escapeHtml(sName || sEmail)} · ${escapeHtml(shortDate(em.date_received))}</div>
+          <div class="aiw-reader-meta">${escapeHtml(sName || sEmail)} · ${shortDateHtml(em.date_received)}</div>
         </div>
         <button class="aiw-back" id="aiw-reader-inbox" title="${t('aiw.reader.open_inbox')}"
                 aria-label="${t('aiw.reader.open_inbox')}">

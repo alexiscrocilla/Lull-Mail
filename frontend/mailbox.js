@@ -3,7 +3,7 @@ import {
   api,
   avatarColor, initials, senderName, senderEmail,
   avatarImgHtml,
-  shortDate, longDate, escapeHtml, linkify, isHomographUrl, safeLinkUrl,
+  shortDate, shortDateHtml, longDate, escapeHtml, linkify, isHomographUrl, safeLinkUrl,
   CATEGORY_LABEL, scoreClass,
 } from '/static/api.js';
 import { dropOutsidePolicy, rewriteRemoteImages, senderDomain, withRemoteContentPolicy }
@@ -2998,6 +2998,8 @@ export async function mountMailbox(host, _opts) {
     if (showAcc) states.push(t('mb.card.account', { name: accLabel }));
     // `role="option"` computes its name from its contents, which after the
     // cut are two text runs and a handful of icons. Name it explicitly.
+    // `data-short-date-label` on the card keeps the date in this name in
+    // step with the visible one when the day changes (refreshShortDates).
     const cardLabel = [
       sName || sEmail || t('mb.unknown_sender'),
       em.subject || t('mb.no_subject'),
@@ -3012,7 +3014,7 @@ export async function mountMailbox(host, _opts) {
       : '';
 
     return `
-      <article class="mb-card${animClass} ${isUnread ? 'unread' : ''} ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''}" data-id="${em.int_id}" role="option" aria-label="${escapeHtml(cardLabel)}" aria-selected="${isChecked ? 'true' : 'false'}" aria-current="${isSelected ? 'true' : 'false'}" tabindex="${isSelected ? '0' : '-1'}"${animStyle}>
+      <article class="mb-card${animClass} ${isUnread ? 'unread' : ''} ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''}" data-id="${em.int_id}" role="option" aria-label="${escapeHtml(cardLabel)}" data-short-date-label aria-selected="${isChecked ? 'true' : 'false'}" aria-current="${isSelected ? 'true' : 'false'}" tabindex="${isSelected ? '0' : '-1'}"${animStyle}>
         <div class="mb-avatar" style="background:${col}" aria-hidden="true" title="${t('mb.list.select_title')}">
           <span class="av-text">${escapeHtml(ini)}</span>
           ${logoImg}
@@ -3027,7 +3029,7 @@ export async function mountMailbox(host, _opts) {
               ${aiOn && em.needs_reply ? glyph('reply', 'mb-reply-inline', t('mb.ai.needs_reply')) : ''}
               ${aiOn && em.draft_response ? glyph('pencil-line', `mb-draft-inline${em.draft_auto ? ' mb-draft-auto' : ''}`, draftLabel) : ''}
             </div>
-            <span class="mb-date">${escapeHtml(shortDate(em.date_received))}</span>
+            ${shortDateHtml(em.date_received, 'mb-date')}
           </div>
           <div class="mb-subj">
             <span>${escapeHtml(em.subject || t('mb.no_subject'))}</span>
@@ -5316,7 +5318,7 @@ export async function mountMailbox(host, _opts) {
             <span class="mb-avatar mb-thread-msg-av" style="background:${col}"><span class="av-text">${escapeHtml(ini)}</span></span>
             <span class="mb-thread-msg-from">${escapeHtml(sName || sEmail || t('mb.unknown_sender'))}</span>
             <span class="mb-thread-msg-snip">${escapeHtml(snippet)}</span>
-            <span class="mb-thread-msg-date">${escapeHtml(shortDate(m.date_received))}</span>
+            ${shortDateHtml(m.date_received, 'mb-thread-msg-date')}
           </summary>
           <div class="mb-thread-msg-body" data-lazy="1"></div>
         </details>`;

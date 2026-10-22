@@ -6,6 +6,7 @@ import { mountCleanup } from '/static/cleanup.js';
 import { mountAI } from '/static/ai.js';
 import { mountSettings } from '/static/settings.js';
 import { initCommandPalette } from '/static/command-palette.js';
+import { watchShortDates } from '/static/api.js';
 
 const view = document.getElementById('view');
 let cleanup = null;
@@ -543,6 +544,9 @@ syncAiRailButton();
 render();
 refreshIcons();
 initCommandPalette({ navigate });
+// Once for the page, not per view: "Aujourd'hui" and "Hier" are shown by the
+// list, the thread rows and the assistant alike.
+watchShortDates();
 
 // ── Auto-update banner ─────────────────────────────────────
 // Re-checked on a timer for the lifetime of the window. Closing the window

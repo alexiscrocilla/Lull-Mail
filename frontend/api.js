@@ -631,7 +631,9 @@ export function relativeTime(iso) {
   return d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' });
 }
 
-export function shortDate(iso) {
+// `now` is a parameter so the day arithmetic can be tested; every caller in
+// the app formats against the clock.
+export function shortDate(iso, now = new Date()) {
   if (!iso) return '';
   let d;
   try {
@@ -639,7 +641,6 @@ export function shortDate(iso) {
     if (isNaN(d.getTime())) d = new Date(iso.replace(' ', 'T'));
   } catch { return ''; }
   if (isNaN(d.getTime())) return '';
-  const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const msgDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const diffDays = Math.round((today - msgDay) / 86400000);
@@ -649,6 +650,88 @@ export function shortDate(iso) {
   return d.toLocaleDateString('fr-FR', sameYear
     ? { day: '2-digit', month: 'short' }
     : { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+// ── date labels that follow the clock ──────────────────────────────────────
+//
+// "Aujourd'hui", "Hier" and a missing year are only true on the day they were
+// formatted, and nothing re-renders a list because the clock moved: an app
+// left open overnight went on calling yesterday's mail today's. So a
+// shortDate put on screen keeps its timestamp on the element, and a day
+// change re-formats those elements in place. The list is not rebuilt, so its
+// scroll position, selection and focus stay where they were.
+
+export function shortDateHtml(iso, className = '') {
+  const cls = className ? ` class="${className}"` : '';
+  return `<span${cls} data-short-date="${escapeHtml(iso || '')}">${escapeHtml(shortDate(iso))}</span>`;
+}
+
+// 23 or 25 hours on the nights the clocks change: the next midnight is built
+// from the local calendar, not by adding 24 h.
+export function msUntilLocalMidnight(now = new Date()) {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - now.getTime();
+}
+
+function _localDay(d) {
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+// A label inside a `[data-short-date-label]` element is repeated in that
+// element's aria-label (a card names itself explicitly), so the old text is
+// swapped there as well. The last occurrence: what follows the date in a card
+// label is its states, which never spell a date, while the subject before it
+// might.
+export function refreshShortDates(root = document, now = new Date()) {
+  for (const el of root.querySelectorAll('[data-short-date]')) {
+    const before = el.textContent;
+    const after = shortDate(el.getAttribute('data-short-date'), now);
+    if (before === after) continue;
+    el.textContent = after;
+    const named = el.closest('[data-short-date-label]');
+    const label = named?.getAttribute('aria-label');
+    const at = label && before ? label.lastIndexOf(before) : -1;
+    if (at >= 0) named.setAttribute('aria-label', label.slice(0, at) + after + label.slice(at + before.length));
+  }
+}
+
+// One timer for the page, armed for the next local midnight. It can still be
+// late: on some platforms the clock timers count on stops while the machine
+// sleeps, so a timer due at midnight fires as much later as the sleep lasted.
+// Hence the cap, and a check as soon as the window comes back. Labels are
+// only re-formatted when the day has actually changed.
+const DAY_CHECK_MAX_MS = 3_600_000;
+let _labelledDay = null;
+let _dayTimer = null;
+
+function _checkDay() {
+  const now = new Date();
+  const day = _localDay(now);
+  if (day === _labelledDay) return;
+  _labelledDay = day;
+  refreshShortDates(document, now);
+}
+
+function _armDayTimer() {
+  clearTimeout(_dayTimer);
+  _dayTimer = setTimeout(() => {
+    _checkDay();
+    _armDayTimer();
+  }, Math.min(msUntilLocalMidnight(), DAY_CHECK_MAX_MS));
+}
+
+export function watchShortDates() {
+  if (_labelledDay !== null) return;
+  _labelledDay = _localDay(new Date());
+  _armDayTimer();
+  const onReturn = () => {
+    if (document.hidden) return;
+    _checkDay();
+    // Re-arm from the wall clock: after a sleep the pending timer can be
+    // hours behind it.
+    _armDayTimer();
+  };
+  document.addEventListener('visibilitychange', onReturn);
+  window.addEventListener('focus', onReturn);
 }
 
 export function longDate(iso) {
