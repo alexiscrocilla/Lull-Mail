@@ -122,6 +122,8 @@ jobs:
       # bash has no such rule, and -e makes a real failure fatal instead of
       # letting the step's exit code come from whichever line happened to run
       # last.
+      # --with-deps, as Playwright's own Windows WebKit job does: on Windows
+      # Server it installs Media Foundation, which WebKit's media code loads.
       - name: Install dependencies
         shell: bash
         run: |
@@ -129,7 +131,7 @@ jobs:
           pip install -r requirements-dev.txt
           cd frontend
           pnpm install --frozen-lockfile
-          pnpm exec playwright install chromium webkit
+          pnpm exec playwright install --with-deps chromium webkit
 
       # A missing browser must never again look like a successful install.
       # --dry-run would not do: it prints what WOULD be downloaded whether or
