@@ -65,18 +65,43 @@ const BLANK_RE = /^[\x00-\x20]*$/;
 
 
 /**
- * Above these a message is not handed to any parser, nor to the frame.
- * `bytes`, `tags`, `imports` and `bases` are read off the raw text and can
- * only over-count (a "<" followed by a letter counts as a tag even inside a
- * comment), so a message that passes is really under them. `depth` is read
- * on the parsed tree. Measured on Chromium, the engine that struggles: a
- * frame holding 128 nested tables or 256 nested blocks had not finished
- * loading after 15 s, while half those depths loaded in about 20 ms; the
- * parse itself grows with the square of the nesting, about half a second
- * for 20,000 nested blocks, and each <base> costs it a URL update (0.3 s
- * for 6,000 of them). An email has one <base> at most.
+ * What the reading pane can render without stalling, measured in Chromium
+ * (WebKit has none of these walls), with the pane's own CSS and autosize:
+ *
+ * - `depth`, the blocks nested in one another on the parsed tree. A frame
+ *   loads in about 10 ms up to some 240 levels and then not at all: 256
+ *   nested blocks, 128 Gmail-style quoted replies (two blocks each) or 120
+ *   nested tables (a table and its cell each) were still loading after
+ *   12 s. Inline elements and table sections and rows open no block under
+ *   the default layout and are not counted, so a newsletter of 60 nested
+ *   layout tables (180) and a thread of 100 replies (200) both fit.
+ * - `elements`, all of them, end tags that create one (a stray </p>)
+ *   included: a 4.5 MB newsletter has about 70,000.
+ * - `openTags`, start tags left open, read off the raw text before any
+ *   parse: the parser itself slows down with the square of that (half a
+ *   second for 20,000 nested blocks), so a nesting bomb is refused before
+ *   it gets there. Elements whose end tag is optional (p, li, td...) are
+ *   not counted.
+ * - `parseMs` (plus `parseMsPerMB`), the parse's time budget, which bounds
+ *   whatever the estimate misses. The 4.5 MB newsletter parses in 40 ms.
+ * - `bytes`, `imports` and `bases`: above the fetcher's own 4 MB cap, and an
+ *   email has a handful of @import and one <base> at most (each <base>
+ *   costs the parser a URL update).
+ *
+ * Styles can still slow a frame down where markup alone does not (48
+ * nested inline-blocks stall Chromium): these limits cover what the markup
+ * says, under the default layout.
  */
-export const LIMITS = Object.freeze({ bytes: 5_000_000, tags: 20_000, imports: 256, bases: 16, depth: 128 });
+export const LIMITS = Object.freeze({
+  depth: 224,
+  elements: 150_000,
+  openTags: 2_048,
+  parseMs: 300,
+  parseMsPerMB: 100,
+  bytes: 5_000_000,
+  imports: 256,
+  bases: 16,
+});
 
 // The most a message's data: stylesheets may cost the count, decoded,
 // before any further one counts as a single blocked item unread.
@@ -575,17 +600,60 @@ function replaceRemoteCssUrls(css, resolver, replacement) {
 }
 
 
+// No end tag needed: void elements, and those the parser closes on its own
+// when the next one starts (an open <p>, <li>, <td>... never nests).
+const NEVER_OPEN = new Set([
+  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track',
+  'wbr', 'keygen', 'p', 'li', 'dt', 'dd', 'tr', 'td', 'th', 'tbody', 'thead', 'tfoot', 'colgroup',
+  'caption', 'option', 'optgroup', 'rb', 'rp', 'rt', 'rtc', 'html', 'head', 'body',
+]);
+
+
+/** The tag name that starts at `i` (just after "<" or "</"), lower-cased. */
+function tagNameAt(html, i) {
+  let j = i;
+  while (j < html.length) {
+    const c = html.charCodeAt(j);
+    if (!(((c | 32) >= 97 && (c | 32) <= 122) || (c >= 48 && c <= 57) || c === 45)) break;
+    j += 1;
+  }
+  return html.slice(i, j).toLowerCase();
+}
+
+
 /**
- * Whether `html` is too much for the parser or the frame, read off the raw
- * text in one pass. Each count can only overshoot, so it fails safe: an
- * honest message is at worst shown as text.
+ * Why `html` should not even be parsed, read off the raw text in one pass,
+ * or null. These are estimates: a tag written inside a comment counts, and
+ * a "</div>" written inside an attribute lowers the open count although
+ * the parser closes nothing there. So the parse's time budget and the
+ * exact counts on the parsed tree stand behind them.
  */
-function tooComplexToParse(html) {
+function heavySource(html) {
   if (html.length > LIMITS.bytes) return 'size';
+  let open = 0;
   let tags = 0;
+  let gt = -1;
   for (let i = html.indexOf('<'); i >= 0; i = html.indexOf('<', i + 1)) {
-    const c = html.charCodeAt(i + 1) | 32;
-    if (c >= 97 && c <= 122 && (tags += 1) > LIMITS.tags) return 'tags';
+    const closing = html.charCodeAt(i + 1) === 47;
+    const first = html.charCodeAt(i + (closing ? 2 : 1)) | 32;
+    if (first < 97 || first > 122) continue;
+    // An element takes one or two tags (a stray </p> builds one on its
+    // own). More than twice the element limit is more elements than the
+    // limit, or tags that build nothing (stray end tags, tags in comments
+    // or attributes): not worth a parse either way.
+    if ((tags += 1) > 2 * LIMITS.elements) return 'elements';
+    const name = tagNameAt(html, i + (closing ? 2 : 1));
+    if (NEVER_OPEN.has(name)) continue;
+    if (closing) {
+      if (open) open -= 1;
+      continue;
+    }
+    // A start tag closed by "/>" opens nothing (in SVG and MathML; HTML
+    // ignores the slash, which only makes the estimate low).
+    if (gt < i) gt = html.indexOf('>', i);
+    if (gt < 0) break;
+    if (html.charCodeAt(gt - 1) === 47) continue;
+    if ((open += 1) > LIMITS.openTags) return 'nesting';
   }
   let imports = 0;
   const atImport = /@import/gi;
@@ -601,27 +669,48 @@ function tooComplexToParse(html) {
 }
 
 
-/** Whether some element of `root` sits more than `limit` levels below it. */
-function deeperThan(root, limit) {
-  if (!root) return false;
-  let el = root;
+// Elements that open no block under the default layout: inline phrasing,
+// and a table's sections and rows (the table and its cells do).
+const NO_BLOCK = new Set([
+  'a', 'abbr', 'b', 'bdi', 'bdo', 'big', 'cite', 'code', 'data', 'dfn', 'em', 'font', 'i', 'kbd', 'label',
+  'mark', 'nobr', 'q', 's', 'samp', 'small', 'span', 'strike', 'strong', 'sub', 'sup', 'time', 'tt', 'u',
+  'var', 'br', 'wbr', 'img', 'tbody', 'thead', 'tfoot', 'tr',
+]);
+
+
+/**
+ * Why the parsed tree under `root` is too heavy for the frame, or null:
+ * more than LIMITS.elements elements, or blocks nested deeper than
+ * LIMITS.depth. One walk, stopped at the first limit passed.
+ */
+function heavyTree(root) {
+  const weight = (el) => (NO_BLOCK.has(el.localName) ? 0 : 1);
+  let count = 0;
   let depth = 0;
+  let el = root;
   for (;;) {
+    count += 1;
+    depth += weight(el);
+    if (count > LIMITS.elements) return 'elements';
+    if (depth > LIMITS.depth) return 'depth';
     if (el.firstElementChild) {
       el = el.firstElementChild;
-      depth += 1;
-      if (depth > limit) return true;
       continue;
     }
-    while (el !== root && !el.nextElementSibling) {
+    for (;;) {
+      depth -= weight(el);
+      if (el === root) return null;
+      if (el.nextElementSibling) {
+        el = el.nextElementSibling;
+        break;
+      }
       el = el.parentElement;
-      depth -= 1;
     }
-    if (el === root) return false;
-    el = el.nextElementSibling;
   }
 }
 
+
+const PARSE_CHUNK = 32_768;
 
 /**
  * `html` parsed into an inert document: built by the engine's full HTML
@@ -631,13 +720,88 @@ function deeperThan(root, limit) {
  * gives the no-quirks tree a srcdoc frame builds (in quirks mode a <table>
  * stays inside an open <p>); a doctype of the email's own after it is
  * ignored, as in the frame.
+ *
+ * Written in chunks, so a parse that runs past `budgetMs` stops there:
+ * `complete` is false and the document holds what was read so far. The
+ * tree is the same as one write would build (the tokenizer carries its
+ * state from one write to the next); a chunk never ends inside a surrogate
+ * pair or a CRLF.
  */
-function parseInert(html) {
+function parseInert(html, budgetMs = Infinity) {
   const doc = document.implementation.createHTMLDocument('');
   doc.open();
-  doc.write(`<!DOCTYPE html>${html}`);
+  doc.write('<!DOCTYPE html>');
+  const started = performance.now();
+  let complete = true;
+  for (let i = 0; i < html.length;) {
+    let end = Math.min(i + PARSE_CHUNK, html.length);
+    while (end < html.length && ((html.charCodeAt(end) & 0xfc00) === 0xdc00
+      || (html.charCodeAt(end) === 10 && html.charCodeAt(end - 1) === 13))) end += 1;
+    doc.write(html.slice(i, end));
+    i = end;
+    if (i < html.length && performance.now() - started > budgetMs) {
+      complete = false;
+      break;
+    }
+  }
   doc.close();
-  return doc;
+  return { doc, complete };
+}
+
+
+// The most text a refused message gets back from its tree.
+const TEXT_CAP = 200_000;
+// Elements whose text is not part of the message.
+const NO_TEXT = new Set(['head', 'script', 'style', 'title', 'template', 'iframe', 'object']);
+// Elements that start a new line in the text.
+const LINE_BREAKS = new Set([
+  'address', 'article', 'aside', 'blockquote', 'br', 'center', 'dd', 'div', 'dl', 'dt', 'figcaption',
+  'figure', 'footer', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hr', 'li', 'main', 'nav', 'ol', 'p',
+  'pre', 'section', 'table', 'tr', 'ul',
+]);
+
+
+/**
+ * The readable text of a parsed message, for when it is shown as text: a
+ * new line at each block, a space between table cells, runs of white space
+ * folded. `{ text, textCut }`, cut at TEXT_CAP characters.
+ */
+function documentText(doc) {
+  const root = doc.body || doc.documentElement;
+  if (!root) return { text: '', textCut: false };
+  // 1 = NodeFilter.SHOW_ELEMENT, 4 = SHOW_TEXT; 1 = FILTER_ACCEPT, 2 = FILTER_REJECT.
+  const walker = doc.createTreeWalker(root, 1 | 4, {
+    acceptNode: (n) => (n.nodeType === 1 && NO_TEXT.has(n.localName) ? 2 : 1),
+  });
+  let out = '';
+  let space = false;
+  let breaks = 0;
+  const separate = () => {
+    if (out && breaks) out += breaks > 1 ? '\n\n' : '\n';
+    else if (out && space) out += ' ';
+    space = false;
+    breaks = 0;
+  };
+  for (let n = walker.nextNode(); n && out.length < TEXT_CAP; n = walker.nextNode()) {
+    if (n.nodeType === 1) {
+      if (LINE_BREAKS.has(n.localName)) breaks += 1;
+      else if (n.localName === 'td' || n.localName === 'th') space = true;
+      continue;
+    }
+    const data = n.data;
+    let from = 0;
+    for (let i = 0; i <= data.length; i += 1) {
+      if (i === data.length || isSpace(data.charCodeAt(i)) || data.charCodeAt(i) === 160) {
+        if (i > from) {
+          separate();
+          out += data.slice(from, i);
+        }
+        if (i < data.length) space = true;
+        from = i + 1;
+      }
+    }
+  }
+  return { text: out.slice(0, TEXT_CAP), textCut: out.length >= TEXT_CAP };
 }
 
 
@@ -902,27 +1066,41 @@ export function withRemoteContentPolicy(html, allowRemote = false) {
 
 /**
  * The frame document for a message: `{ srcdoc, blockedCount }`, or
- * `{ refused }` with the reason when it must be shown as text instead
- * ('size', 'tags', 'imports', 'bases' or 'depth' for one too heavy to render,
- * 'unstable' for one whose serialisation will not settle).
+ * `{ refused, text, textCut }` when it is to be shown as text instead.
+ * `refused` says why: 'size', 'nesting', 'imports', 'bases', 'slow',
+ * 'depth' or 'elements' for a message too heavy to render (see LIMITS),
+ * 'unstable' for one whose serialisation will not settle. `text` is the
+ * message's own text read off its parsed tree (empty when it was refused
+ * before any parse), `textCut` whether it stops short.
  *
  * `allowRemote` is the user's "show images" choice. `head` goes right after
  * the policy, ahead of the email (the caller's <base target> and reset
  * CSS). `decorate(doc)` runs once on the parsed message before anything is
- * removed (the suspicious-link marking).
+ * removed (the suspicious-link marking). `force` is the user's "show as
+ * sent": no LIMITS, and every safety step all the same.
  *
  * The srcdoc returned is checked by parsing it again, as the frame will: it
- * holds no resource hint, no srcdoc frame, no nesting past LIMITS.depth,
- * and, with remote content blocked, nothing left to replace by a
- * placeholder. A pass that leaves any of those is redone on its own
- * output, at most three times.
+ * holds no resource hint, no srcdoc frame, nothing past LIMITS, and, with
+ * remote content blocked, nothing left to replace by a placeholder. A pass
+ * that leaves any of those is redone on its own output, at most three
+ * times; 'unstable' is never forced.
  */
-export function prepareMessage(html, { allowRemote = false, head = '', decorate = null } = {}) {
+export function prepareMessage(html, {
+  allowRemote = false, head = '', decorate = null, force = false,
+} = {}) {
   const source = String(html || '');
-  const tooHeavy = tooComplexToParse(source);
-  if (tooHeavy) return { refused: tooHeavy };
-  let doc = parseInert(source);
-  if (deeperThan(doc.documentElement, LIMITS.depth)) return { refused: 'depth' };
+  const tooHeavy = force ? null : heavySource(source);
+  if (tooHeavy) return { refused: tooHeavy, text: '', textCut: false };
+  const budgetMs = force ? Infinity : LIMITS.parseMs + (LIMITS.parseMsPerMB * source.length) / 1e6;
+  const first = parseInert(source, budgetMs);
+  let doc = first.doc;
+  const refuse = (reason, cut = false) => {
+    const { text, textCut } = documentText(doc);
+    return { refused: reason, text, textCut: textCut || cut };
+  };
+  if (!first.complete) return refuse('slow', true);
+  const heavy = force ? null : heavyTree(doc.documentElement);
+  if (heavy) return refuse(heavy);
   decorate?.(doc);
   const budget = { ...DATA_SHEET_BUDGET };
   let blockedCount = 0;
@@ -935,14 +1113,15 @@ export function prepareMessage(html, { allowRemote = false, head = '', decorate 
     stabilise(doc);
     const body = doc.documentElement.outerHTML;
     const srcdoc = withRemoteContentPolicy(head + body, allowRemote);
-    const check = parseInert(srcdoc);
-    const settled = !outsidePolicy(check).length
-      && !deeperThan(check.documentElement, LIMITS.depth)
-      && (allowRemote || !rewriteRemote(check, { sheets: 0, bytes: 0 }).rewritten);
+    const check = parseInert(srcdoc, 2 * budgetMs);
+    if (!check.complete) return refuse('slow');
+    const settled = !outsidePolicy(check.doc).length
+      && (force || !heavyTree(check.doc.documentElement))
+      && (allowRemote || !rewriteRemote(check.doc, { sheets: 0, bytes: 0 }).rewritten);
     if (settled) return { srcdoc, blockedCount };
-    doc = parseInert(body);
+    doc = parseInert(body).doc;
   }
-  return { refused: 'unstable' };
+  return refuse('unstable');
 }
 
 
