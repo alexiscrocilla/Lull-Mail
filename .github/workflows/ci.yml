@@ -122,8 +122,10 @@ jobs:
       # bash has no such rule, and -e makes a real failure fatal instead of
       # letting the step's exit code come from whichever line happened to run
       # last.
-      # --with-deps, as Playwright's own Windows WebKit job does: on Windows
-      # Server it installs Media Foundation, which WebKit's media code loads.
+      # --with-deps installs Media Foundation on Windows Server, which
+      # WebKit's media code loads. Playwright keys that install on "chromium"
+      # being among the targets, not on webkit: keep both on this one line,
+      # or the install quietly stops (check-browser.mjs would then fail).
       - name: Install dependencies
         shell: bash
         run: |
