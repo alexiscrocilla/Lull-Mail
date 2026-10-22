@@ -105,25 +105,15 @@ function buildHtmlBodyBlock(em, forceShowImages = false) {
     safeHtml = dropOutsidePolicy(safeHtml);
   }
 
-  // 3. Inject our reset CSS and serialise. String.replace returns the
-  //    input UNCHANGED (truthy) when the pattern doesn't match, so a
-  //    plain `replace(...) || fallback` never reaches the fallback. Test
-  //    for the anchor explicitly. Emails with a <head> get INJECT inside
-  //    it; those with only <html> get a fresh <head>; bare fragments get
-  //    a leading <head> so <base>/reset CSS/image-blocker placeholders
-  //    always apply. The anchor must not take <header> for <head>, and
-  //    stops at the next `<` so a run of unclosed `<head` stays linear.
-  let finalHtml;
-  if (/<head(\s[^<>]*)?>/i.test(safeHtml)) {
-    finalHtml = safeHtml.replace(/<head(\s[^<>]*)?>/i, `<head$1>${INJECT}`);
-  } else if (/<html[^>]*>/i.test(safeHtml)) {
-    finalHtml = safeHtml.replace(/<html([^>]*)>/i, `<html$1><head>${INJECT}</head>`);
-  } else {
-    finalHtml = `<head>${INJECT}</head>` + safeHtml;
-  }
-  // 4. The policy that makes step 2 hold: the rewrite only knows the
-  //    vectors it enumerates, the browser refuses every remote fetch.
-  finalHtml = withRemoteContentPolicy(finalHtml, showRemote);
+  // 3. Our <base target> and reset CSS go ahead of the email, and the
+  //    policy that makes step 2 hold ahead of those: the rewrite only knows
+  //    the vectors it enumerates, the browser refuses every remote fetch.
+  //    Whatever precedes the email's first tag lands in the implied <head>,
+  //    so there is no searching the email's text for a <head> that may not
+  //    be one (a <header>, a comment, an attribute value) and no pattern a
+  //    run of unclosed "<head" or "<html" can drive quadratic. Still ahead
+  //    of the email's own head content, as the anchored insert used to be.
+  const finalHtml = withRemoteContentPolicy(INJECT + safeHtml, showRemote);
 
   // SECURITY: no `allow-scripts`. Email JavaScript never runs, which is
   // what makes `allow-same-origin` safe to add here: the dangerous combo

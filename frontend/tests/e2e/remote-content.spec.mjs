@@ -24,6 +24,7 @@ const HOSTILE = `<!DOCTYPE html>
 <link rel="stylesheet" href="${leak('link-stylesheet.css')}">
 <link rel="preload" as="image" href="${leak('link-preload.gif')}">
 <link rel="prefetch" href="${leak('link-prefetch')}">
+<link rel="preload" as="fetch" href="${leak('link-preload-fetch')}" crossorigin>
 <style>
 @import url("${leak('style-import-url.css')}");
 @import "${leak('style-import-string.css')}";
@@ -279,7 +280,31 @@ const PLACEMENT = [
       + `<html><head><title>Lettre</title></head><body>${refused('early')}</body></html>`,
     shown: ['early-img.gif', 'early-lead.gif'],
   },
+  {
+    title: 'a <head> written inside a comment',
+    mode: 'trusted',
+    html: `<!-- <head> -->${refused('comment')}`,
+    shown: ['comment-img.gif'],
+  },
+  {
+    title: 'a <head> written inside an attribute',
+    mode: 'trusted',
+    html: `<html><body><p title="see the <head> tag">x</p>${refused('attr')}</body></html>`,
+    shown: ['attr-img.gif'],
+  },
 ];
+
+// Where our own <base target> and reset CSS landed. Anywhere but <head> and
+// the reset is lost or links navigate the sandboxed frame itself; inside a
+// comment, nothing of it applies at all.
+const injected = (page) => page.locator(FRAME).evaluate((frame) => {
+  const doc = frame.contentDocument;
+  return {
+    policyInHead: !!doc.head.querySelector('meta[http-equiv="Content-Security-Policy"]'),
+    baseInHead: !!doc.head.querySelector('base[target="_blank"]'),
+    resetPadding: doc.defaultView.getComputedStyle(doc.body).paddingTop,
+  };
+});
 
 for (const { title, mode, html, shown } of PLACEMENT) {
   test(`the policy holds in loaded mode with ${title}`, async ({ page }) => {
@@ -291,8 +316,28 @@ for (const { title, mode, html, shown } of PLACEMENT) {
     }
 
     expect(names(fetched)).toEqual(shown);
+    expect(await injected(page)).toEqual({ policyInHead: true, baseInHead: true, resetPadding: '8px' });
   });
 }
+
+test('a trusted message reads the same once its resource hints are gone', async ({ page }) => {
+  // The usual web-font snippet, then a <pre> whose first blank line the
+  // parser drops: a parse-and-serialise of the message dropped the next
+  // one too.
+  const fetched = await hostileMailbox(page, `<html><head>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preload" as="fetch" href="${leak('trusted-preload-fetch')}" crossorigin>
+</head><body><p id="leak-marker">Bonjour.</p>
+<pre id="t">
+
+line after one blank line</pre></body></html>`, { trusted: true });
+  await openFirstInInbox(page);
+
+  const text = await page.locator(FRAME)
+    .evaluate((frame) => frame.contentDocument.getElementById('t').textContent);
+  expect(text).toBe('\nline after one blank line');
+  expect(fetched).toEqual([]);
+});
 
 test('a newsletter on a remote <base href> still offers its pictures', async ({ page }) => {
   // Relative paths resolve to the base's host. The policy refuses them like
@@ -369,50 +414,132 @@ test('a trusted sender gets both its pictures and the local ones', async ({ page
   expect(names(fetched)).toEqual(['control-image.gif']);
 });
 
-// label -> [email HTML, what the banner should count]
-const COUNTS = {
-  'a remote src': ['<img src="https://x.example/a.gif">', 1],
-  'a srcset holding an inline SVG':
-    [`<img srcset="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E 1x">`, 0],
-  'a remote second srcset candidate': [`<img src="data:image/gif;base64,${GIF_BASE64}"
-    srcset="data:image/gif;base64,${GIF_BASE64} 1x, https://x.example/b.gif 2x">`, 1],
-  'relative paths under a remote <base>':
-    ['<base href="https://x.example/nl/"><img src="a.jpg"><img src="b/c.png">', 2],
-  'relative paths and no <base>': ['<img src="a.jpg"><img src="/b.png">', 0],
-  'https: with no slashes': ['<img src="https:x.example/a.gif">', 1],
-  'a tab inside the scheme': ['<img src="ht&#9;tps://x.example/a.gif">', 1],
-  'a table background': ['<table background="https://x.example/bg.gif"><tr><td>x</td></tr></table>', 1],
-  '<style> url() and @import':
-    ['<style>@import "https://x.example/a.css"; .a{background:url(//x.example/b.gif)}</style>', 2],
-  '<style> data: url()': [`<style>.a{background:url(data:image/gif;base64,${GIF_BASE64})}</style>`, 0],
-  'a srcdoc frame and resource hints, which are dropped': [`<iframe srcdoc="&lt;p&gt;x"></iframe>
-    <link rel="prefetch" href="https://x.example/p"><link rel="dns-prefetch" href="//x.example">`, 0],
-};
+const BASE = '<base href="https://x.example/nl/">';
 
-test('the banner counts what the policy refuses', async ({ page }) => {
+/**
+ * label -> [email HTML, what the banner should count]. The count follows
+ * what the engine would fetch, so two rows depend on it: Chromium on
+ * Windows reads `\\host` as a UNC path it will not load, and only WebKit
+ * reads a slashless `http:host` base as absolute against an http page.
+ */
+function countCases(browserName) {
+  const chromium = browserName === 'chromium';
+  return {
+    'a remote src': ['<img src="https://x.example/a.gif">', 1],
+    'a \\\\host src': ['<img src="\\\\x.example/a.gif">', chromium && process.platform === 'win32' ? 0 : 1],
+    'a srcset holding an inline SVG':
+      [`<img srcset="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E 1x">`, 0],
+    'a remote second srcset candidate': [`<img src="data:image/gif;base64,${GIF_BASE64}"
+      srcset="data:image/gif;base64,${GIF_BASE64} 1x, https://x.example/b.gif 2x">`, 1],
+    'a comma inside a descriptor\'s parentheses':
+      ['<img srcset="a.gif 1x(,b),https://x.example/p.gif 2x">', 1],
+    'relative paths and no <base>': ['<img src="a.jpg"><img src="/b.png">', 0],
+    'the app\'s own origin': ['<img src="{APP}/x.gif">', 0],
+    'https: with no slashes': ['<img src="https:x.example/a.gif">', 1],
+    'a tab inside the scheme': ['<img src="ht&#9;tps://x.example/a.gif">', 1],
+    'a table background': ['<table background="https://x.example/bg.gif"><tr><td>x</td></tr></table>', 1],
+    '<style> url() and @import':
+      ['<style>@import "https://x.example/a.css"; .a{background:url(//x.example/b.gif)}</style>', 2],
+    '<style> data: url()': [`<style>.a{background:url(data:image/gif;base64,${GIF_BASE64})}</style>`, 0],
+    // A remote <base> moves every relative reference, not only <img src>.
+    'base: img src': [`${BASE}<img src="a.jpg"><img src="b/c.png">`, 2],
+    'base: img srcset': [`${BASE}<img srcset="a.jpg 1x">`, 1],
+    'base: table background': [`${BASE}<table background="bg.gif"><tr><td>x</td></tr></table>`, 1],
+    'base: video poster': [`${BASE}<video poster="p.gif"></video>`, 1],
+    'base: SVG image': [`${BASE}<svg><image href="i.gif"/></svg>`, 1],
+    'base: stylesheet link': [`${BASE}<link rel="stylesheet" href="s.css">`, 1],
+    'base: <style> url()': [`${BASE}<style>.a{background:url(bg.gif)}</style>`, 1],
+    'base: style attribute': [`${BASE}<div style="background:url(bg.gif)">x</div>`, 1],
+    // ...except a reference into the document itself.
+    'base: url(#id) in SVG styles': [`${BASE}<svg><rect style="fill:url(#g)"/></svg>`
+      + '<style>.s{clip-path:url(#c)}</style>', 0],
+    // Only an HTML <base> counts, as in the frame.
+    'an SVG <base> alone': ['<svg><base href="https://x.example/svg/"></base></svg><img src="a.jpg">', 0],
+    'an SVG <base> ahead of the HTML one':
+      ['<svg><base href="x/"></base></svg><base href="https://x.example/h/"><img src="a.jpg">', 1],
+    'a slashless http: base': ['<base href="http:x.example/hn/"><img src="a.jpg">', chromium ? 0 : 1],
+    'a data: stylesheet with a remote URL inside': [
+      '<link rel="stylesheet" href="data:text/css,.h%7Bbackground%3Aurl(https%3A%2F%2Fx.example%2Fd.gif)%7D">', 1],
+    'a data: @import with a remote URL inside':
+      ['<style>@import url("data:text/css,.h%7Bbackground:url(https://x.example/e.gif)%7D");</style>', 1],
+    'a srcdoc frame and resource hints, which are dropped': [`<iframe srcdoc="&lt;p&gt;x"></iframe>
+      <link rel="prefetch" href="https://x.example/p"><link rel="dns-prefetch" href="//x.example">
+      <link rel="preload" as="fetch" href="https://x.example/f">`, 0],
+  };
+}
+
+test('the banner counts what the policy refuses', async ({ page, browserName }) => {
   await page.goto('/#/inbox');
-  const got = await page.evaluate(async (cases) => {
+  const cases = countCases(browserName);
+  const got = await page.evaluate(async (all) => {
     const { rewriteRemoteImages } = await import('/static/image-blocker.js');
-    return Object.fromEntries(Object.entries(cases)
-      .map(([label, [html]]) => [label, rewriteRemoteImages(html).blockedCount]));
-  }, COUNTS);
+    return Object.fromEntries(Object.entries(all).map(([label, [html]]) => [
+      label, rewriteRemoteImages(html.replace('{APP}', location.origin)).blockedCount,
+    ]));
+  }, cases);
 
-  expect(got).toEqual(Object.fromEntries(Object.entries(COUNTS)
+  expect(got).toEqual(Object.fromEntries(Object.entries(cases)
     .map(([label, [, count]]) => [label, count])));
+});
+
+test('a reference into the document survives a remote <base>', async ({ page }) => {
+  await page.goto('/#/inbox');
+  const html = await page.evaluate(async (base) => {
+    const { rewriteRemoteImages } = await import('/static/image-blocker.js');
+    return rewriteRemoteImages(`${base}<svg><rect style="fill:url(#g)"/></svg>`).html;
+  }, BASE);
+
+  expect(html).toContain('style="fill:url(#g)"');
+  expect(html).not.toContain('data-blocked-style');
 });
 
 test('srcdoc frames and resource hints are dropped in both modes', async ({ page }) => {
   await page.goto('/#/inbox');
-  const out = await page.evaluate(async () => {
+  const left = await page.evaluate(async () => {
     const m = await import('/static/image-blocker.js');
     const html = '<p>x</p><iframe srcdoc="&lt;img src=x&gt;"></iframe>'
       + '<link rel="prefetch" href="https://x.example/p">'
-      + '<link rel="PreConnect" href="https://x.example">';
-    return [m.rewriteRemoteImages(html).html, m.dropOutsidePolicy(html)];
+      + '<link rel="PreConnect" href="https://x.example">'
+      + '<link rel="preload" as="fetch" href="https://x.example/f">';
+    return [m.rewriteRemoteImages(html).html, m.dropOutsidePolicy(html)].map((out) => {
+      const doc = new DOMParser().parseFromString(out, 'text/html');
+      return {
+        text: doc.body.textContent,
+        srcdocFrames: doc.querySelectorAll('iframe[srcdoc]').length,
+        links: doc.querySelectorAll('link').length,
+      };
+    });
   });
 
-  for (const html of out) {
-    expect(html).toContain('<p>x</p>');
-    expect(html).not.toMatch(/srcdoc|prefetch|preconnect/i);
-  }
+  for (const out of left) expect(out).toEqual({ text: 'x', srcdocFrames: 0, links: 0 });
+});
+
+test('no hostile markup freezes the rewriter', async ({ page }) => {
+  // The same budget on both engines: WebKit took the longest on every
+  // quadratic shape found so far (over 90 s at 2 MB).
+  await page.goto('/#/inbox');
+  const times = await page.evaluate(async () => {
+    const m = await import('/static/image-blocker.js');
+    const spaces = ' '.repeat(200000);
+    const blocked = {
+      'url( then spaces, in <style>': `<style>.a{background:url(${spaces}x}</style>`,
+      'url( then newlines, in <style>': `<style>.a{background:url(${'\n'.repeat(200000)}x}</style>`,
+      'url( then spaces, in a style attribute': `<div style="background:url(${spaces}x">d</div>`,
+      'url(// over and over': `<style>${'url(//'.repeat(33000)}</style>`,
+      'commas inside a srcset URL': `<img srcset="a${','.repeat(200000)}b 1x">`,
+      'commas inside a <source> srcset URL': `<picture><source srcset="a${','.repeat(200000)}b 1x"></picture>`,
+    };
+    const out = {};
+    for (const [label, html] of Object.entries(blocked)) {
+      const started = performance.now();
+      m.rewriteRemoteImages(html);
+      out[label] = performance.now() - started;
+    }
+    const started = performance.now();
+    m.dropOutsidePolicy('<link rel="'.repeat(40000));
+    out['unclosed <link rel=", loaded mode'] = performance.now() - started;
+    return out;
+  });
+
+  for (const [label, ms] of Object.entries(times)) expect(ms, label).toBeLessThan(500);
 });
