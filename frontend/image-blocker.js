@@ -710,6 +710,149 @@ function heavyTree(root) {
 }
 
 
+// What "show as sent" lets a message cost, under LIMITS on purpose, since a
+// forced message must render: the parse stops after `parseMs` and keeps
+// what it read, blocks nested deeper than `depth` are unwrapped into their
+// parent, and whatever follows the `elements`-th element is dropped.
+// Rendering a message past these as it was written froze Chromium for
+// minutes (128 nested tables, or 200,000 nested blocks whose parse alone
+// took 80 s).
+const FORCED = Object.freeze({ parseMs: 1_000, depth: 200, elements: 140_000 });
+
+// The refusals "show as sent" gets past, by reading the message under
+// FORCED: too long, or too deep. Not thousands of @import or <base>, which
+// would cost the frame what they cost the blocker, nor 'unstable'.
+const FORCIBLE = new Set(['size', 'nesting', 'slow', 'depth', 'elements']);
+
+// A table's own parts: unwrapped with their table, or not at all, so no
+// row or cell is left outside one.
+const TABLE_PARTS = new Set(['caption', 'colgroup', 'col', 'tbody', 'thead', 'tfoot', 'tr', 'td', 'th']);
+// Never unwrapped: they draw no box, and what they hold is not text.
+const NO_UNWRAP = new Set(['head', 'style', 'script', 'template', 'title', 'link', 'meta', 'base']);
+
+
+/**
+ * The blocks under `root` nested deeper than `maxDepth` (counted as
+ * heavyTree counts them), unwrapped into their parent: what they held stays
+ * where it was, with a line break where a block ended and a space where a
+ * cell did. True when anything was unwrapped.
+ *
+ * Every move takes a node off the end of its parent's children. WebKit
+ * takes time in proportion to the siblings for any other removal, and the
+ * parser leaves a nesting bomb as a few hundred levels and then one level
+ * of tens of thousands of siblings: unwrapping those in place took it 90 s.
+ */
+function flatten(root, maxDepth) {
+  const weight = (el) => (NO_BLOCK.has(el.localName) ? 0 : 1);
+  const gone = new Set();
+  // The elements kept with an unwrapped child, whose children are rebuilt.
+  const rebuilt = new Set();
+  // Whether the table each open table part belongs to is being unwrapped.
+  const tables = [];
+  let depth = 0;
+  let el = root;
+  for (;;) {
+    const unwrap = TABLE_PARTS.has(el.localName)
+      ? tables.length > 0 && tables[tables.length - 1]
+      : depth >= maxDepth && weight(el) === 1 && !NO_UNWRAP.has(el.localName);
+    if (unwrap) {
+      gone.add(el);
+      if (!gone.has(el.parentElement)) rebuilt.add(el.parentElement);
+    } else {
+      depth += weight(el);
+    }
+    if (el.localName === 'table') tables.push(unwrap);
+    if (el.firstElementChild) {
+      el = el.firstElementChild;
+      continue;
+    }
+    for (;;) {
+      if (!gone.has(el)) depth -= weight(el);
+      if (el.localName === 'table') tables.pop();
+      if (el === root) {
+        rebuilt.forEach((parent) => parent.appendChild(unwrapped(parent, gone)));
+        return gone.size > 0;
+      }
+      if (el.nextElementSibling) {
+        el = el.nextElementSibling;
+        break;
+      }
+      el = el.parentElement;
+    }
+  }
+}
+
+
+/** The children of `node`, taken off it, last first: in order, reversed. */
+function takeChildren(node) {
+  const taken = [];
+  while (node.lastChild) {
+    const child = node.lastChild;
+    child.remove();
+    taken.push(child);
+  }
+  return taken;
+}
+
+
+/**
+ * The children of `parent`, taken off it, as a fragment in which every
+ * element of `gone` is replaced by its own content, down to the first
+ * element kept.
+ */
+function unwrapped(parent, gone) {
+  const doc = parent.ownerDocument;
+  const content = doc.createDocumentFragment();
+  // Nodes to place, last on top; an element of `gone` comes back as a
+  // marker once its content is placed, for the break or space it ends with.
+  const stack = takeChildren(parent);
+  while (stack.length) {
+    const node = stack.pop();
+    if (typeof node === 'string') {
+      if (node === 'td' || node === 'th') content.appendChild(doc.createTextNode(' '));
+      else if (LINE_BREAKS.has(node)) content.appendChild(doc.createElement('br'));
+    } else if (gone.has(node)) {
+      // One push at a time: a node can hold tens of thousands of children,
+      // past what a spread may pass.
+      stack.push(node.localName);
+      for (const child of takeChildren(node)) stack.push(child);
+    } else {
+      content.appendChild(node);
+    }
+  }
+  return content;
+}
+
+
+/**
+ * Whatever follows `root`'s `max`-th element, dropped, from the end (see
+ * flatten() on why). True when anything was.
+ */
+function keepFirst(root, max) {
+  // 1 = NodeFilter.SHOW_ELEMENT.
+  const walker = root.ownerDocument.createTreeWalker(root, 1);
+  let count = 1;
+  let first = null;
+  for (let el = walker.nextNode(); el; el = walker.nextNode()) {
+    count += 1;
+    if (count > max) {
+      first = el;
+      break;
+    }
+  }
+  if (!first) return false;
+  let node = first;
+  while (node.parentNode.lastChild !== node) node.parentNode.lastChild.remove();
+  node = node.parentNode;
+  first.remove();
+  while (node !== root) {
+    while (node.parentNode.lastChild !== node) node.parentNode.lastChild.remove();
+    node = node.parentNode;
+  }
+  return true;
+}
+
+
 const PARSE_CHUNK = 32_768;
 
 /**
@@ -1065,41 +1208,53 @@ export function withRemoteContentPolicy(html, allowRemote = false) {
 
 
 /**
- * The frame document for a message: `{ srcdoc, blockedCount }`, or
- * `{ refused, text, textCut }` when it is to be shown as text instead.
- * `refused` says why: 'size', 'nesting', 'imports', 'bases', 'slow',
- * 'depth' or 'elements' for a message too heavy to render (see LIMITS),
- * 'unstable' for one whose serialisation will not settle. `text` is the
- * message's own text read off its parsed tree (empty when it was refused
- * before any parse), `textCut` whether it stops short.
+ * The frame document for a message: `{ srcdoc, blockedCount, flattened,
+ * cut }`, or `{ refused, forcible, text, textCut }` when it is to be shown
+ * as text instead. `refused` says why: 'size', 'nesting', 'imports',
+ * 'bases', 'slow', 'depth' or 'elements' for a message too heavy to render
+ * (see LIMITS), 'unstable' for one whose serialisation will not settle;
+ * `forcible`, whether "show as sent" can render it. `text` is the message's
+ * own text read off its parsed tree (empty when it was refused before any
+ * parse), `textCut` whether it stops short.
  *
  * `allowRemote` is the user's "show images" choice. `head` goes right after
  * the policy, ahead of the email (the caller's <base target> and reset
  * CSS). `decorate(doc)` runs once on the parsed message before anything is
  * removed (the suspicious-link marking). `force` is the user's "show as
- * sent": no LIMITS, and every safety step all the same.
+ * sent": the message is read under FORCED rather than LIMITS, with every
+ * safety step all the same. `flattened` and `cut` then say whether its
+ * deepest blocks were unwrapped, or its end dropped.
  *
  * The srcdoc returned is checked by parsing it again, as the frame will: it
  * holds no resource hint, no srcdoc frame, nothing past LIMITS, and, with
  * remote content blocked, nothing left to replace by a placeholder. A pass
  * that leaves any of those is redone on its own output, at most three
- * times; 'unstable' is never forced.
+ * times.
  */
 export function prepareMessage(html, {
   allowRemote = false, head = '', decorate = null, force = false,
 } = {}) {
   const source = String(html || '');
-  const tooHeavy = force ? null : heavySource(source);
-  if (tooHeavy) return { refused: tooHeavy, text: '', textCut: false };
-  const budgetMs = force ? Infinity : LIMITS.parseMs + (LIMITS.parseMsPerMB * source.length) / 1e6;
+  const tooHeavy = heavySource(source);
+  if (tooHeavy && !(force && FORCIBLE.has(tooHeavy))) {
+    return { refused: tooHeavy, forcible: !force && FORCIBLE.has(tooHeavy), text: '', textCut: false };
+  }
+  const budgetMs = force ? FORCED.parseMs : LIMITS.parseMs + (LIMITS.parseMsPerMB * source.length) / 1e6;
   const first = parseInert(source, budgetMs);
   let doc = first.doc;
   const refuse = (reason, cut = false) => {
     const { text, textCut } = documentText(doc);
-    return { refused: reason, text, textCut: textCut || cut };
+    return { refused: reason, forcible: !force && FORCIBLE.has(reason), text, textCut: textCut || cut };
   };
-  if (!first.complete) return refuse('slow', true);
-  const heavy = force ? null : heavyTree(doc.documentElement);
+  let flattened = false;
+  let cut = !first.complete;
+  if (force) {
+    flattened = flatten(doc.documentElement, FORCED.depth);
+    cut = keepFirst(doc.documentElement, FORCED.elements) || cut;
+  } else if (cut) {
+    return refuse('slow', true);
+  }
+  const heavy = heavyTree(doc.documentElement);
   if (heavy) return refuse(heavy);
   decorate?.(doc);
   const budget = { ...DATA_SHEET_BUDGET };
@@ -1116,9 +1271,9 @@ export function prepareMessage(html, {
     const check = parseInert(srcdoc, 2 * budgetMs);
     if (!check.complete) return refuse('slow');
     const settled = !outsidePolicy(check.doc).length
-      && (force || !heavyTree(check.doc.documentElement))
+      && !heavyTree(check.doc.documentElement)
       && (allowRemote || !rewriteRemote(check.doc, { sheets: 0, bytes: 0 }).rewritten);
-    if (settled) return { srcdoc, blockedCount };
+    if (settled) return { srcdoc, blockedCount, flattened, cut };
     doc = parseInert(body).doc;
   }
   return refuse('unstable');

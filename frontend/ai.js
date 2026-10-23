@@ -618,11 +618,15 @@ export async function mountAI(host, opts = {}) {
       const fromTree = (prepared.text || '').length > own.trim().length;
       const text = fromTree ? prepared.text : own;
       const cut = fromTree ? prepared.textCut : textCut;
+      // The inbox can render a forcible one as sent; say so only for those.
+      let why = 'mb.read.cannot';
+      if (prepared.refused === 'unstable') why = 'mb.read.unsafe';
+      else if (prepared.forcible) why = 'aiw.reader.too_complex';
       bodyHtml = prepared.srcdoc
         ? `<iframe class="aiw-reader-iframe" sandbox="allow-popups allow-popups-to-escape-sandbox"`
           + ` srcdoc="${escapeHtml(prepared.srcdoc)}" title="${escapeHtml(em.subject || t('aiw.no_subject'))}"></iframe>`
         : `<div class="aiw-reader-text"><p class="aiw-reader-empty">`
-          + `${escapeHtml(t(prepared.refused === 'unstable' ? 'mb.read.unsafe' : 'aiw.reader.too_complex'))}</p>`
+          + `${escapeHtml(t(why))}</p>`
           + `${linkify(text)}`
           + `${cut && text ? `<p class="aiw-reader-empty">${escapeHtml(t('mb.read.text_cut'))}</p>` : ''}</div>`;
     } else {

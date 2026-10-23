@@ -118,6 +118,16 @@ function buildHtmlBodyBlock(em) {
   if (!prepared.srcdoc) return wrap(textFallbackBlock(em, prepared));
   const finalHtml = prepared.srcdoc;
   const { blockedCount } = prepared;
+  // "Afficher tel quel" renders a message within bounds of its own: say
+  // when its layout was flattened or its end dropped to stay in them.
+  const changes = [prepared.flattened && 'mb.read.flattened', prepared.cut && 'mb.read.shown_cut']
+    .filter(Boolean);
+  const simplified = changes.length
+    ? `<div class="mb-img-banner mb-body-simplified" role="note">
+        <i data-lucide="info" class="w-4 h-4"></i>
+        <span class="mb-img-banner-label">${changes.map((k) => escapeHtml(_t(k))).join(' ')}</span>
+      </div>`
+    : '';
 
   // SECURITY: no `allow-scripts`. Email JavaScript never runs, which is
   // what makes `allow-same-origin` safe to add here: the dangerous combo
@@ -139,7 +149,7 @@ function buildHtmlBodyBlock(em) {
   // Banner only when we actually blocked something. The two buttons
   // are wired up by wireBodyBlock() right after the block is injected
   // into the DOM.
-  if (!blockedCount) return wrap(iframe);
+  if (!blockedCount) return wrap(simplified + iframe);
 
   const domain = em.sender_domain || senderDomain(em.sender) || '';
   const label = _t('mb.img.blocked_count', { n: blockedCount });
@@ -155,7 +165,7 @@ function buildHtmlBodyBlock(em) {
         ${domain ? _t('mb.img.always_for', { domain: escapeHtml(domain) }) : _t('mb.img.always_for_sender')}
       </button>
     </div>`;
-  return wrap(banner + iframe);
+  return wrap(simplified + banner + iframe);
 }
 
 
@@ -176,24 +186,33 @@ function fallbackText(em, prepared) {
 }
 
 
+// Refusals for depth, which "Afficher tel quel" answers by flattening the
+// deepest layout; the other forcible ones are for length, answered with
+// time and, past a point, by dropping the end.
+const TOO_DEEP = new Set(['depth', 'nesting']);
+
+
 /**
  * A message whose HTML is not rendered: a note saying why, its text, and
- * for one that is merely heavy, a button to render it as sent anyway. One
- * whose serialisation would not settle gets no button: rendering it is not
- * safe.
+ * when prepareMessage can render it after all, a button for that, the note
+ * saying what it will cost. One whose serialisation would not settle, or
+ * built to cost the frame what it cost the blocker, gets no button.
  */
 function textFallbackBlock(em, prepared) {
   const _t = window.t || ((k) => k);
   const unsafe = prepared.refused === 'unstable';
   const { text, cut } = fallbackText(em, prepared);
+  let why = 'mb.read.cannot';
+  if (unsafe) why = 'mb.read.unsafe';
+  else if (prepared.forcible) why = TOO_DEEP.has(prepared.refused) ? 'mb.read.deep' : 'mb.read.long';
   const note = `
     <div class="mb-img-banner mb-body-notice" role="note">
       <i data-lucide="${unsafe ? 'shield-alert' : 'file-text'}" class="w-4 h-4"></i>
-      <span class="mb-img-banner-label">${escapeHtml(_t(unsafe ? 'mb.read.unsafe' : 'mb.read.heavy'))}</span>
+      <span class="mb-img-banner-label">${escapeHtml(_t(why))}</span>
       <span class="mb-img-banner-spacer"></span>
-      ${unsafe ? '' : `<button class="mb-img-banner-btn" data-act="show-as-sent" type="button">
+      ${prepared.forcible ? `<button class="mb-img-banner-btn" data-act="show-as-sent" type="button">
         ${escapeHtml(_t('mb.read.show_as_sent'))}
-      </button>`}
+      </button>` : ''}
     </div>`;
   const body = text
     ? `<div class="mb-body-text">${linkify(text)}</div>`

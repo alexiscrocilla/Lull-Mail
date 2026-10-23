@@ -776,14 +776,29 @@ async function bodyEvent(page) {
   await expect(page.locator('#read-pane .mb-body-block[data-before]')).toHaveCount(0);
 }
 
-test('a message too heavy to render shows its text, and can be shown as sent', async ({ page }) => {
-  // Past the element limit, yet cheap to lay out once asked for. No text
-  // part: the text is the HTML's own.
+/** Samples the page's main thread from now on, until it navigates. */
+async function stallSampler(page) {
+  await page.evaluate(() => {
+    window.zzStall = { last: performance.now(), worst: 0 };
+    setInterval(() => {
+      const now = performance.now();
+      window.zzStall.worst = Math.max(window.zzStall.worst, now - window.zzStall.last);
+      window.zzStall.last = now;
+    }, 20);
+  });
+  return {
+    reset: () => page.evaluate(() => { window.zzStall.worst = 0; window.zzStall.last = performance.now(); }),
+    worst: () => page.evaluate(() => window.zzStall.worst),
+  };
+}
+
+test('a message too long to render shows its text, and its beginning as sent', async ({ page }) => {
+  // Past the element limit. No text part: the text is the HTML's own.
   await hostileMailbox(page, `<p id="leak-marker">Bonjour Alice,</p>${'mot<br>'.repeat(160_000)}`);
   await openFirst(page);
 
   const notice = page.locator('#read-pane .mb-body-notice');
-  await expect(notice).toContainText('affiché en texte');
+  await expect(notice).toContainText('Message très long, affiché en texte');
   await expect(page.locator('#read-pane .mb-body-text')).toContainText('Bonjour Alice,');
   // 640,000 characters, more than a refused message gets back.
   await expect(page.locator('#read-pane .mb-body-cut')).toHaveText('(texte tronqué)');
@@ -792,10 +807,72 @@ test('a message too heavy to render shows its text, and can be shown as sent', a
   await notice.locator('[data-act="show-as-sent"]').click();
   await expect(page.frameLocator(FRAME).locator('#leak-marker')).toBeVisible();
   await expect(notice).toHaveCount(0);
+  await expect(page.locator('#read-pane .mb-body-simplified')).toContainText('seulement le début');
 
   await bodyEvent(page);
   await expect(page.frameLocator(FRAME).locator('#leak-marker')).toBeVisible();
   await expect(notice).toHaveCount(0);
+});
+
+for (const tables of [128, 200]) {
+  test(`"show as sent" renders ${tables} nested tables at once, flattened`, async ({ page }) => {
+    // Rendered as written, a 2 KB message like this one kept Chromium busy
+    // for minutes, the whole app with it.
+    await hostileMailbox(page, `<p id="leak-marker">m</p>${'<table><tr><td>'.repeat(tables)}deep`);
+    await openFirst(page);
+    const notice = page.locator('#read-pane .mb-body-notice');
+    await expect(notice).toContainText('Message très imbriqué, affiché en texte');
+    const stalls = await stallSampler(page);
+
+    await notice.locator('[data-act="show-as-sent"]').click();
+    const frame = page.frameLocator(FRAME);
+    await expect(frame.locator('#leak-marker')).toBeVisible({ timeout: 5_000 });
+    await expect(frame.locator('body')).toContainText('deep');
+    await expect(page.locator('#read-pane .mb-body-simplified')).toContainText('mise en page aplatie');
+    // The frame is fitted again 120 and 400 ms after it loads.
+    await page.waitForTimeout(600);
+    expect(await stalls.worst()).toBeLessThan(2000);
+
+    // And the app still answers: the next message opens.
+    const next = await page.locator('#email-list .mb-card').nth(1).getAttribute('data-id');
+    await page.locator('#email-list .mb-card').nth(1).click();
+    await expect(page.locator(`#read-pane .mb-body-block[data-int-id="${next}"]`)).toBeAttached({ timeout: 5_000 });
+  });
+}
+
+test('"show as sent" reads every bomb within its bounds, into a frame within the limits', async ({ page }) => {
+  await page.goto('/#/inbox');
+  const got = await page.evaluate(async (all) => {
+    const { prepareMessage } = await import('/static/image-blocker.js');
+    return Object.fromEntries(Object.entries(all).map(([label, [html]]) => {
+      const started = performance.now();
+      const out = prepareMessage(`<p>m</p>${html}`, { force: true });
+      const ms = performance.now() - started;
+      // What the frame is given passes the limits without being forced.
+      const again = out.srcdoc ? prepareMessage(out.srcdoc).refused || null : 'none';
+      return [label, { ms, refused: out.refused || null, again }];
+    }));
+  }, BOMBS);
+  for (const [label, [, reasons]] of Object.entries(BOMBS)) {
+    const { ms, refused, again } = got[label];
+    // A second of parse at most, then the unwrapping and the checks.
+    expect(ms, label).toBeLessThan(5000);
+    if (reasons.includes('imports')) {
+      expect(refused, label).toBe('imports');
+    } else {
+      expect(refused, label).toBeNull();
+      expect(again, label).toBeNull();
+    }
+  }
+});
+
+test('markup that would cost the frame what it cost the blocker gets no "show as sent"', async ({ page }) => {
+  await hostileMailbox(page, `<p>Bonjour.</p><style>${'@import "x.css";'.repeat(20_000)}</style>`);
+  await openFirst(page);
+
+  const notice = page.locator('#read-pane .mb-body-notice');
+  await expect(notice).toContainText('ne peut pas être affiché tel quel');
+  await expect(notice.locator('[data-act="show-as-sent"]')).toHaveCount(0);
 });
 
 test('a text part cut at the fetcher\'s cap gives way to the text of the HTML', async ({ page }) => {
@@ -984,14 +1061,7 @@ test('the reading pane opens every shape that froze it without stalling', async 
   await page.goto('/#/inbox');
   const cards = page.locator('#email-list .mb-card');
   await expect(cards).toHaveCount(18);
-  await page.evaluate(() => {
-    window.zzStall = { last: performance.now(), worst: 0 };
-    setInterval(() => {
-      const now = performance.now();
-      window.zzStall.worst = Math.max(window.zzStall.worst, now - window.zzStall.last);
-      window.zzStall.last = now;
-    }, 20);
-  });
+  const stalls = await stallSampler(page);
 
   const slow = [];
   let nth = 0;
@@ -999,7 +1069,7 @@ test('the reading pane opens every shape that froze it without stalling', async 
     html = `<p id="leak-marker">m</p>${body}`;
     nth = 1 - nth;
     const id = await cards.nth(nth).getAttribute('data-id');
-    await page.evaluate(() => { window.zzStall.worst = 0; window.zzStall.last = performance.now(); });
+    await stalls.reset();
     const started = Date.now();
     await cards.nth(nth).click();
     await expect.poll(() => page.evaluate((intId) => {
@@ -1012,7 +1082,7 @@ test('the reading pane opens every shape that froze it without stalling', async 
     const opened = Date.now() - started;
     // The frame is fitted again 120 and 400 ms after it loads.
     await page.waitForTimeout(600);
-    const stall = await page.evaluate(() => window.zzStall.worst);
+    const stall = await stalls.worst();
     if (opened > 5000 || stall > 2000) slow.push(`${label}: opened in ${opened} ms, stalled ${Math.round(stall)} ms`);
   }
   expect(slow).toEqual([]);
